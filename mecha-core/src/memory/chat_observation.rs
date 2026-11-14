@@ -32,7 +32,7 @@ pub const CHAT_OPEN_WEB_RECORDER_VERSION: &str = "ordinary-chat-recorder-v5";
 /// the most bytes it serializes to.
 pub const MAX_DECISIONS: usize = 128;
 pub const MAX_VERSIONS: usize = 16;
-pub const MAX_CONTEXT_BYTES: usize = 24 * 1024;
+pub const MAX_CONTEXT_BYTES: usize = 96 * 1024;
 
 /// The currently supported authenticated chat ingress, independent of runtime types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +88,33 @@ impl ChatContextVersion {
             OwnerSource::AuthenticatedWeb,
             ChatOwnerSource::AuthenticatedWeb,
         )
+    }
+    /// For an open recorder: the owner lines from `from` (an index into
+    /// the whole conversation) on, which are the turn's own. A revision
+    /// carries a window of recent lines, most of them earlier turns', and
+    /// a turn's capture names only what it is evidence for. Each line is
+    /// held as a passage holds it, its head when it is longer than one.
+    #[cfg(feature = "memory-prototype")]
+    pub fn from_version_tail(version: &ContextVersion, web: bool, from: u64) -> Result<Self> {
+        let (native, source) = if web {
+            (
+                OwnerSource::AuthenticatedWeb,
+                ChatOwnerSource::AuthenticatedWeb,
+            )
+        } else {
+            (OwnerSource::CliChat, ChatOwnerSource::CliChat)
+        };
+        let mut summary = Self::from_version_for(version, native, source)?;
+        let skip = usize::try_from(from.saturating_sub(version.earlier_inputs()))?;
+        ensure!(
+            from >= version.earlier_inputs() && skip <= summary.owner_inputs.len(),
+            "chat turn's owner lines are no longer carried by its context"
+        );
+        summary.owner_inputs.drain(..skip);
+        for input in &mut summary.owner_inputs {
+            input.text = super::host_capture::excerpt(std::mem::take(&mut input.text)).0;
+        }
+        Ok(summary)
     }
     #[cfg(feature = "memory-prototype")]
     fn from_version_for(
@@ -159,7 +186,8 @@ impl ChatDecisionLocator {
 
 /// Host-produced sidecar. Native source validation must additionally prove these
 /// locators/digests match the sealed prefix; a deserialized DTO is not authority.
-/// Bounds: 16 used versions, 128 decisions, 64 owner locators, 24 KiB total.
+/// Bounds: 16 used versions, 128 decisions, 64 owner locators, 96 KiB total
+/// (`MAX_CONTEXT_BYTES`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChatObservationContext {

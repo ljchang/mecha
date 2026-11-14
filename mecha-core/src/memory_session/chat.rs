@@ -153,6 +153,13 @@ impl Attachment {
     fn open_web(&self) -> bool {
         self.protocol == CHAT_OPEN_WEB_MEMORY_PROTOCOL
     }
+    fn turn_limit(&self) -> u64 {
+        if self.open() {
+            OPEN_MAX_TURNS
+        } else {
+            MAX_TURNS
+        }
+    }
     /// The workspace a configuration record names, against this chat's.
     /// The web server records its producer root, under which each chat has
     /// its own directory; a local chat records its own.
@@ -325,7 +332,32 @@ pub struct ChatMemory {
     attachment: Attachment,
     digest: String,
     lease: Arc<Lease>,
+    /// How far this attachment has verified the conversation's chain of
+    /// sealed turns. Each turn begins by authenticating that chain; done
+    /// from the first turn every time, a conversation's cost grows with
+    /// the square of its length (ninety short turns took 285 s). So an open
+    /// chat reads only the turns since, on two separate grounds. The
+    /// transcript is compared: it must still begin with the bytes that
+    /// were verified. The turn files, seals, receipts and the store's
+    /// record of each earlier turn are NOT read again: that rests on the
+    /// lease alone, which makes this process the only cooperating writer,
+    /// and a change made to them underneath a live attachment by anything
+    /// else is found by the next attachment, which starts from the first
+    /// turn, and not by this one. A closed profile is short and never
+    /// takes the shortcut.
+    verified: Mutex<Option<Verified>>,
 }
+/// The last sealed turn the chain was verified through.
+#[derive(Clone)]
+struct Verified {
+    ordinal: u64,
+    turn: RetainedTurnCheckpoint,
+    /// Of the transcript up to that turn's end.
+    prefix_digest: String,
+}
+/// The most turns an ordinary chat may hold. A closed profile keeps
+/// [`MAX_TURNS`].
+const OPEN_MAX_TURNS: u64 = 1 << 20;
 pub struct ChatMemoryTurn {
     id: String,
     authority: String,
@@ -365,6 +397,23 @@ fn ordinal_path(a: &Authority, session: &str, ordinal: u64) -> PathBuf {
         "{}.chat-turn-{ordinal}",
         authority::digest(session.as_bytes())
     ))
+}
+/// Whether any turn of `session` numbered above `ordinal` was begun, by
+/// the names in the authority's directory.
+fn begun_after(a: &Authority, session: &str, ordinal: u64) -> Result<bool> {
+    let prefix = format!("{}.chat-turn-", authority::digest(session.as_bytes()));
+    for entry in std::fs::read_dir(&a.root)? {
+        let name = entry?.file_name();
+        let later = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(&prefix))
+            .and_then(|n| n.parse::<u64>().ok())
+            .is_some_and(|n| n > ordinal);
+        if later {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 fn read_private<T: serde::de::DeserializeOwned>(path: &Path, max: usize) -> Result<T> {
     authority::private(path, false)?;
@@ -482,7 +531,7 @@ fn frozen_metadata(a: &Authority, id: &str) -> Result<(Turn, Attachment)> {
     let (attachment, digest) = attachment(a, &f.session_id)?;
     ensure!(
         f.attachment == digest
-            && (1..=MAX_TURNS).contains(&f.ordinal)
+            && (1..=attachment.turn_limit()).contains(&f.ordinal)
             && f.owner.source() == attachment.owner_source(),
         "chat turn attachment changed"
     );
@@ -735,6 +784,7 @@ impl SessionMemory {
             attachment,
             digest,
             lease: Arc::new(lease),
+            verified: Mutex::new(None),
         };
         chat.continuation()?;
         Ok(chat)
@@ -1013,10 +1063,44 @@ impl ChatMemory {
         let mut last: Option<RetainedTurnCheckpoint> = None;
         let mut endpoint = 0;
         let mut gap = false;
+        let mut sealed = 0;
+        let mut first = 1;
+        // Picked up where this attachment left off, when the transcript
+        // still begins with the bytes that were verified. An open chat
+        // only: a closed profile is short, and walks its whole chain at
+        // every turn as it always did.
+        let known = self
+            .verified
+            .lock()
+            .map_err(|_| anyhow::anyhow!("chat verification unavailable"))?
+            .clone()
+            .filter(|_| a.open());
+        if let Some(known) = known {
+            let end = usize::try_from(known.turn.2)?;
+            if bytes.len() >= end && authority::digest(&bytes[..end]) == known.prefix_digest {
+                endpoint = known.turn.2;
+                sealed = known.ordinal;
+                first = known.ordinal + 1;
+                last = Some(known.turn);
+            }
+        }
         let db = self.memory.memory()?;
-        for ordinal in 1..=MAX_TURNS {
+        for ordinal in first..=a.turn_limit() {
             let path = ordinal_path(&self.memory.authority, &a.session_id, ordinal);
             if !path.try_exists()? {
+                // An ordinary chat's turns are numbered without a gap by
+                // construction (`ordinal_after`), and may be many: the
+                // first ordinal not begun ends the walk, once no later one
+                // is seen to have begun. One listing answers that for a
+                // gap of any width, where a probe of the next ordinal
+                // answers it for a gap of one.
+                if a.open() {
+                    ensure!(
+                        !begun_after(&self.memory.authority, &a.session_id, ordinal)?,
+                        "chat turn order has a gap"
+                    );
+                    break;
+                }
                 gap = true;
                 continue;
             }
@@ -1056,7 +1140,18 @@ impl ChatMemory {
                 read_private(&self.memory.authority.file(&id, "chat-retained")?, 65536)?;
             ensure!(recorded == receipt, "chat retained receipt changed");
             endpoint = s.length;
+            sealed = ordinal;
             last = Some((id, receipt, endpoint));
+        }
+        if let Some(turn) = &last {
+            *self
+                .verified
+                .lock()
+                .map_err(|_| anyhow::anyhow!("chat verification unavailable"))? = Some(Verified {
+                ordinal: sealed,
+                turn: turn.clone(),
+                prefix_digest: authority::digest(&bytes[..usize::try_from(endpoint)?]),
+            });
         }
         // Only startup Config records may follow the last retained turn.
         let mut offset = 0usize;
@@ -1093,8 +1188,14 @@ impl ChatMemory {
     fn ordinal_after(&self, last: Option<&RetainedTurnCheckpoint>) -> Result<u64> {
         let ordinal = if self.attachment.open() {
             // After every turn begun, sealed or passed over.
-            let mut next = 1;
-            while next <= MAX_TURNS
+            // From the last turn verified, not from the first.
+            let mut next = self
+                .verified
+                .lock()
+                .ok()
+                .and_then(|v| v.as_ref().map(|v| v.ordinal + 1))
+                .unwrap_or(1);
+            while next <= OPEN_MAX_TURNS
                 && ordinal_path(&self.memory.authority, &self.attachment.session_id, next)
                     .try_exists()?
             {
@@ -1108,7 +1209,7 @@ impl ChatMemory {
             }
         };
         ensure!(
-            ordinal <= MAX_TURNS,
+            ordinal <= self.attachment.turn_limit(),
             "chat turn limit reached; start a fresh chat"
         );
         Ok(ordinal)
@@ -1152,13 +1253,15 @@ impl ChatMemory {
         owner: &OwnerInput,
         expected_ordinal: Option<u64>,
     ) -> Result<ChatMemoryTurn> {
+        // An ordinary chat takes a line of any length an owner input may
+        // be; its passage holds the head. A closed profile keeps its bound.
         ensure!(
             session.path == self.attachment.source
                 && session.meta.id == self.attachment.session_id
                 && session.meta.kind == Some(self.attachment.session_kind())
                 && owner.source() == self.attachment.owner_source()
-                && owner.text().len() <= 2048,
-            "chat owner input unavailable (maximum 2048 bytes)"
+                && (self.attachment.open() || owner.text().len() <= 2048),
+            "chat owner input unavailable (a closed profile takes at most 2048 bytes)"
         );
         let (bytes, last) = self.continuation()?;
         let ordinal = self.ordinal_after(last.as_ref())?;
@@ -1172,8 +1275,10 @@ impl ChatMemory {
             "chat memory requires recorded tool configuration"
         );
         if let Some(version) = transcript.convo.goal_context.current() {
+            // A closed profile's sidecar repeats every owner line, and is
+            // bounded; an ordinary chat's names only the turn's own.
             ensure!(
-                version.owner_inputs().len() < 64
+                (self.attachment.open() || version.owner_inputs().len() < 64)
                     && version
                         .owner_inputs()
                         .iter()
@@ -1285,7 +1390,7 @@ impl ChatMemory {
                 // A turn that was passed over stays passed over: sealing
                 // it now would take in the turns begun since.
                 ensure!(
-                    f.ordinal == MAX_TURNS
+                    f.ordinal == a.turn_limit()
                         || !ordinal_path(&self.memory.authority, &f.session_id, f.ordinal + 1)
                             .try_exists()?,
                     "chat turn was passed over"

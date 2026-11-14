@@ -98,7 +98,7 @@ impl Tool for TrackedChat {
         };
         let tracked = (|| -> Result<Attempt> {
             ensure!(
-                output.content.len() <= 20_000 && output.image.is_none(),
+                output.content.len() <= authority::RECALL_OUTPUT_MAX && output.image.is_none(),
                 "ordinary recall output unavailable"
             );
             let references = if output.is_error {

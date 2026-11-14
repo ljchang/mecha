@@ -10,6 +10,18 @@ use std::{
 /// The largest transcript a memory session reads. A long tool session
 /// runs to megabytes of results.
 pub(super) const SOURCE_MAX: usize = 32 * 1024 * 1024;
+/// The most bytes a recall may return and still be tracked. A recall's
+/// output is the goal context (the charter and the owner's recent lines,
+/// each up to 64 KiB) and then the memory packet (20,000 bytes), as one
+/// JSON object's text. The owner's lines are rendered as JSON inside a
+/// block that is then a JSON string, so a quote, a newline or a backslash
+/// in a pasted line is four bytes here: sized for that worst case over
+/// both halves (2 × 64 KiB × 4) plus the packet, not for the parts as the
+/// owner typed them. At 20,000 for the whole, and then at 160 KiB, a
+/// recall that found three full passages, or one after a line of pasted
+/// code, went over: its attempt was left pending and the turn lost its
+/// memory for having remembered something.
+pub(super) const RECALL_OUTPUT_MAX: usize = 544 * 1024;
 pub(super) fn digest(b: &[u8]) -> String {
     Sha256::digest(b)
         .iter()
@@ -353,7 +365,7 @@ impl Authority {
             private(&p, false)?;
             private(&o, false)?;
             let input: serde_json::Value = serde_json::from_slice(&read(&p, 8192)?)?;
-            let a: Attempt = serde_json::from_slice(&read(&o, 131072)?)?;
+            let a: Attempt = serde_json::from_slice(&read(&o, 4 * RECALL_OUTPUT_MAX)?)?;
             ensure!(a.input == input, "ordinary delivery input changed");
             result.push(a);
         }
