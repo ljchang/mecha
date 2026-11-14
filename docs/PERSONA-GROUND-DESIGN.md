@@ -183,15 +183,16 @@ An item:
 | Field | Meaning |
 |---|---|
 | `kind` | A closed set: a person, a place, an event, a running joke, a coined term, an unfinished thread, a stated plan |
-| `handle` | The pair's short form, and its earlier longer forms in order |
+| `handle` | The pair's forms for it, longest first. Each form carries the chat it was first used in, as its own deletion key |
 | `meaning` | What an outsider would need to be told. Never put in a prompt as text to say |
 | `coined_by` | The owner, the persona, or both |
 | `source` | Chat and turn range, as memory rows carry it: the deletion key. One chat; see §7 on forgetting |
 | `origin` | Clean or untrusted, from the recorded taint of the stretch it came from. A turn no checkpoint covers is unknown, and unknown loads as untrusted, as memory's does |
-| `grounded` | How far it is shared: said, acknowledged, taken up (the owner used it themselves) |
-| `due` | For a thread or a plan: when it can be asked about, and whose move it is |
+| `due_at` | For a thread or a plan: the time the introducing chat gave for it, if it gave one |
 
-An event, each with chat, turn ordinal and time:
+An event is about a **subject**: an item, or a memory record by its `uid` where no item covers
+it. An item names the memory `uid`s it was made from, so a row and its item are one subject.
+Each event carries chat, turn ordinal and time:
 
 - `introduced`: the item first appears, and who brought it.
 - `cued`: the owner's words reached it, with the retrieval's score and how many other items
@@ -201,10 +202,17 @@ An event, each with chat, turn ordinal and time:
 - `taken_up` / `passed` / `repaired`: what the owner's next turn did with it.
 - `withheld`: it was eligible and deliberately not offered (§8.2).
 
-**Activation is derived, never stored.** It is a pure function of the event log and the clock:
+**What changes is derived, never stored.** How far an item is shared (said, acknowledged, taken
+up by the owner), whether a thread has been raised or closed and whose move it is, and an
+item's activation are all folds over the event log; none needs a model. So when a chat is
+forgotten and its events go, nothing an erased event justified is left standing on the item.
+Activation is a pure function of the event log and the clock:
 it rises with a mention or a cue and falls with turns and with days. Because it is a function,
 changing its shape re-reads the same log rather than migrating a store, and a replay can compare
 two shapes on one recorded chat.
+
+**A closed set on an append-only store is a wire format.** An item kind or an event the code
+does not know loads as unknown and is skipped by every fold; it never fails the record.
 
 **Who writes.** In a chat, code appends events only: which items were cued and offered is known
 to the harness, and whether the reply said one is read from the reply against the item's handle
@@ -226,7 +234,12 @@ poor memory for whom they told (§2.1).
 
 ### 5.2 Cued
 
-Per-turn recall stays keyed to the owner's words. Between retrieval and the prompt goes a gate:
+Per-turn recall stays keyed to the owner's words. Between retrieval and the prompt goes a gate.
+**It governs the whole per-turn fold, memory rows included**: `recall::per_turn`'s three rows
+are where today's over-mention comes from (§2.6), so a gate over items alone would leave it
+untouched. A retrieved row is a subject like any other, by its item where it has one and by its
+`uid` where it does not, and it passes the same tests. Nothing is lost that the persona can
+still reach: `memory_search` remains its own to call.
 
 - **Distinctive.** A cue that reaches many items offers none (§2.4).
 - **One.** At most one item is offered for a reply.
@@ -242,7 +255,7 @@ unpack a pair's shorthand (§2.2), and pretending to is the wrong recall that re
 
 ### 5.3 Compressed
 
-The note that offers an item names the form to use, chosen from its `grounded` state and its
+The note that offers an item names the form to use, chosen from how far it is shared (derived, §4) and its
 activation: the full description at first mention; the handle once it has been taken up; a
 fuller reintroduction when it has been inactive for days. After a `repaired` event the form
 steps back out. This is the behaviour models lack and the one §2.3 ties to closeness, and it is
@@ -251,7 +264,7 @@ curves do.
 
 ### 5.4 Returned to
 
-- **Threads.** An unfinished thread or a stated plan carries a `due`. It is offered once, at a
+- **Threads.** An unfinished thread or a stated plan may carry a `due_at`; whether it has been raised or closed is derived (§4). It is offered once, at a
   chat's opening or a change of topic, never across what the owner is in the middle of saying.
   If the owner passes it, it closes.
 - **Callbacks.** A callback is an item reused in a new context: the owner's current words cue
@@ -270,8 +283,11 @@ curves do.
 - **The cached prefix is untouched.** Nothing per chat enters the system prompt.
 - **The typed shown set.** The `offered` event is the record `PERSONA-LIFE-DESIGN` §4.5 already
   asked for beside `Record::Notes`: which items rode, not only which text.
-- **D28.** The event log is the access log D28 ruled, extended from "recalled" to "offered,
-  said and received". D28 also ruled that by default nothing in the log changes what is
+- **D28.** Step 1 builds D28's log as ruled, and the ground's events are rows in it: every
+  access to a memory record at chat start, per turn, by `memory_search` and by `memory_read`,
+  keyed by `uid`, with the harness's doors counted apart from the persona's own calls, beside
+  the owner's curation acts. `cued` and `offered` carry the `uid`s they came from, so D28's
+  report reads off the same log and the ground adds what was said and how it was received. D28 also ruled that by default nothing in the log changes what is
   recalled, "because use-driven strengthening is how a persona fixates". Memory ranking keeps
   that. **The gate of §5.2 and the form of §5.3 are a departure from it**: they read the log to
   decide what is offered and how. The direction is the opposite of the one D28 feared, since a
@@ -289,19 +305,25 @@ curves do.
 - **Forgetting is complete.** `persona::memory::forget_chat` erases every item sourced to a
   chat, and every event from that chat. An item has one source, the chat that introduced it,
   and it goes with that chat, events from other chats included: D27's interim rule, kept so the
-  erase stays deterministic and no model runs inside it. An item's earlier forms and its
-  meaning are wording from the chat that introduced it, so nothing of them may outlive it. If
-  the pair brings the thing up again later, the writer makes a new item from that chat.
+  erase stays deterministic and no model runs inside it. Its `meaning` is written once, by the
+  introducing chat's pass, and never sharpened from a later chat. Its forms do accrue as the
+  pair shortens them, so each form carries the chat it was first used in: forgetting that chat
+  drops the forms it coined, and the reference steps back out to the longest form left. If the
+  pair brings a forgotten thing up again later, the writer makes a new item from that chat.
 - **Incognito writes nothing.** An incognito chat reads the ground and appends no event.
 - **Taint.** An item from an untrusted stretch is a candidate, as an untrusted memory row is:
   it is stored and enters no prompt, neither as background nor as an offer, until the owner
   approves it, and an approved one rides under the untrusted stem. Its `meaning` is model-written
   prose about outside content, and the ground is per persona, so it would otherwise surface in a
   chat that never saw the stretch it came from. A tainted stretch can mark an item said; it
-  cannot mark one taken up.
+  cannot mark one taken up. Marking said silences an item, so it is bounded as
+  `PERSONA-LIFE-DESIGN` §4.5 bounds `told`: only a subject this chat's notes recorded as
+  offered or as background, matched against that recorded id list and never against a note's
+  text, and any other id is refused.
 - **Recall stays keyed to the owner's words**, never the persona's.
 - **Nothing crosses personas**, and nothing reaches the knowledge graph.
-- **Lock hides.** A locked chat's items are not offered in another chat.
+- **Lock is `PERSONA-DESIGN` §9.9's, unchanged.** Locking hides the chat; the writer still
+  reads it, and its items behave in other chats as its memory rows do.
 
 ## 8. The instrument
 
@@ -343,10 +365,13 @@ notes at the branch point.
 
 1. **Record only.** The store, the event log, `introduced`/`cued`/`said`/`taken_up` derived
    from chats as they happen, and the nightly item pass. No prompt changes. Read the baseline:
-   today's re-telling rate, reference lengths, insider rate. This is D28 and the typed shown
-   set, built once.
-2. **Told and the gate.** `today::Ledger` moves onto the store; per-turn recall goes through
-   the gate; background and offer become separate notes. Replay mode for recomputed notes.
+   today's re-telling rate, reference lengths, insider rate, and how often the open threads
+   that already ride in recall are raised. This is D28 as ruled (§6) and the typed shown set,
+   built once.
+2. **Told and the gate.** `today::Ledger` moves onto the store; the whole per-turn fold goes
+   through the gate, rows and items alike; background and offer become separate notes. This is
+   the largest change to what a persona is told, since most of today's per-turn rows will not
+   pass, and it is measured on replay before it is switched on. Replay mode for recomputed notes.
    Measured against step 1's baseline: re-telling and over-mention should fall.
 3. **Compression.** The offer names the form. Measured: reference length over mentions.
 4. **Threads, then callbacks.** Each behind its own switch per persona, each measured before it
