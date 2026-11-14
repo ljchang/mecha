@@ -93,6 +93,7 @@ pub mod forget;
 pub mod form_draft;
 pub mod frontdoor;
 pub mod goal;
+pub mod goal_context;
 pub mod gossip;
 pub mod grant;
 pub mod graph_mcp;
@@ -108,6 +109,7 @@ pub mod imagegen;
 pub mod imagelib;
 pub mod install;
 pub mod instrument;
+mod interpretation;
 pub mod interpreter;
 pub mod jobs;
 pub mod launchd;
@@ -124,6 +126,52 @@ pub mod mail_triage;
 pub mod mailbox;
 pub mod mcp;
 pub mod mdform;
+#[cfg(feature = "memory-prototype")]
+pub mod memory;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_action_runtime;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_atomic_workflow;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_bridge_trial;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_concept_workflow;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_decision_runtime;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_experience_bridge;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_factual_support;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_hybrid_workflow;
+#[cfg(feature = "memory-prototype")]
+mod memory_native_completion;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_native_workflow;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_outcome_reappraisal;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_runtime;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_session;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_situated_appraisal;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_situated_needs;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_situated_workflow;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_support_atomic;
+#[cfg(feature = "memory-prototype")]
+mod memory_support_evidence;
+#[cfg(feature = "memory-prototype")]
+mod memory_support_reasoning;
+#[cfg(feature = "memory-prototype")]
+mod memory_support_wire;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_support_workflow;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_trial_provider;
 pub mod message;
 pub mod on_demand;
 pub mod onboarding;

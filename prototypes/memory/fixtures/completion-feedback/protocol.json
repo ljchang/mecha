@@ -1,0 +1,57 @@
+{
+  "protocol": "native-completion-development-v1",
+  "suite_candidate": "mecha-memory-development-v0.1/completion",
+  "status": "public-development-regression-candidate",
+  "fixture": "cases.json",
+  "synthetic_only": true,
+  "seed_experience": "Three authored OpenAI-compatible tool trajectories through actual native fs_read/fs_write/check/capture. Acquisition qualification only; not model quality.",
+  "scored_sessions": 8,
+  "arms": [
+    "off",
+    "on"
+  ],
+  "recall": "Fixed lexical query in both arms, one admitted read, no bindings or alternate source files.",
+  "public_shape": {
+    "rows": 1,
+    "keys": [
+      "choice"
+    ]
+  },
+  "budgets": {
+    "anchors": 3,
+    "neighbors": 0,
+    "packet_bytes": 20000,
+    "retrieval_seconds": 15,
+    "max_turns": 6,
+    "max_output_tokens": 16384,
+    "session_seconds": 180,
+    "feedback_interventions": 1,
+    "observer_seconds": 2
+  },
+  "controls": {
+    "temperature": 0.6,
+    "max_tokens": 4096,
+    "retries": 0,
+    "concurrency": 1,
+    "thinking": false
+  },
+  "treatment": "Only the explicit completion request is enabled in on. Both arms receive identical public task, shape instructions, lexical recall, model settings, seed, authority and initial memory; feedback continues within the original budget.",
+  "freeze": "Independent fixture/protocol review precedes real inference. Seal exact source, fixture, protocol, scorer/helper, executable and runtime identities plus seed originals, initial DB/authority and all eight ordered slots. Gold and source files stay outside the model workspace.",
+  "pairing": "Four decision cases from three authored episode families, one seed each, alternating off/on order. Separate full DB and authority copies per slot; immutable original transcript paths remain outside both jails. Initial provider requests must match within each pair.",
+  "portable_score": "Read only the bounded regular output.json independently: exact public format completion, semantic choice correctness, supported-case correctness, irrelevant/withdrawn unknown controls. No Mecha receipt required for artifact credit. Correct guesses without delivered support stay distinguishable.",
+  "mecha_qualification": "Separate one exact lexical goal_context attempt/status, canonical original evidence delivery, active capture receipt/dependency closure, unchanged authority and withdrawn-source exclusion. Completion report and actual provider feedback receipt are audited separately; successful report text never substitutes for an artifact.",
+  "cost": "Preserve all first provider requests/responses/errors and dispatch wall time. Full input/output token totals are null when any response is unavailable; known partial usage remains visible. Authored acquisition cost is separate and counted once. Do not report feedback appending as delivery without a subsequent audited provider request.",
+  "failure": "Eight planned follow-ups remain in every denominator, including not-started, timeout, provider, file, protocol and capture failures. Exclusive started/result writes forbid replay, replacement or repair of a scored slot. A new run uses a new namespace and retains earlier results.",
+  "recurring_use": "Known public development data, not a holdout. Future baseline/candidate runs must retain protocol versions and first artifacts, match environments and separate changed scorers. Other harness adapters may reuse episodes/public task/artifact scorer without implementing Mecha internals; unsupported provenance capabilities are reported separately.",
+  "scope": "Four cases share three source families (C01/C03 share S1); they are not four independent family samples. Small paired execution-feedback comparison with authored prior experiences. No generalization, vector superiority, full-lifetime acquisition quality or broad reasoning claim. Original native-vector and other cohorts remain unchanged.",
+  "feature_profile": {
+    "episodic_memory": "enabled",
+    "lexical_recall": "enabled",
+    "adaptive_learning": "frozen",
+    "concept_induction": "disabled",
+    "concept_revision": "disabled",
+    "policy_updates": "disabled",
+    "qualification": "Completion ablation only; not a full memory-and-learning benchmark. Broader suite primary profile enables both, with neither and memory-only ablations."
+  },
+  "authored_gate_parity": "Root ruling after preserved cli-gate-v2-01 failure: compare server-observed POST1 exactly and POST2 with only parsed native memory.valid_at wall-clock metadata excluded. Record both raw timestamps and signed delta. This synthetic fixture has no bounded validity windows; all other packet/request contents, including record/event/interval timestamps, must match. Raw wire requests and first failed gate remain unchanged. This normalization is authored qualification only, not a relaxation of scored initial-request parity."
+}

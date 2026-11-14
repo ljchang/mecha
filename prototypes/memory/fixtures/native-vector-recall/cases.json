@@ -1,0 +1,187 @@
+{
+  "version": 1,
+  "synthetic_only": true,
+  "domain": "synthetic-native-vector",
+  "account": "synthetic",
+  "scopes": [
+    "synthetic"
+  ],
+  "goal": "task:synthetic-choice",
+  "goal_text": "Choose a method using observed evidence under the current criterion.",
+  "seeds": [
+    {
+      "id": "S1",
+      "observation": "MK7 transfers records in 2 hours but omits audit columns. UP4 takes 6 hours and preserves every column.",
+      "old_criterion": "Choose the fastest transfer method; loss of columns is acceptable.",
+      "old_choice": "MK7",
+      "decisive_span": "UP4 takes 6 hours and preserves every column."
+    },
+    {
+      "id": "S2",
+      "observation": "FK2 settles in 3 minutes but erases weak spectral features. XQ9 takes 8 minutes and retains faint lines.",
+      "old_criterion": "Choose the fastest settling method; weak features may be lost.",
+      "old_choice": "FK2",
+      "decisive_span": "XQ9 takes 8 minutes and retains faint lines."
+    },
+    {
+      "id": "S3",
+      "observation": "BD5 packs 7 crates per hour but bruises thin-glass units. HN6 packs 3 per hour and leaves delicate units intact.",
+      "old_criterion": "Choose the highest packing throughput; damage to delicate units is acceptable.",
+      "old_choice": "BD5",
+      "decisive_span": "HN6 packs 3 per hour and leaves delicate units intact."
+    },
+    {
+      "id": "S4",
+      "observation": "CY3 produces a 40 MB archive and discards arrival order. LT8 produces a 90 MB archive and retains sequence.",
+      "old_criterion": "Choose the smallest archive; arrival order is unimportant.",
+      "old_choice": "CY3",
+      "decisive_span": "LT8 produces a 90 MB archive and retains sequence."
+    }
+  ],
+  "cases": [
+    {
+      "id": "P01",
+      "stratum": "paraphrase",
+      "source": "S1",
+      "query": "earlier data movement retaining the full record structure",
+      "current_criterion": "Choose a method that retains the entire record, even if slower.",
+      "expected_rows": [
+        {
+          "choice": "UP4"
+        }
+      ],
+      "withdraw": false,
+      "seed": 70520,
+      "order": [
+        "lexical",
+        "dense"
+      ]
+    },
+    {
+      "id": "P02",
+      "stratum": "paraphrase",
+      "source": "S2",
+      "query": "earlier measurements preserving faint signal detail",
+      "current_criterion": "Choose a method that preserves faint signal information, even if settling takes longer.",
+      "expected_rows": [
+        {
+          "choice": "XQ9"
+        }
+      ],
+      "withdraw": false,
+      "seed": 70521,
+      "order": [
+        "dense",
+        "lexical"
+      ]
+    },
+    {
+      "id": "P03",
+      "stratum": "paraphrase",
+      "source": "S3",
+      "query": "handling method that avoided damage to breakable items",
+      "current_criterion": "Choose a method that protects fragile items, even if fewer can be processed.",
+      "expected_rows": [
+        {
+          "choice": "HN6"
+        }
+      ],
+      "withdraw": false,
+      "seed": 70522,
+      "order": [
+        "lexical",
+        "dense"
+      ]
+    },
+    {
+      "id": "P04",
+      "stratum": "paraphrase",
+      "source": "S4",
+      "query": "archiving result suitable for chronological reconstruction",
+      "current_criterion": "Choose a method that preserves chronology, even if storage is larger.",
+      "expected_rows": [
+        {
+          "choice": "LT8"
+        }
+      ],
+      "withdraw": false,
+      "seed": 70523,
+      "order": [
+        "dense",
+        "lexical"
+      ]
+    },
+    {
+      "id": "L01",
+      "stratum": "exact_identifier",
+      "source": "S1",
+      "query": "MK7",
+      "current_criterion": "Choose a method that retains the entire record, even if slower.",
+      "expected_rows": [
+        {
+          "choice": "UP4"
+        }
+      ],
+      "withdraw": false,
+      "seed": 70524,
+      "order": [
+        "lexical",
+        "dense"
+      ]
+    },
+    {
+      "id": "L02",
+      "stratum": "exact_identifier",
+      "source": "S2",
+      "query": "FK2",
+      "current_criterion": "Choose a method that preserves faint signal information, even if settling takes longer.",
+      "expected_rows": [
+        {
+          "choice": "XQ9"
+        }
+      ],
+      "withdraw": false,
+      "seed": 70525,
+      "order": [
+        "dense",
+        "lexical"
+      ]
+    },
+    {
+      "id": "N01",
+      "stratum": "missing_evidence",
+      "source": null,
+      "query": "previously measured corrosion after saline immersion",
+      "current_criterion": "Choose a method with observed resistance to salt corrosion.",
+      "expected_rows": [
+        {
+          "choice": "unknown"
+        }
+      ],
+      "withdraw": false,
+      "seed": 70526,
+      "order": [
+        "lexical",
+        "dense"
+      ]
+    },
+    {
+      "id": "N02",
+      "stratum": "withdrawn_evidence",
+      "source": "S4",
+      "query": "archiving result suitable for chronological reconstruction",
+      "current_criterion": "Choose a method that preserves chronology, even if storage is larger.",
+      "expected_rows": [
+        {
+          "choice": "unknown"
+        }
+      ],
+      "withdraw": true,
+      "seed": 70527,
+      "order": [
+        "dense",
+        "lexical"
+      ]
+    }
+  ]
+}

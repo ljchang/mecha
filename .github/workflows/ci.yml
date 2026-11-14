@@ -144,6 +144,71 @@ jobs:
           MECHA_SESSION_KIND: test
         run: cargo test --workspace --locked
 
+      # The default-off prototype has security/lifecycle tests of its own.
+      # Execute them on one pinned leg; all-feature clippy only type-checks them.
+      - name: Test experimental memory
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        run: cargo test --workspace --locked --features memory-prototype
+        env:
+          MECHA_SESSION_KIND: test
+
+      # The standalone memory harness and independent pilot rubrics are not
+      # workspace members, so workspace tests cannot execute either suite.
+      - name: Test standalone memory harness
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        working-directory: prototypes/memory
+        run: cargo test --locked
+        env:
+          MECHA_SESSION_KIND: test
+          # Shared core files expose runtime APIs this standalone subset never
+          # invokes; keep every other warning fatal, as in the workspace.
+          RUSTFLAGS: -D warnings -A dead_code
+
+      - name: Build experimental memory CLI
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        run: cargo build -p mecha-cli --locked --features memory-prototype
+
+      - name: Test encrypted multi-turn chat CLI
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        timeout-minutes: 3
+        run: python3 prototypes/memory/chat_cli_smoke.py target/debug/mecha "$RUNNER_TEMP/mecha-chat-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
+      - name: Test selected graph in encrypted chat
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        timeout-minutes: 3
+        run: python3 prototypes/memory/chat_graph_cli_smoke.py target/debug/mecha "$RUNNER_TEMP/mecha-chat-graph-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
+      - name: Test authenticated web dynamic goals
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        timeout-minutes: 3
+        run: python3 prototypes/memory/web_dynamic_smoke.py target/debug/mecha "$RUNNER_TEMP/mecha-web-dynamic-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
+      - name: Build synthetic encrypted task inspector
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        run: cargo build -p mecha-core --locked --features memory-prototype --example memory_task_plan_inspect
+
+      - name: Test durable task chat and crash recovery
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        timeout-minutes: 3
+        run: python3 prototypes/memory/chat_task_cli_smoke.py target/debug/mecha "$RUNNER_TEMP/mecha-task-chat-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --inspect target/debug/examples/memory_task_plan_inspect
+
+      - name: Test authenticated encrypted web chat
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        timeout-minutes: 3
+        run: python3 prototypes/memory/web_memory_smoke.py target/debug/mecha "$RUNNER_TEMP/mecha-web-memory-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
+      - name: Build authored support contract binary
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        run: cargo build -p mecha-core --locked --features memory-prototype --example memory_support_trial --example memory_atomic_trial
+
+      - name: Test memory Python pilots
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        run: |
+          python3 prototypes/memory/ci_qualification.py --binary target/debug/mecha
+          MECHA_SUPPORT_NATIVE_BINARY="$PWD/target/debug/examples/memory_support_trial" MECHA_ATOMIC_NATIVE_BINARY="$PWD/target/debug/examples/memory_atomic_trial" python3 -m unittest discover -s prototypes/memory/tests -p 'test_*.py' -v
+        env:
+          MECHA_SESSION_KIND: test
+
   no-logs:
     # No logs, recordings or run output in a public repository (owner's
     # ruling, 2026-10-04). The pre-commit and pre-push hooks compare added text
@@ -385,7 +450,7 @@ jobs:
       - name: Integration tests, with skips promoted to failures
         env:
           MECHA_TEST_REQUIRE_BACKENDS: "1"
-        run: cargo test --workspace --locked --test sandbox_backends --test mcp_server --test run_lifecycle --test serve_lifecycle --test driven_run
+        run: cargo test --workspace --locked --test sandbox_backends --test mcp_server --test mcp_selected_graph --test run_lifecycle --test serve_lifecycle --test driven_run
 
       # Code mode's interpreter: the pinned monty worker inside bwrap. The
       # test fetches the worker's wheel itself (`worker::ensure`, sha256-

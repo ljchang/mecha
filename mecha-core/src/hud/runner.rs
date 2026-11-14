@@ -13,8 +13,8 @@
 //!   `RECURSIVE` are allowed and every other action is denied, which needs no
 //!   knowledge of how a given statement is implemented (`VACUUM INTO` runs as
 //!   an `ATTACH`; this is what refuses it);
-//! - **functions by name** — `load_extension()` and `fts3_tokenizer()` arrive
-//!   as `FUNCTION`, which the allowlist admits, so they are refused by name;
+//! - **functions by name** — `load_extension()`, `fts3_tokenizer()` and
+//!   `sqlcipher_export()` arrive as `FUNCTION` and are refused by name;
 //!   the load-extension switch is also off, as SQLite ships it, and nothing
 //!   here turns it on;
 //! - **one statement** — `prepare` refuses a tail, and the prepared statement
@@ -128,7 +128,7 @@ impl std::fmt::Display for RunError {
 impl std::error::Error for RunError {}
 
 /// Functions the allowlist would admit as `FUNCTION` and must not.
-const REFUSED_FUNCTIONS: &[&str] = &["load_extension", "fts3_tokenizer"];
+const REFUSED_FUNCTIONS: &[&str] = &["load_extension", "fts3_tokenizer", "sqlcipher_export"];
 
 /// Run `query` against the SQLite file at `path`, confined (module docs).
 pub fn run_sqlite(
@@ -137,12 +137,12 @@ pub fn run_sqlite(
     max_rows: u32,
     timeout: Duration,
 ) -> Result<Fetched, RunError> {
-    let conn = Connection::open_with_flags(
+    let mut conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| RunError::Open(e.to_string()))?;
-    confine(&conn).map_err(|e| RunError::Open(e.to_string()))?;
+    confine(&mut conn).map_err(|e| RunError::Open(e.to_string()))?;
     // A writer mid-commit (the host sampler) makes a reader wait rather than
     // fail the refresh: the timers are offset, and this is the backstop for
     // when they are not. rusqlite already defaults to five seconds; set here
@@ -186,7 +186,7 @@ pub fn run_sqlite(
     if !stmt.readonly() {
         return Err(RunError::NotReadOnly);
     }
-    let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+    let columns: Vec<String> = stmt.column_names().map(|c| c.to_string()).collect();
     let mut rows = stmt.query([]).map_err(sql_error)?;
 
     let mut out = Vec::new();
@@ -239,7 +239,7 @@ fn no_attached_databases(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 /// The four confinements, applied before any statement is prepared.
-fn confine(conn: &Connection) -> rusqlite::Result<()> {
+fn confine(conn: &mut Connection) -> rusqlite::Result<()> {
     no_attached_databases(conn)?;
     conn.authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {
         AuthAction::Select | AuthAction::Read { .. } | AuthAction::Recursive => {
@@ -281,4 +281,152 @@ mod layers {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(err.contains("too many attached databases"), "{err}");
     }
+}
+
+#[cfg(all(test, feature = "memory-prototype"))]
+#[test]
+fn cipher_export_is_refused_by_the_authorizer_at_preparation() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch("CREATE VIEW export_probe AS SELECT sqlcipher_export('other');")
+        .unwrap();
+    let queries = [
+        "SELECT SqLcIpHeR_ExPoRt('other')",
+        "SELECT sqlcipher_export('other', 'main')",
+        "SELECT (SELECT sqlcipher_export('other'))",
+        "SELECT * FROM export_probe",
+    ];
+    for sql in queries {
+        assert!(
+            connection.prepare(sql).is_ok(),
+            "export builtin unavailable for {sql}"
+        );
+    }
+    confine(&mut connection).unwrap();
+    for sql in queries {
+        let error = connection
+            .prepare(sql)
+            .expect_err("export must fail at prepare");
+        assert!(
+            error.to_string().contains("not authorized to use function"),
+            "{error}"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "memory-prototype"))]
+#[test]
+fn cipher_pragmas_are_refused_without_mutating_global_defaults_or_files() {
+    use std::{fs, process::Command};
+
+    const PROBE_DIR: &str = "MECHA_HUD_CIPHER_PRAGMA_PROBE_DIR";
+    let Some(root) = std::env::var_os(PROBE_DIR).map(std::path::PathBuf::from) else {
+        // SQLCipher settings can act during preparation and are process-wide.
+        // A regressing authorizer must not alter concurrent tests.
+        let root = std::env::temp_dir().join(format!("mecha-hud-cipher-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let test_name = concat!(
+            module_path!(),
+            "::cipher_pragmas_are_refused_without_mutating_global_defaults_or_files"
+        );
+        let (_, name) = test_name.split_once("::").unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"])
+            .env(PROBE_DIR, &root)
+            .output()
+            .unwrap();
+        fs::remove_dir_all(root).unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+
+    let log = root.join("cipher.log");
+    let db = root.join("plain.sqlite");
+    let trusted = Connection::open(&db).unwrap();
+    trusted
+        .execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (7);")
+        .unwrap();
+    let read_defaults = || {
+        [
+            "cipher_default_kdf_iter",
+            "cipher_default_use_hmac",
+            "cipher_default_plaintext_header_size",
+            "cipher_log_level",
+        ]
+        .map(|name| {
+            // SQLCipher's PRAGMAs are not listed by SQLite's pragma_list;
+            // query fixed statements directly.
+            trusted
+                .query_row(&format!("PRAGMA {name}"), [], |r| {
+                    r.get::<_, rusqlite::types::Value>(0)
+                })
+                .unwrap()
+        })
+    };
+    let defaults = read_defaults();
+    let before = fs::read(&db).unwrap();
+    let quoted_log = log.to_string_lossy().replace('\'', "''");
+    let log_pragma = format!("PRAGMA cipher_log = '{quoted_log}'");
+    for query in [
+        log_pragma.as_str(),
+        "PRAGMA cipher_log_level = 'none'",
+        "PRAGMA cipher_default_kdf_iter = 12345",
+        "PRAGMA cipher_default_use_hmac = OFF",
+        "PRAGMA cipher_default_plaintext_header_size = 32",
+        "PRAGMA cipher_migrate",
+        "PRAGMA key = 'authored-fixture'",
+        "PRAGMA rekey = 'authored-fixture'",
+    ] {
+        assert!(
+            matches!(
+                run_sqlite(&db, query, 1, Duration::from_secs(1)),
+                Err(RunError::NotAllowed(_))
+            ),
+            "{query}"
+        );
+    }
+    // Optional table-valued access must not succeed.
+    assert!(run_sqlite(
+        &db,
+        "SELECT * FROM pragma_cipher_default_use_hmac",
+        1,
+        Duration::from_secs(1)
+    )
+    .is_err());
+    assert!(!log.exists());
+    assert_eq!(fs::read(&db).unwrap(), before);
+    assert_eq!(read_defaults(), defaults);
+}
+
+/// Default builds use ordinary SQLite; optional encrypted memory alone opts in
+/// to SQLCipher's extra runtime surface and native cryptographic dependency.
+#[cfg(all(test, not(feature = "memory-prototype")))]
+#[test]
+fn default_sqlite_build_has_no_cipher_backend() {
+    let connection = Connection::open_in_memory().unwrap();
+    let version: String = connection
+        .query_row("SELECT sqlite_version()", [], |row| row.get(0))
+        .unwrap();
+    assert!(!version.is_empty(), "ordinary SQLite must remain available");
+    connection.execute_batch("CREATE VIRTUAL TABLE default_fts_probe USING fts5(text); INSERT INTO default_fts_probe VALUES('synthetic zircon');").unwrap();
+    let hits: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM default_fts_probe WHERE default_fts_probe MATCH 'zircon'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(hits, 1, "ordinary builds must retain working FTS5");
+    println!("Default SQLite runtime: {version}; FTS5 matched rows: {hits}");
+
+    let mut statement = connection.prepare("PRAGMA cipher_version").unwrap();
+    assert!(
+        statement.query([]).unwrap().next().unwrap().is_none(),
+        "default build unexpectedly includes the optional SQLCipher backend"
+    );
 }

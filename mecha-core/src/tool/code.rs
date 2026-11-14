@@ -506,7 +506,7 @@ pub(crate) enum PassAnswer {
     Failed(String),
     /// Sent and answered: the response as the provider gave it, for the
     /// host to check (the envelope, then the shape).
-    Answered(CompletionResponse),
+    Answered(Box<CompletionResponse>),
 }
 
 /// What the gate made of one host call.
@@ -1598,7 +1598,7 @@ impl Run {
                     self.subcall_tokens = self.subcall_tokens.saturating_add(estimate);
                     return Err((Tag::QueryError, format!("the pass failed: {why}")));
                 }
-                PassAnswer::Answered(r) => r,
+                PassAnswer::Answered(r) => *r,
             };
             self.subcalls += 1;
             self.usage.add(&resp.usage);

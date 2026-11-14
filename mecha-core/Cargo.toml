@@ -17,6 +17,8 @@ dirs.workspace = true
 futures.workspace = true
 image.workspace = true
 libc.workspace = true
+getrandom = { version = "0.3", optional = true }
+zeroize = { version = "1", optional = true }
 matrixmultiply.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
@@ -53,8 +55,13 @@ flate2 = "1"
 
 [features]
 default = ["monty"]
+memory-prototype = ["rusqlite/bundled-sqlcipher-vendored-openssl", "dep:getrandom", "dep:zeroize"]
 # The monty backend for code mode, and the worker pool it drives.
 monty = ["dep:monty-pool", "dep:monty-types"]
+
+[[example]]
+name = "memory_task_plan_inspect"
+required-features = ["memory-prototype"]
 
 # Landlock is a Linux LSM; the crate does not build elsewhere. Everything
 # that uses it in sandbox.rs is behind cfg(target_os = "linux").

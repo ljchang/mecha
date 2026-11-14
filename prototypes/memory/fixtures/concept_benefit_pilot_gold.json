@@ -1,0 +1,172 @@
+{
+  "version": 1,
+  "world": "delivery_boolean_v1",
+  "tie_policy": "Any common minimum-cost action is correct; no common minimum requires insufficient_evidence.",
+  "premise_policy": "Frozen sufficient original-premise sets measure citation coverage, not prose entailment. Historical episodes and concepts cannot establish current observations. For uncertainty, cite the explicitly unknown observation and enough current facts to establish competing optima.",
+  "limitations": [
+    "Complete explicit decision rules may create a ceiling; this six-case pilot cannot establish broad concept generalization.",
+    "The hidden completion is diagnostic only; it never determines evidence-appropriate choice.",
+    "No unchanged-concept third arm exists; revised-phase utility cannot isolate causal revision benefit.",
+    "Initial and revised cases differ; before/after aggregate gains are not identified."
+  ],
+  "cases": [
+    {
+      "id": "i_applicable",
+      "phase": "initial",
+      "observed": {
+        "shared_ready": true,
+        "primary_clear": false,
+        "alternate_clear": true
+      },
+      "hidden": {
+        "shared_ready": true,
+        "primary_clear": false,
+        "alternate_clear": true
+      },
+      "sufficient_premise_sets": [
+        [
+          "i_applicable_rules",
+          "i_applicable_shared_ready",
+          "i_applicable_primary_clear",
+          "i_applicable_alternate_clear"
+        ]
+      ],
+      "costs": {
+        "primary": 2,
+        "alternate": 3,
+        "repair_shared": 8
+      }
+    },
+    {
+      "id": "i_exception",
+      "phase": "initial",
+      "observed": {
+        "shared_ready": true,
+        "primary_clear": true,
+        "alternate_clear": true
+      },
+      "hidden": {
+        "shared_ready": true,
+        "primary_clear": true,
+        "alternate_clear": true
+      },
+      "sufficient_premise_sets": [
+        [
+          "i_exception_rules",
+          "i_exception_shared_ready",
+          "i_exception_primary_clear"
+        ]
+      ],
+      "costs": {
+        "primary": 2,
+        "alternate": 3,
+        "repair_shared": 8
+      }
+    },
+    {
+      "id": "i_unknown",
+      "phase": "initial",
+      "observed": {
+        "shared_ready": null,
+        "primary_clear": false,
+        "alternate_clear": true
+      },
+      "hidden": {
+        "shared_ready": true,
+        "primary_clear": false,
+        "alternate_clear": true
+      },
+      "sufficient_premise_sets": [
+        [
+          "i_unknown_rules",
+          "i_unknown_shared_ready",
+          "i_unknown_alternate_clear"
+        ]
+      ],
+      "costs": {
+        "primary": 2,
+        "alternate": 3,
+        "repair_shared": 8
+      }
+    },
+    {
+      "id": "r_applicable",
+      "phase": "revised",
+      "observed": {
+        "shared_ready": true,
+        "primary_clear": false,
+        "alternate_clear": true
+      },
+      "hidden": {
+        "shared_ready": true,
+        "primary_clear": false,
+        "alternate_clear": true
+      },
+      "sufficient_premise_sets": [
+        [
+          "r_applicable_rules",
+          "r_applicable_shared_ready",
+          "r_applicable_primary_clear",
+          "r_applicable_alternate_clear"
+        ]
+      ],
+      "costs": {
+        "primary": 4,
+        "alternate": 6,
+        "repair_shared": 11
+      }
+    },
+    {
+      "id": "r_exception",
+      "phase": "revised",
+      "observed": {
+        "shared_ready": false,
+        "primary_clear": true,
+        "alternate_clear": true
+      },
+      "hidden": {
+        "shared_ready": false,
+        "primary_clear": true,
+        "alternate_clear": true
+      },
+      "sufficient_premise_sets": [
+        [
+          "r_exception_rules",
+          "r_exception_shared_ready"
+        ]
+      ],
+      "costs": {
+        "primary": 4,
+        "alternate": 6,
+        "repair_shared": 11
+      }
+    },
+    {
+      "id": "r_unknown",
+      "phase": "revised",
+      "observed": {
+        "shared_ready": true,
+        "primary_clear": false,
+        "alternate_clear": null
+      },
+      "hidden": {
+        "shared_ready": true,
+        "primary_clear": false,
+        "alternate_clear": false
+      },
+      "sufficient_premise_sets": [
+        [
+          "r_unknown_rules",
+          "r_unknown_shared_ready",
+          "r_unknown_primary_clear",
+          "r_unknown_alternate_clear"
+        ]
+      ],
+      "costs": {
+        "primary": 4,
+        "alternate": 6,
+        "repair_shared": 11
+      }
+    }
+  ]
+}

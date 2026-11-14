@@ -135,8 +135,56 @@ pub fn image_media_type(path: &std::path::Path) -> Option<&'static str> {
     })
 }
 
+/// Native-only durable planning receipt locators; never execution authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanResultAudit {
+    pub turn_id: String,
+    pub ordinal: u32,
+    pub result_index: usize,
+    pub revision_id: String,
+    pub receipt_id: String,
+    pub steps_start: usize,
+    pub steps_end: usize,
+    pub decisions_start: usize,
+    pub decisions_end: usize,
+}
+
+fn de_plan_results<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<PlanResultAudit>, D::Error> {
+    let audits = Vec::<PlanResultAudit>::deserialize(deserializer)?;
+    if audits.len() > 256
+        || audits.iter().any(|a| {
+            let bounded = |s: &str, max: usize| {
+                !s.is_empty() && s.len() <= max && !s.chars().any(char::is_control)
+            };
+            !bounded(&a.turn_id, 128)
+                || !bounded(&a.revision_id, 256)
+                || !bounded(&a.receipt_id, 256)
+                || a.ordinal >= 256
+                || a.result_index >= 256
+                || a.steps_start > a.steps_end
+                || a.steps_end > 8192
+                || a.decisions_start >= a.decisions_end
+                || a.decisions_end > 256
+        })
+    {
+        return Err(serde::de::Error::custom(
+            "invalid or oversized plan result audit",
+        ));
+    }
+    Ok(audits)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "de_plan_results"
+    )]
+    pub plan_results: Vec<PlanResultAudit>,
     /// Local provenance keyed by tool-use id. Absent means unknown for old
     /// recordings; provider encoders never put this metadata on the wire.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -159,6 +207,7 @@ impl Message {
     pub fn user(text: impl Into<String>) -> Self {
         Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -169,6 +218,7 @@ impl Message {
     pub fn assistant(content: Vec<Block>) -> Self {
         Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::Assistant,
@@ -181,6 +231,7 @@ impl Message {
     pub fn tool_results(results: Vec<Block>) -> Self {
         Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -1513,5 +1564,61 @@ mod tests {
             attach_notes(std::borrow::Cow::Borrowed(&history[..]), &[]),
             std::borrow::Cow::Borrowed(_)
         ));
+    }
+    #[test]
+    fn durable_plan_audit_survives_native_message_roundtrip() {
+        let value = serde_json::json!({"role":"user","content":[],"plan_results":[{
+            "turn_id":"synthetic-turn", "ordinal":0, "result_index":0,
+            "revision_id":"synthetic-revision", "receipt_id":"synthetic-receipt",
+            "steps_start":0,"steps_end":0,"decisions_start":0,"decisions_end":1
+        }]});
+        let message: Message = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(message).unwrap()["plan_results"],
+            value["plan_results"]
+        );
+    }
+    #[test]
+    fn durable_plan_audit_rejects_unbounded_native_locators() {
+        let value = serde_json::json!({"role":"user","content":[],"plan_results":[{
+            "turn_id":"x".repeat(129), "ordinal":256, "result_index":0,
+            "revision_id":"synthetic-revision", "receipt_id":"synthetic-receipt",
+            "steps_start":0,"steps_end":0,"decisions_start":0,"decisions_end":1
+        }]});
+        assert!(serde_json::from_value::<Message>(value).is_err());
+        assert!(serde_json::to_value(Message::user("fixture"))
+            .unwrap()
+            .get("plan_results")
+            .is_none());
+    }
+    #[test]
+    fn durable_plan_audit_checks_each_bound_independently() {
+        let valid = serde_json::json!({"role":"user","content":[],"plan_results":[{
+            "turn_id":"turn", "ordinal":0, "result_index":0,
+            "revision_id":"revision", "receipt_id":"receipt",
+            "steps_start":0,"steps_end":0,"decisions_start":0,"decisions_end":1
+        }]});
+        assert!(serde_json::from_value::<Message>(valid.clone()).is_ok());
+        for (field, bad) in [
+            ("turn_id", serde_json::json!("x".repeat(129))),
+            ("turn_id", serde_json::json!("")),
+            ("revision_id", serde_json::json!("x".repeat(257))),
+            ("receipt_id", serde_json::json!("x".repeat(257))),
+            ("revision_id", serde_json::json!("a\nb")),
+            ("receipt_id", serde_json::json!("")),
+            ("ordinal", serde_json::json!(256)),
+            ("result_index", serde_json::json!(256)),
+            ("steps_start", serde_json::json!(1)),
+            ("steps_end", serde_json::json!(8193)),
+            ("decisions_start", serde_json::json!(1)),
+            ("decisions_end", serde_json::json!(257)),
+        ] {
+            let mut value = valid.clone();
+            value["plan_results"][0][field] = bad;
+            assert!(serde_json::from_value::<Message>(value).is_err(), "{field}");
+        }
+        let mut count = valid.clone();
+        count["plan_results"] = serde_json::json!(vec![valid["plan_results"][0].clone(); 257]);
+        assert!(serde_json::from_value::<Message>(count).is_err());
     }
 }

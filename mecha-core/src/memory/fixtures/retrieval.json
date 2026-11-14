@@ -1,0 +1,447 @@
+{
+  "version": 1,
+  "sessions": [
+    {
+      "account": "synthetic",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"atlas\", \"created_at\": \"2026-01-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Atlas: The permit expires on Friday.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Atlas: Correction: the permit expires on Thursday.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Atlas: The launch requires the permit before assembly can start.\"}]}\n"
+    },
+    {
+      "account": "synthetic",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"birch\", \"created_at\": \"2026-01-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Birch: The shipment arrives on Monday.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Birch: Correction: the shipment arrives on Wednesday.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Birch: Calibration needs the sensor in that shipment.\"}]}\n"
+    },
+    {
+      "account": "synthetic",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"cedar\", \"created_at\": \"2026-01-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Cedar: The review is scheduled for Tuesday.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Cedar: Correction: the review is scheduled for Thursday.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Cedar: Submission requires the collaborator review first.\"}]}\n"
+    },
+    {
+      "account": "synthetic",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"dune\", \"created_at\": \"2026-01-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Dune: The reservation starts at nine.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Dune: Correction: the reservation starts at eleven.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Dune: Recording requires access to the reserved room.\"}]}\n"
+    },
+    {
+      "account": "synthetic",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"elm\", \"created_at\": \"2026-01-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Elm: The certificate remains valid until June.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Elm: Correction: the certificate expires in May.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Elm: External access requires a current certificate.\"}]}\n"
+    },
+    {
+      "account": "synthetic",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"fjord\", \"created_at\": \"2026-01-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Fjord: The battery holds six hours of charge.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Fjord: Correction: the battery holds two hours of charge.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Fjord: Field recording needs four hours of uninterrupted power.\"}]}\n"
+    },
+    {
+      "account": "synthetic",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"grove\", \"created_at\": \"2026-01-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Grove: The approval covers the entire purchase.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Grove: Correction: the approval covers only the smaller purchase.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Grove: Ordering the larger instrument requires additional approval.\"}]}\n"
+    },
+    {
+      "account": "synthetic",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"harbor\", \"created_at\": \"2026-01-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Harbor: The backup finished yesterday.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Harbor: Correction: the backup failed yesterday.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Harbor: Replacing the drive requires a verified backup first.\"}]}\n"
+    }
+  ],
+  "cases": [
+    {
+      "account": "synthetic",
+      "session_id": "atlas",
+      "id": "atlas-recall",
+      "category": "direct",
+      "question": "What was initially recorded about the permit?",
+      "query": "permit",
+      "occurred_before": "2026-01-03T00:00:00Z",
+      "expected_lines": [
+        2
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "atlas",
+      "id": "atlas-correction",
+      "category": "correction",
+      "question": "How was the information about the permit corrected?",
+      "query": "permit correction",
+      "expected_lines": [
+        2,
+        3
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "atlas",
+      "id": "atlas-time",
+      "category": "temporal",
+      "question": "What did the January 4 record say about the permit?",
+      "query": "permit",
+      "occurred_after": "2026-01-04T00:00:00Z",
+      "expected_lines": [
+        4
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "atlas",
+      "id": "atlas-implication",
+      "category": "indirect",
+      "question": "What could prevent completion of this objective?",
+      "query": "obstacles jeopardizing completion",
+      "goal": "The launch requires the permit before assembly can start.",
+      "homeostatic_context": "Normal time and compute budget.",
+      "expected_lines": [
+        3,
+        4
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "birch",
+      "id": "birch-recall",
+      "category": "changed_goal",
+      "question": "What should we do next?",
+      "query": "obstacles jeopardizing completion",
+      "expected_lines": [
+        2,
+        3
+      ],
+      "goal": "Document how earlier expectations changed; no action is required today.",
+      "homeostatic_context": "Plenty of time for retrospective review."
+    },
+    {
+      "account": "synthetic",
+      "session_id": "birch",
+      "id": "birch-correction",
+      "category": "correction",
+      "question": "How was the information about the shipment corrected?",
+      "query": "shipment correction",
+      "expected_lines": [
+        2,
+        3
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "birch",
+      "id": "birch-time",
+      "category": "temporal",
+      "question": "What did the January 4 record say about the shipment?",
+      "query": "shipment",
+      "occurred_after": "2026-01-04T00:00:00Z",
+      "expected_lines": [
+        4
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "birch",
+      "id": "birch-implication",
+      "category": "changed_goal",
+      "question": "What should we do next?",
+      "query": "obstacles jeopardizing completion",
+      "goal": "Calibration needs the sensor in that shipment.",
+      "homeostatic_context": "Time is scarce; prioritize feasibility before execution.",
+      "expected_lines": [
+        3,
+        4
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "cedar",
+      "id": "cedar-recall",
+      "category": "direct",
+      "question": "What was initially recorded about the review?",
+      "query": "review",
+      "occurred_before": "2026-01-03T00:00:00Z",
+      "expected_lines": [
+        2
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "cedar",
+      "id": "cedar-correction",
+      "category": "correction",
+      "question": "How was the information about the review corrected?",
+      "query": "review correction",
+      "expected_lines": [
+        2,
+        3
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "cedar",
+      "id": "cedar-time",
+      "category": "temporal",
+      "question": "What did the January 4 record say about the review?",
+      "query": "review",
+      "occurred_after": "2026-01-04T00:00:00Z",
+      "expected_lines": [
+        4
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "cedar",
+      "id": "cedar-implication",
+      "category": "indirect",
+      "question": "What could prevent completion of this objective?",
+      "query": "obstacles jeopardizing completion",
+      "goal": "Submission requires the collaborator review first.",
+      "homeostatic_context": "Normal time and compute budget.",
+      "expected_lines": [
+        3,
+        4
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "dune",
+      "id": "dune-recall",
+      "category": "changed_goal",
+      "question": "What should we do next?",
+      "query": "obstacles jeopardizing completion",
+      "expected_lines": [
+        2,
+        3
+      ],
+      "goal": "Document how earlier expectations changed; no action is required today.",
+      "homeostatic_context": "Plenty of time for retrospective review."
+    },
+    {
+      "account": "synthetic",
+      "session_id": "dune",
+      "id": "dune-correction",
+      "category": "correction",
+      "question": "How was the information about the reservation corrected?",
+      "query": "reservation correction",
+      "expected_lines": [
+        2,
+        3
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "dune",
+      "id": "dune-time",
+      "category": "temporal",
+      "question": "What did the January 4 record say about the reservation?",
+      "query": "reservation",
+      "occurred_after": "2026-01-04T00:00:00Z",
+      "expected_lines": [
+        4
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "dune",
+      "id": "dune-implication",
+      "category": "changed_goal",
+      "question": "What should we do next?",
+      "query": "obstacles jeopardizing completion",
+      "goal": "Recording requires access to the reserved room.",
+      "homeostatic_context": "Time is scarce; prioritize feasibility before execution.",
+      "expected_lines": [
+        3,
+        4
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "elm",
+      "id": "elm-recall",
+      "category": "direct",
+      "question": "What was initially recorded about the certificate?",
+      "query": "certificate",
+      "occurred_before": "2026-01-03T00:00:00Z",
+      "expected_lines": [
+        2
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "elm",
+      "id": "elm-correction",
+      "category": "correction",
+      "question": "How was the information about the certificate corrected?",
+      "query": "certificate correction",
+      "expected_lines": [
+        2,
+        3
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "elm",
+      "id": "elm-time",
+      "category": "temporal",
+      "question": "What did the January 4 record say about the certificate?",
+      "query": "certificate",
+      "occurred_after": "2026-01-04T00:00:00Z",
+      "expected_lines": [
+        4
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "elm",
+      "id": "elm-implication",
+      "category": "indirect",
+      "question": "What could prevent completion of this objective?",
+      "query": "obstacles jeopardizing completion",
+      "goal": "External access requires a current certificate.",
+      "homeostatic_context": "Normal time and compute budget.",
+      "expected_lines": [
+        3,
+        4
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "fjord",
+      "id": "fjord-recall",
+      "category": "changed_goal",
+      "question": "What should we do next?",
+      "query": "obstacles jeopardizing completion",
+      "expected_lines": [
+        2,
+        3
+      ],
+      "goal": "Document how earlier expectations changed; no action is required today.",
+      "homeostatic_context": "Plenty of time for retrospective review."
+    },
+    {
+      "account": "synthetic",
+      "session_id": "fjord",
+      "id": "fjord-correction",
+      "category": "correction",
+      "question": "How was the information about the battery corrected?",
+      "query": "battery correction",
+      "expected_lines": [
+        2,
+        3
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "fjord",
+      "id": "fjord-time",
+      "category": "temporal",
+      "question": "What did the January 4 record say about the battery?",
+      "query": "battery",
+      "occurred_after": "2026-01-04T00:00:00Z",
+      "expected_lines": [
+        4
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "fjord",
+      "id": "fjord-implication",
+      "category": "changed_goal",
+      "question": "What should we do next?",
+      "query": "obstacles jeopardizing completion",
+      "goal": "Field recording needs four hours of uninterrupted power.",
+      "homeostatic_context": "Time is scarce; prioritize feasibility before execution.",
+      "expected_lines": [
+        3,
+        4
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "grove",
+      "id": "grove-recall",
+      "category": "direct",
+      "question": "What was initially recorded about the approval?",
+      "query": "approval",
+      "occurred_before": "2026-01-03T00:00:00Z",
+      "expected_lines": [
+        2
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "grove",
+      "id": "grove-correction",
+      "category": "correction",
+      "question": "How was the information about the approval corrected?",
+      "query": "approval correction",
+      "expected_lines": [
+        2,
+        3
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "grove",
+      "id": "grove-time",
+      "category": "temporal",
+      "question": "What did the January 4 record say about the approval?",
+      "query": "approval",
+      "occurred_after": "2026-01-04T00:00:00Z",
+      "expected_lines": [
+        4
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "grove",
+      "id": "grove-implication",
+      "category": "indirect",
+      "question": "What could prevent completion of this objective?",
+      "query": "obstacles jeopardizing completion",
+      "goal": "Ordering the larger instrument requires additional approval.",
+      "homeostatic_context": "Normal time and compute budget.",
+      "expected_lines": [
+        3,
+        4
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "harbor",
+      "id": "harbor-recall",
+      "category": "changed_goal",
+      "question": "What should we do next?",
+      "query": "obstacles jeopardizing completion",
+      "expected_lines": [
+        2,
+        3
+      ],
+      "goal": "Document how earlier expectations changed; no action is required today.",
+      "homeostatic_context": "Plenty of time for retrospective review."
+    },
+    {
+      "account": "synthetic",
+      "session_id": "harbor",
+      "id": "harbor-correction",
+      "category": "correction",
+      "question": "How was the information about the backup corrected?",
+      "query": "backup correction",
+      "expected_lines": [
+        2,
+        3
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "harbor",
+      "id": "harbor-time",
+      "category": "temporal",
+      "question": "What did the January 4 record say about the backup?",
+      "query": "backup",
+      "occurred_after": "2026-01-04T00:00:00Z",
+      "expected_lines": [
+        4
+      ]
+    },
+    {
+      "account": "synthetic",
+      "session_id": "harbor",
+      "id": "harbor-implication",
+      "category": "changed_goal",
+      "question": "What should we do next?",
+      "query": "obstacles jeopardizing completion",
+      "goal": "Replacing the drive requires a verified backup first.",
+      "homeostatic_context": "Time is scarce; prioritize feasibility before execution.",
+      "expected_lines": [
+        3,
+        4
+      ]
+    }
+  ]
+}

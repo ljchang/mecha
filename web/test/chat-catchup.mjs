@@ -41,6 +41,8 @@ function page() {
      let task, incognito, todo, taint, model, mode, usage, error = null;
      let gone = false, key = 'k', viewSignal = null, loadGen = 0, todoGen = 0;
      let queue = [], queueSeq = 0;
+     let memoryNeedsResume = false, memoryIntent = false, memorySession = null, memory = null, memoryRevision = 0, memoryConnected = false;
+     const memorySessions = new Map();
      function closeIncognito(why) { gone = why; entries = []; }
      function scrollDown() {}
      ${lifted}

@@ -806,7 +806,7 @@ pub fn release_target_is_fixture(tool: &str, fixtures: &[String]) -> bool {
 /// approvals under the driver, in long and short form. Every `--no-*`
 /// lever flag is refused by prefix. `mecha-cli` tests that each of these
 /// is a global option it really defines.
-pub const PRINCIPAL_BLOCKED_OPTIONS: [&str; 20] = [
+pub const PRINCIPAL_BLOCKED_OPTIONS: [&str; 21] = [
     "--workspace",
     "-w",
     "--provider",
@@ -827,6 +827,7 @@ pub const PRINCIPAL_BLOCKED_OPTIONS: [&str; 20] = [
     "--max-output-tokens",
     "--max-cost",
     "--compact-at",
+    "--dynamic-goals",
 ];
 
 /// The global options a principal's verb *may* carry: the ones that move

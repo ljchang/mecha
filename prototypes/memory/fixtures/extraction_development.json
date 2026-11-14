@@ -1,0 +1,253 @@
+[
+  {
+    "id": "case-01",
+    "input": {
+      "evidence": [
+        {
+          "source_id": "synthetic-1:passage-1",
+          "text": "Publishing the Cedar report requires Jun's approval. Asking Jun for approval requires no prior approval."
+        },
+        {
+          "source_id": "synthetic-1:passage-2",
+          "text": "No response from Jun about the Cedar report has been recorded."
+        }
+      ],
+      "plan": [
+        "Ask Jun for approval to publish the Cedar report.",
+        "If Jun approves publication, publish the Cedar report. If Jun refuses or no answer is known, do nothing in this branch.",
+        "After that conditional step, publish the Cedar report regardless of Jun's response."
+      ]
+    },
+    "expected_coverage": "uncovered",
+    "rubric": "Actions ask Jun and publish Cedar; three occurrences (ask, guarded publish, unconditional publish). Approval unknown. Applicable approval requirement on publish only. Final publish outside branch."
+  },
+  {
+    "id": "case-02",
+    "input": {
+      "evidence": [
+        {
+          "source_id": "synthetic-2:passage-1",
+          "text": "Publishing the Cedar report requires Jun's approval. Asking Jun for approval requires no prior approval."
+        },
+        {
+          "source_id": "synthetic-2:passage-2",
+          "text": "No response from Jun about the Cedar report has been recorded."
+        }
+      ],
+      "plan": [
+        "Ask Jun for approval to publish the Cedar report.",
+        "If Jun approves publication, publish the Cedar report. Otherwise do nothing."
+      ]
+    },
+    "expected_coverage": "covered",
+    "rubric": "Ask then branch on Jun approval, publish only in met arm; no prerequisite on ask; approval unknown and required for publish."
+  },
+  {
+    "id": "case-03",
+    "input": {
+      "evidence": [
+        {
+          "source_id": "synthetic-3:passage-1",
+          "text": "Publishing the Cedar report requires Jun's approval. Asking Jun for approval requires no prior approval."
+        },
+        {
+          "source_id": "synthetic-3:passage-2",
+          "text": "No response from Jun about the Cedar report has been recorded."
+        },
+        {
+          "source_id": "synthetic-3:passage-3",
+          "text": "The two-day waiting period has elapsed. Elapsed waiting time does not grant approval."
+        }
+      ],
+      "plan": [
+        "If the two-day waiting period has elapsed, publish the Cedar report. Otherwise do nothing."
+      ]
+    },
+    "expected_coverage": "uncovered",
+    "rubric": "Timeout condition met, approval unknown. Branch on elapsed waiting, not approval. Publish requires Jun approval. Do not repair the timeout into an approval branch."
+  },
+  {
+    "id": "case-04",
+    "input": {
+      "evidence": [
+        {
+          "source_id": "synthetic-4:passage-1",
+          "text": "Publishing the Cedar report requires Jun's approval. Asking Jun for approval requires no prior approval."
+        },
+        {
+          "source_id": "synthetic-4:passage-2",
+          "text": "No response from Jun about the Cedar report has been recorded."
+        }
+      ],
+      "plan": [
+        "If Jun's approval is unknown, publish the Cedar report. If Jun has approved or refused, do nothing."
+      ]
+    },
+    "expected_coverage": "uncovered",
+    "rubric": "Positive Jun approval condition unknown; publish in when_unknown only; applicable approval prerequisite retained."
+  },
+  {
+    "id": "case-05",
+    "input": {
+      "evidence": [
+        {
+          "source_id": "synthetic-5:passage-1",
+          "text": "Publishing the Cedar report requires Jun's approval. Asking Jun for approval requires no prior approval."
+        },
+        {
+          "source_id": "synthetic-5:passage-2",
+          "text": "No response from Jun about the Cedar report has been recorded."
+        },
+        {
+          "source_id": "synthetic-5:passage-3",
+          "text": "Mira has approved publishing the Cedar report. Mira's approval does not substitute for Jun's approval."
+        }
+      ],
+      "plan": [
+        "If Mira approves publishing the Cedar report, publish it. Otherwise do nothing."
+      ]
+    },
+    "expected_coverage": "uncovered",
+    "rubric": "Two distinct approval conditions: Mira met, Jun unknown. Branch refers to Mira; requirement refers to Jun. Publish Cedar."
+  },
+  {
+    "id": "case-06",
+    "input": {
+      "evidence": [
+        {
+          "source_id": "synthetic-6:passage-1",
+          "text": "Starting the Alder test requires both supervisor approval and a calibrated instrument."
+        },
+        {
+          "source_id": "synthetic-6:passage-2",
+          "text": "The supervisor has not yet approved the test. The instrument is calibrated."
+        }
+      ],
+      "plan": [
+        "If the supervisor approves the Alder test, check whether the instrument is calibrated: if calibrated, start the Alder test; if not calibrated or calibration is unknown, do nothing. If approval is refused or unknown, do nothing."
+      ]
+    },
+    "expected_coverage": "covered",
+    "rubric": "Conditions approval unmet and calibration met. Start requires both; start inside two nested met branches. Checking calibration is expressed by the branch, not a separate invented action."
+  },
+  {
+    "id": "case-07",
+    "input": {
+      "evidence": [
+        {
+          "source_id": "synthetic-7:passage-1",
+          "text": "Starting the Alder test requires both supervisor approval and a calibrated instrument."
+        },
+        {
+          "source_id": "synthetic-7:passage-2",
+          "text": "The supervisor has approved the test. The instrument is not calibrated."
+        }
+      ],
+      "plan": [
+        "If the supervisor approves the Alder test, start the Alder test. Otherwise do nothing."
+      ]
+    },
+    "expected_coverage": "uncovered",
+    "rubric": "Approval met; calibration unmet. Start has both requirements but only approval guard. Do not invent calibration check."
+  },
+  {
+    "id": "case-08",
+    "input": {
+      "evidence": [
+        {
+          "source_id": "synthetic-8:passage-1",
+          "text": "Publishing the Cedar report requires Jun's approval. Asking Jun for approval requires no prior approval."
+        },
+        {
+          "source_id": "synthetic-8:passage-2",
+          "text": "No response from Jun about the Cedar report has been recorded."
+        }
+      ],
+      "plan": [
+        "If Jun refuses approval, publish the Cedar report. If Jun approves or no answer is known, do nothing."
+      ]
+    },
+    "expected_coverage": "uncovered",
+    "rubric": "Jun approval positive condition unknown; publish only in unmet arm. Still requires approval, so uncovered. Do not flip to met branch."
+  },
+  {
+    "id": "case-09",
+    "input": {
+      "evidence": [
+        {
+          "source_id": "synthetic-9:passage-1",
+          "text": "The workshop policy requires an escort for visitors. It is not known whether delivery technicians are visitors under this policy."
+        },
+        {
+          "source_id": "synthetic-9:passage-2",
+          "text": "A delivery technician is at the workshop. No escort is present."
+        }
+      ],
+      "plan": [
+        "If an escort is present, admit the delivery technician. Otherwise do nothing."
+      ]
+    },
+    "expected_coverage": "unresolved",
+    "rubric": "Escort presence unmet; applicability to admit technician unknown. One admit action met-escort arm. Unresolved despite guard; do not invent an exemption or decide applicability."
+  },
+  {
+    "id": "case-10",
+    "input": {
+      "evidence": [
+        {
+          "source_id": "synthetic-10:passage-1",
+          "text": "Publishing the Cedar report requires Jun's approval."
+        },
+        {
+          "source_id": "synthetic-10:passage-2",
+          "text": "Jun has approved publication of the Cedar report."
+        }
+      ],
+      "plan": [
+        "Publish the Cedar report."
+      ]
+    },
+    "expected_coverage": "uncovered",
+    "rubric": "Approval observed met; publish requires approval but is unconditional. Snapshot is not a future guard. Do not invent a branch."
+  },
+  {
+    "id": "case-11",
+    "input": {
+      "evidence": [
+        {
+          "source_id": "synthetic-11:passage-1",
+          "text": "Sending a public brochure does not require recipient consent. Sending a private assessment requires recipient consent."
+        },
+        {
+          "source_id": "synthetic-11:passage-2",
+          "text": "No response from Rowan granting consent has been recorded."
+        }
+      ],
+      "plan": [
+        "Send the public brochure to Rowan."
+      ]
+    },
+    "expected_coverage": "covered",
+    "rubric": "Public brochure send only, no private-assessment action. Consent unknown may be included with explicit non-applicable binding or omitted for this action. No invented approval guard."
+  },
+  {
+    "id": "case-12",
+    "input": {
+      "evidence": [
+        {
+          "source_id": "synthetic-12:passage-1",
+          "text": "Publishing the Cedar report requires Jun's approval. Publishing the Birch report requires Mira's approval."
+        },
+        {
+          "source_id": "synthetic-12:passage-2",
+          "text": "Jun has approved Cedar. Mira has refused permission for Birch."
+        }
+      ],
+      "plan": [
+        "If Jun approves Cedar, publish Cedar. Otherwise publish Birch."
+      ]
+    },
+    "expected_coverage": "uncovered",
+    "rubric": "Cedar and Birch distinct actions, Jun met and Mira unmet distinct conditions. Each action bound to its own approval. Branch Jun met:Cedar; unmet and unknown:Birch. Birch does not acquire Jun approval. Preserve both otherwise arms."
+  }
+]

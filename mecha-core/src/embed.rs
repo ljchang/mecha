@@ -49,6 +49,232 @@ pub const RECALL_INSTRUCTION: &str =
 /// here is a chunk, not a document.
 const MAX_CHARS: usize = 8_000;
 
+/// Host-declared encoding identity. These labels describe the configured artifact;
+/// an echoed alias is not proof of the server's weights or preprocessing.
+#[derive(Debug, Clone)]
+pub struct EncodingProfileSpec {
+    pub expected_alias: String,
+    pub artifact_revision: String,
+    pub dimensions: usize,
+    pub pooling: String,
+    pub normalization: String,
+    pub query_instruction: String,
+    /// Exactly one `{instruction}` and one `{text}` placeholder.
+    pub query_template: String,
+    pub preprocessing_version: String,
+    pub representation_version: String,
+}
+
+/// Validated, immutable encoding identity. No client-side normalization or
+/// preprocessing is implied by its labels.
+#[derive(Debug, Clone)]
+pub struct EncodingProfile {
+    spec: EncodingProfileSpec,
+    id: String,
+}
+
+impl EncodingProfile {
+    pub fn new(spec: EncodingProfileSpec) -> Result<Self> {
+        if !(1..=8192).contains(&spec.dimensions) {
+            bail!("embedding dimensions must be in 1..=8192");
+        }
+        let fields = [
+            &spec.expected_alias,
+            &spec.artifact_revision,
+            &spec.pooling,
+            &spec.normalization,
+            &spec.query_instruction,
+            &spec.query_template,
+            &spec.preprocessing_version,
+            &spec.representation_version,
+        ];
+        if fields.iter().any(|s| s.trim().is_empty() || s.len() > 8192) {
+            bail!("encoding identity fields must be nonempty and at most 8192 bytes");
+        }
+        if spec.query_template.matches("{instruction}").count() != 1
+            || spec.query_template.matches("{text}").count() != 1
+        {
+            bail!("query template requires exactly one instruction and text placeholder");
+        }
+        use sha2::{Digest, Sha256};
+        // A versioned JSON tuple is unambiguous even when labels contain delimiters.
+        let identity = serde_json::to_vec(&serde_json::json!([
+            "mecha-encoding-v1",
+            spec.expected_alias,
+            spec.artifact_revision,
+            spec.dimensions,
+            spec.pooling,
+            spec.normalization,
+            spec.query_instruction,
+            spec.query_template,
+            spec.preprocessing_version,
+            spec.representation_version
+        ]))?;
+        let id = Sha256::digest(identity)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        Ok(Self { spec, id })
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn expected_alias(&self) -> &str {
+        &self.spec.expected_alias
+    }
+    pub fn artifact_revision(&self) -> &str {
+        &self.spec.artifact_revision
+    }
+    pub fn dimensions(&self) -> usize {
+        self.spec.dimensions
+    }
+    pub fn pooling(&self) -> &str {
+        &self.spec.pooling
+    }
+    pub fn normalization(&self) -> &str {
+        &self.spec.normalization
+    }
+    pub fn query_instruction(&self) -> &str {
+        &self.spec.query_instruction
+    }
+    pub fn query_template(&self) -> &str {
+        &self.spec.query_template
+    }
+    pub fn preprocessing_version(&self) -> &str {
+        &self.spec.preprocessing_version
+    }
+    pub fn representation_version(&self) -> &str {
+        &self.spec.representation_version
+    }
+
+    fn format(&self, input: &EmbeddingInput) -> Result<String> {
+        // Check before allocation, including the otherwise unbounded caller text.
+        if input.text.chars().take(MAX_CHARS + 1).count() > MAX_CHARS {
+            bail!("checked embedding input exceeds scalar limit");
+        }
+        let formatted = match input.task {
+            Task::Passage => input.text.clone(),
+            Task::Recall => bail!("checked embeddings accept query and passage tasks only"),
+            Task::Query => {
+                // Substitute only tokens in the template, never placeholder-looking
+                // text inside the instruction or user input.
+                let template = self.query_template();
+                let mut tokens = [
+                    (
+                        template.find("{instruction}").unwrap(),
+                        "{instruction}",
+                        self.query_instruction(),
+                    ),
+                    (
+                        template.find("{text}").unwrap(),
+                        "{text}",
+                        input.text.as_str(),
+                    ),
+                ];
+                tokens.sort_by_key(|x| x.0);
+                let mut text = String::new();
+                let mut start = 0;
+                for (position, token, value) in tokens {
+                    text.push_str(&template[start..position]);
+                    text.push_str(value);
+                    start = position + token.len();
+                }
+                text.push_str(&template[start..]);
+                text
+            }
+        };
+        if formatted.chars().take(MAX_CHARS + 1).count() > MAX_CHARS {
+            bail!("formatted checked embedding input exceeds scalar limit");
+        }
+        Ok(formatted)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EmbeddingInput {
+    pub text: String,
+    pub task: Task,
+}
+
+/// Complete, ordered vectors and bounded transport accounting. No partial batch
+/// escapes on failure. The server alias is reported separately from host identity.
+#[derive(Debug)]
+pub struct EmbeddedBatch {
+    pub profile_id: String,
+    pub server_model: Option<String>,
+    pub vectors: Vec<Vec<f32>>,
+    pub attempts: usize,
+    pub request_bytes: usize,
+    pub response_bytes: usize,
+}
+
+const CHECKED_BATCH: usize = 16;
+const CHECKED_REQUEST_BYTES: usize = 262_144;
+const CHECKED_RESPONSE_BYTES: usize = 8_388_608;
+const CHECKED_ATTEMPTS: usize = 64;
+const CHECKED_DURATION: Duration = Duration::from_secs(120);
+
+fn checked_request(input: &[String], profile: &EncodingProfile) -> Result<Vec<u8>> {
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "model": profile.expected_alias(), "input": input, "encoding_format": "float"
+    }))?;
+    if bytes.len() > CHECKED_REQUEST_BYTES {
+        bail!("checked embedding request exceeds byte limit");
+    }
+    Ok(bytes)
+}
+
+fn checked_vectors(body: &[u8], count: usize, profile: &EncodingProfile) -> Result<Vec<Vec<f32>>> {
+    let body: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| anyhow!("invalid checked embedding JSON"))?;
+    if body["model"].as_str() != Some(profile.expected_alias()) {
+        bail!("checked embedding model alias mismatch");
+    }
+    let data = body["data"]
+        .as_array()
+        .ok_or_else(|| anyhow!("checked embedding data missing"))?;
+    if data.len() != count {
+        bail!("checked embedding count mismatch");
+    }
+    let mut ordered = vec![None; count];
+    for item in data {
+        let index = item["index"]
+            .as_u64()
+            .and_then(|i| usize::try_from(i).ok())
+            .filter(|i| *i < count)
+            .ok_or_else(|| anyhow!("invalid checked embedding index"))?;
+        if ordered[index].is_some() {
+            bail!("duplicate checked embedding index");
+        }
+        let raw = item["embedding"]
+            .as_array()
+            .ok_or_else(|| anyhow!("checked embedding vector missing"))?;
+        if raw.len() != profile.dimensions() {
+            bail!("checked embedding dimension mismatch");
+        }
+        let mut vector = Vec::with_capacity(raw.len());
+        let mut norm = 0f64;
+        for coordinate in raw {
+            let value = coordinate
+                .as_f64()
+                .map(|v| v as f32)
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| anyhow!("invalid checked embedding coordinate"))?;
+            norm += f64::from(value).powi(2);
+            vector.push(value);
+        }
+        if norm == 0.0 || !norm.is_finite() {
+            bail!("invalid checked embedding norm");
+        }
+        ordered[index] = Some(vector);
+    }
+    ordered
+        .into_iter()
+        .map(|v| v.ok_or_else(|| anyhow!("missing checked embedding index")))
+        .collect()
+}
+
 /// A client for one embeddings server.
 #[derive(Debug, Clone)]
 pub struct Embedder {
@@ -75,10 +301,83 @@ impl Embedder {
             http: reqwest::Client::builder()
                 // The server is socket-activated: the first request waits
                 // out a model load (CLAUDE.md, the local model server).
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
                 .timeout(Duration::from_secs(120))
                 .build()
                 .context("building the embeddings client")?,
         })
+    }
+
+    /// Strict, mixed query/passage embeddings for invocation-local retrieval.
+    /// All inputs and initial requests are validated before any HTTP request.
+    /// Splits share one deadline and attempt budget; errors contain no server text.
+    pub async fn embed_checked(
+        &self,
+        inputs: &[EmbeddingInput],
+        profile: &EncodingProfile,
+    ) -> Result<EmbeddedBatch> {
+        self.checked_with_budget(inputs, profile, CHECKED_DURATION, CHECKED_ATTEMPTS)
+            .await
+    }
+
+    async fn checked_with_budget(
+        &self,
+        inputs: &[EmbeddingInput],
+        profile: &EncodingProfile,
+        duration: Duration,
+        max_attempts: usize,
+    ) -> Result<EmbeddedBatch> {
+        tokio::time::timeout(duration, async {
+            if !crate::provider::router::is_literal_loopback(&self.url) {
+                bail!("checked embeddings require literal loopback HTTP without credentials, query or fragment");
+            }
+            if inputs.len() > CHECKED_BATCH * max_attempts {
+                bail!("checked embedding inputs exceed attempt budget");
+            }
+            let formatted: Vec<String> = inputs.iter().map(|input| profile.format(input)).collect::<Result<_>>()?;
+            // Validate every initial request before sending the first. Split requests
+            // are subsets, but checked again at their actual serialization boundary.
+            for batch in formatted.chunks(CHECKED_BATCH) { checked_request(batch, profile)?; }
+            let mut pending: Vec<&[String]> = formatted.chunks(CHECKED_BATCH).rev().collect();
+            let mut result = EmbeddedBatch { profile_id: profile.id().into(), server_model: None,
+                vectors: Vec::with_capacity(inputs.len()), attempts: 0, request_bytes: 0, response_bytes: 0 };
+            while let Some(batch) = pending.pop() {
+                if result.attempts == max_attempts { bail!("checked embedding attempt budget exhausted"); }
+                let request = checked_request(batch, profile)?;
+                result.attempts += 1;
+                // Each total is bounded by attempts times its per-attempt cap.
+                result.request_bytes += request.len();
+                let mut response = self.http.post(format!("{}/v1/embeddings", self.url))
+                    .header(reqwest::header::CONTENT_TYPE, "application/json").body(request)
+                    .send().await.map_err(|_| anyhow!("checked embedding transport failed"))?;
+                let status = response.status();
+                if response.content_length().is_some_and(|n| n > CHECKED_RESPONSE_BYTES as u64) {
+                    bail!("checked embedding response exceeds byte limit");
+                }
+                let mut body = Vec::new();
+                while let Some(chunk) = response.chunk().await.map_err(|_| anyhow!("checked embedding response read failed"))? {
+                    if chunk.len() > CHECKED_RESPONSE_BYTES - body.len() {
+                        bail!("checked embedding response exceeds byte limit");
+                    }
+                    body.extend_from_slice(&chunk);
+                }
+                result.response_bytes += body.len();
+                if !status.is_success() {
+                    // Classification is internal only: never retain the server body
+                    // in an error chain, even when it echoes private input.
+                    let overflow = overflowed(&anyhow!(String::from_utf8_lossy(&body).into_owned()));
+                    if (status.is_client_error() || status.is_server_error()) && overflow && batch.len() > 1 {
+                        let (left, right) = batch.split_at(batch.len()/2);
+                        pending.push(right); pending.push(left); continue;
+                    }
+                    bail!("checked embedding server returned HTTP {}", status.as_u16());
+                }
+                result.vectors.extend(checked_vectors(&body, batch.len(), profile)?);
+                result.server_model = Some(profile.expected_alias().into());
+            }
+            Ok(result)
+        }).await.map_err(|_| anyhow!("checked embedding operation deadline exceeded"))?
     }
 
     /// One vector per input, in order.
@@ -329,3 +628,7 @@ mod tests {
         assert_eq!(taken, passages.iter().collect::<Vec<_>>(), "{seen:?}");
     }
 }
+
+#[cfg(test)]
+#[path = "embed_checked_tests.rs"]
+mod checked_tests;

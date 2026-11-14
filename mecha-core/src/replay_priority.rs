@@ -645,10 +645,14 @@ impl Ranker {
         .map(|b| b.appraisal);
         // A partial appraisal was built with a store it reads missing, so
         // its owner verdicts are a floor — unknown, never "these and no more".
-        let owner_gain = built
-            .as_ref()
-            .filter(|a| !a.partial)
-            .map(|a| appraisal::owner_verdict_gain(a, self.stores.charter.as_ref()));
+        let owner_gain = built.as_ref().filter(|a| !a.partial).map(|a| {
+            let (charter, _) = appraisal::charter_for_transcript(
+                t,
+                self.stores.charter.as_ref(),
+                self.stores.charter_unreadable,
+            );
+            appraisal::owner_verdict_gain(a, charter.as_deref())
+        });
         let key = t
             .configs
             .last()

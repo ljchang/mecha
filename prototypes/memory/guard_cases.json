@@ -1,0 +1,1028 @@
+[
+  {
+    "id": "request-then-guard",
+    "input": {
+      "contract": {
+        "conditions": [
+          {
+            "id": "approval",
+            "description": "Jun has approved publication",
+            "observed": "unknown"
+          },
+          {
+            "id": "timeout",
+            "description": "One day has elapsed",
+            "observed": "met"
+          },
+          {
+            "id": "other_approval",
+            "description": "Jun has approved a different report",
+            "observed": "met"
+          }
+        ],
+        "actions": [
+          {
+            "id": "ask",
+            "description": "Request publication approval",
+            "requirements": []
+          },
+          {
+            "id": "publish",
+            "description": "Publish the report",
+            "requirements": [
+              {
+                "condition": "approval",
+                "applicability": "applicable"
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "steps": [
+          {
+            "kind": "action",
+            "action": "ask"
+          },
+          {
+            "kind": "branch",
+            "condition": "approval",
+            "when_met": [
+              {
+                "kind": "action",
+                "action": "publish"
+              }
+            ],
+            "when_unmet": [],
+            "when_unknown": []
+          }
+        ]
+      }
+    },
+    "expected": {
+      "status": "covered",
+      "occurrences": [
+        "covered",
+        "covered"
+      ]
+    }
+  },
+  {
+    "id": "unguarded-later-action",
+    "input": {
+      "contract": {
+        "conditions": [
+          {
+            "id": "approval",
+            "description": "Jun has approved publication",
+            "observed": "unknown"
+          },
+          {
+            "id": "timeout",
+            "description": "One day has elapsed",
+            "observed": "met"
+          },
+          {
+            "id": "other_approval",
+            "description": "Jun has approved a different report",
+            "observed": "met"
+          }
+        ],
+        "actions": [
+          {
+            "id": "ask",
+            "description": "Request publication approval",
+            "requirements": []
+          },
+          {
+            "id": "publish",
+            "description": "Publish the report",
+            "requirements": [
+              {
+                "condition": "approval",
+                "applicability": "applicable"
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "steps": [
+          {
+            "kind": "branch",
+            "condition": "approval",
+            "when_met": [
+              {
+                "kind": "action",
+                "action": "publish"
+              }
+            ],
+            "when_unmet": [],
+            "when_unknown": []
+          },
+          {
+            "kind": "action",
+            "action": "publish"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "status": "uncovered",
+      "occurrences": [
+        "covered",
+        "uncovered"
+      ]
+    }
+  },
+  {
+    "id": "timeout-fallback",
+    "input": {
+      "contract": {
+        "conditions": [
+          {
+            "id": "approval",
+            "description": "Jun has approved publication",
+            "observed": "unknown"
+          },
+          {
+            "id": "timeout",
+            "description": "One day has elapsed",
+            "observed": "met"
+          },
+          {
+            "id": "other_approval",
+            "description": "Jun has approved a different report",
+            "observed": "met"
+          }
+        ],
+        "actions": [
+          {
+            "id": "ask",
+            "description": "Request publication approval",
+            "requirements": []
+          },
+          {
+            "id": "publish",
+            "description": "Publish the report",
+            "requirements": [
+              {
+                "condition": "approval",
+                "applicability": "applicable"
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "steps": [
+          {
+            "kind": "branch",
+            "condition": "approval",
+            "when_met": [
+              {
+                "kind": "action",
+                "action": "publish"
+              }
+            ],
+            "when_unmet": [],
+            "when_unknown": [
+              {
+                "kind": "branch",
+                "condition": "timeout",
+                "when_met": [
+                  {
+                    "kind": "action",
+                    "action": "publish"
+                  }
+                ],
+                "when_unmet": [],
+                "when_unknown": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "expected": {
+      "status": "uncovered",
+      "occurrences": [
+        "covered",
+        "uncovered"
+      ]
+    }
+  },
+  {
+    "id": "unknown-fallthrough",
+    "input": {
+      "contract": {
+        "conditions": [
+          {
+            "id": "approval",
+            "description": "Jun has approved publication",
+            "observed": "unknown"
+          },
+          {
+            "id": "timeout",
+            "description": "One day has elapsed",
+            "observed": "met"
+          },
+          {
+            "id": "other_approval",
+            "description": "Jun has approved a different report",
+            "observed": "met"
+          }
+        ],
+        "actions": [
+          {
+            "id": "ask",
+            "description": "Request publication approval",
+            "requirements": []
+          },
+          {
+            "id": "publish",
+            "description": "Publish the report",
+            "requirements": [
+              {
+                "condition": "approval",
+                "applicability": "applicable"
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "steps": [
+          {
+            "kind": "branch",
+            "condition": "approval",
+            "when_met": [],
+            "when_unmet": [],
+            "when_unknown": [
+              {
+                "kind": "action",
+                "action": "publish"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "expected": {
+      "status": "uncovered",
+      "occurrences": [
+        "uncovered"
+      ]
+    }
+  },
+  {
+    "id": "inverted-polarity",
+    "input": {
+      "contract": {
+        "conditions": [
+          {
+            "id": "approval",
+            "description": "Jun has approved publication",
+            "observed": "unknown"
+          },
+          {
+            "id": "timeout",
+            "description": "One day has elapsed",
+            "observed": "met"
+          },
+          {
+            "id": "other_approval",
+            "description": "Jun has approved a different report",
+            "observed": "met"
+          }
+        ],
+        "actions": [
+          {
+            "id": "ask",
+            "description": "Request publication approval",
+            "requirements": []
+          },
+          {
+            "id": "publish",
+            "description": "Publish the report",
+            "requirements": [
+              {
+                "condition": "approval",
+                "applicability": "applicable"
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "steps": [
+          {
+            "kind": "branch",
+            "condition": "approval",
+            "when_met": [],
+            "when_unmet": [
+              {
+                "kind": "action",
+                "action": "publish"
+              }
+            ],
+            "when_unknown": []
+          }
+        ]
+      }
+    },
+    "expected": {
+      "status": "uncovered",
+      "occurrences": [
+        "uncovered"
+      ]
+    }
+  },
+  {
+    "id": "wrong-report-permission",
+    "input": {
+      "contract": {
+        "conditions": [
+          {
+            "id": "approval",
+            "description": "Jun has approved publication",
+            "observed": "unknown"
+          },
+          {
+            "id": "timeout",
+            "description": "One day has elapsed",
+            "observed": "met"
+          },
+          {
+            "id": "other_approval",
+            "description": "Jun has approved a different report",
+            "observed": "met"
+          }
+        ],
+        "actions": [
+          {
+            "id": "ask",
+            "description": "Request publication approval",
+            "requirements": []
+          },
+          {
+            "id": "publish",
+            "description": "Publish the report",
+            "requirements": [
+              {
+                "condition": "approval",
+                "applicability": "applicable"
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "steps": [
+          {
+            "kind": "branch",
+            "condition": "other_approval",
+            "when_met": [
+              {
+                "kind": "action",
+                "action": "publish"
+              }
+            ],
+            "when_unmet": [],
+            "when_unknown": []
+          }
+        ]
+      }
+    },
+    "expected": {
+      "status": "uncovered",
+      "occurrences": [
+        "uncovered"
+      ]
+    }
+  },
+  {
+    "id": "both-conditions",
+    "input": {
+      "contract": {
+        "conditions": [
+          {
+            "id": "approval",
+            "description": "Jun has approved publication",
+            "observed": "unknown"
+          },
+          {
+            "id": "timeout",
+            "description": "One day has elapsed",
+            "observed": "met"
+          },
+          {
+            "id": "other_approval",
+            "description": "Jun has approved a different report",
+            "observed": "met"
+          }
+        ],
+        "actions": [
+          {
+            "id": "ask",
+            "description": "Request publication approval",
+            "requirements": []
+          },
+          {
+            "id": "publish",
+            "description": "Publish the report",
+            "requirements": [
+              {
+                "condition": "approval",
+                "applicability": "applicable"
+              },
+              {
+                "condition": "timeout",
+                "applicability": "applicable"
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "steps": [
+          {
+            "kind": "branch",
+            "condition": "approval",
+            "when_met": [
+              {
+                "kind": "branch",
+                "condition": "timeout",
+                "when_met": [
+                  {
+                    "kind": "action",
+                    "action": "publish"
+                  }
+                ],
+                "when_unmet": [],
+                "when_unknown": []
+              }
+            ],
+            "when_unmet": [],
+            "when_unknown": []
+          }
+        ]
+      }
+    },
+    "expected": {
+      "status": "covered",
+      "occurrences": [
+        "covered"
+      ]
+    }
+  },
+  {
+    "id": "missing-second-condition",
+    "input": {
+      "contract": {
+        "conditions": [
+          {
+            "id": "approval",
+            "description": "Jun has approved publication",
+            "observed": "unknown"
+          },
+          {
+            "id": "timeout",
+            "description": "One day has elapsed",
+            "observed": "met"
+          },
+          {
+            "id": "other_approval",
+            "description": "Jun has approved a different report",
+            "observed": "met"
+          }
+        ],
+        "actions": [
+          {
+            "id": "ask",
+            "description": "Request publication approval",
+            "requirements": []
+          },
+          {
+            "id": "publish",
+            "description": "Publish the report",
+            "requirements": [
+              {
+                "condition": "approval",
+                "applicability": "applicable"
+              },
+              {
+                "condition": "timeout",
+                "applicability": "applicable"
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "steps": [
+          {
+            "kind": "branch",
+            "condition": "approval",
+            "when_met": [
+              {
+                "kind": "action",
+                "action": "publish"
+              }
+            ],
+            "when_unmet": [],
+            "when_unknown": []
+          }
+        ]
+      }
+    },
+    "expected": {
+      "status": "uncovered",
+      "occurrences": [
+        "uncovered"
+      ]
+    }
+  },
+  {
+    "id": "unknown-rule-applicability",
+    "input": {
+      "contract": {
+        "conditions": [
+          {
+            "id": "approval",
+            "description": "Jun has approved publication",
+            "observed": "unknown"
+          },
+          {
+            "id": "timeout",
+            "description": "One day has elapsed",
+            "observed": "met"
+          },
+          {
+            "id": "other_approval",
+            "description": "Jun has approved a different report",
+            "observed": "met"
+          }
+        ],
+        "actions": [
+          {
+            "id": "ask",
+            "description": "Request publication approval",
+            "requirements": []
+          },
+          {
+            "id": "publish",
+            "description": "Publish the report",
+            "requirements": [
+              {
+                "condition": "approval",
+                "applicability": "unknown"
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "steps": [
+          {
+            "kind": "branch",
+            "condition": "approval",
+            "when_met": [
+              {
+                "kind": "action",
+                "action": "publish"
+              }
+            ],
+            "when_unmet": [],
+            "when_unknown": []
+          }
+        ]
+      }
+    },
+    "expected": {
+      "status": "unresolved",
+      "occurrences": [
+        "unresolved"
+      ]
+    }
+  },
+  {
+    "id": "explicit-local-exemption",
+    "input": {
+      "contract": {
+        "conditions": [
+          {
+            "id": "approval",
+            "description": "Jun has approved publication",
+            "observed": "unknown"
+          },
+          {
+            "id": "timeout",
+            "description": "One day has elapsed",
+            "observed": "met"
+          },
+          {
+            "id": "other_approval",
+            "description": "Jun has approved a different report",
+            "observed": "met"
+          }
+        ],
+        "actions": [
+          {
+            "id": "ask",
+            "description": "Request publication approval",
+            "requirements": []
+          },
+          {
+            "id": "publish",
+            "description": "Publish the report",
+            "requirements": [
+              {
+                "condition": "approval",
+                "applicability": "not_applicable"
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "steps": [
+          {
+            "kind": "action",
+            "action": "publish"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "status": "covered",
+      "occurrences": [
+        "covered"
+      ]
+    }
+  },
+  {
+    "id": "contradictory-path",
+    "input": {
+      "contract": {
+        "conditions": [
+          {
+            "id": "approval",
+            "description": "Jun has approved publication",
+            "observed": "unknown"
+          },
+          {
+            "id": "timeout",
+            "description": "One day has elapsed",
+            "observed": "met"
+          },
+          {
+            "id": "other_approval",
+            "description": "Jun has approved a different report",
+            "observed": "met"
+          }
+        ],
+        "actions": [
+          {
+            "id": "ask",
+            "description": "Request publication approval",
+            "requirements": []
+          },
+          {
+            "id": "publish",
+            "description": "Publish the report",
+            "requirements": [
+              {
+                "condition": "approval",
+                "applicability": "applicable"
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "steps": [
+          {
+            "kind": "branch",
+            "condition": "approval",
+            "when_met": [
+              {
+                "kind": "branch",
+                "condition": "approval",
+                "when_met": [],
+                "when_unmet": [
+                  {
+                    "kind": "action",
+                    "action": "publish"
+                  }
+                ],
+                "when_unknown": []
+              }
+            ],
+            "when_unmet": [],
+            "when_unknown": []
+          }
+        ]
+      }
+    },
+    "expected": {
+      "status": "no_reachable_actions",
+      "occurrences": [
+        "unreachable"
+      ]
+    }
+  },
+  {
+    "id": "no-action",
+    "input": {
+      "contract": {
+        "conditions": [
+          {
+            "id": "approval",
+            "description": "Jun has approved publication",
+            "observed": "unknown"
+          },
+          {
+            "id": "timeout",
+            "description": "One day has elapsed",
+            "observed": "met"
+          },
+          {
+            "id": "other_approval",
+            "description": "Jun has approved a different report",
+            "observed": "met"
+          }
+        ],
+        "actions": [
+          {
+            "id": "ask",
+            "description": "Request publication approval",
+            "requirements": []
+          },
+          {
+            "id": "publish",
+            "description": "Publish the report",
+            "requirements": [
+              {
+                "condition": "approval",
+                "applicability": "applicable"
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "steps": []
+      }
+    },
+    "expected": {
+      "status": "no_reachable_actions",
+      "occurrences": []
+    }
+  },
+  {
+    "id": "snapshot-does-not-cover-future",
+    "input": {
+      "contract": {
+        "conditions": [
+          {
+            "id": "approval",
+            "description": "Jun has approved publication",
+            "observed": "met"
+          },
+          {
+            "id": "timeout",
+            "description": "One day has elapsed",
+            "observed": "met"
+          },
+          {
+            "id": "other_approval",
+            "description": "Jun has approved a different report",
+            "observed": "met"
+          }
+        ],
+        "actions": [
+          {
+            "id": "ask",
+            "description": "Request publication approval",
+            "requirements": []
+          },
+          {
+            "id": "publish",
+            "description": "Publish the report",
+            "requirements": [
+              {
+                "condition": "approval",
+                "applicability": "applicable"
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "steps": [
+          {
+            "kind": "action",
+            "action": "publish"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "status": "uncovered",
+      "occurrences": [
+        "uncovered"
+      ]
+    }
+  },
+  {
+    "id": "currently-blocked-but-guarded",
+    "input": {
+      "contract": {
+        "conditions": [
+          {
+            "id": "approval",
+            "description": "Jun has approved publication",
+            "observed": "unmet"
+          },
+          {
+            "id": "timeout",
+            "description": "One day has elapsed",
+            "observed": "met"
+          },
+          {
+            "id": "other_approval",
+            "description": "Jun has approved a different report",
+            "observed": "met"
+          }
+        ],
+        "actions": [
+          {
+            "id": "ask",
+            "description": "Request publication approval",
+            "requirements": []
+          },
+          {
+            "id": "publish",
+            "description": "Publish the report",
+            "requirements": [
+              {
+                "condition": "approval",
+                "applicability": "applicable"
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "steps": [
+          {
+            "kind": "action",
+            "action": "ask"
+          },
+          {
+            "kind": "branch",
+            "condition": "approval",
+            "when_met": [
+              {
+                "kind": "action",
+                "action": "publish"
+              }
+            ],
+            "when_unmet": [],
+            "when_unknown": []
+          }
+        ]
+      }
+    },
+    "expected": {
+      "status": "covered",
+      "occurrences": [
+        "covered",
+        "covered"
+      ]
+    }
+  },
+  {
+    "id": "unknown-action",
+    "input": {
+      "contract": {
+        "conditions": [
+          {
+            "id": "approval",
+            "description": "Jun has approved publication",
+            "observed": "unknown"
+          },
+          {
+            "id": "timeout",
+            "description": "One day has elapsed",
+            "observed": "met"
+          },
+          {
+            "id": "other_approval",
+            "description": "Jun has approved a different report",
+            "observed": "met"
+          }
+        ],
+        "actions": [
+          {
+            "id": "ask",
+            "description": "Request publication approval",
+            "requirements": []
+          },
+          {
+            "id": "publish",
+            "description": "Publish the report",
+            "requirements": [
+              {
+                "condition": "approval",
+                "applicability": "applicable"
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "steps": [
+          {
+            "kind": "action",
+            "action": "foreign"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "status": "invalid",
+      "occurrences": []
+    }
+  },
+  {
+    "id": "invalid-dead-arm",
+    "input": {
+      "contract": {
+        "conditions": [
+          {
+            "id": "approval",
+            "description": "Jun has approved publication",
+            "observed": "unknown"
+          },
+          {
+            "id": "timeout",
+            "description": "One day has elapsed",
+            "observed": "met"
+          },
+          {
+            "id": "other_approval",
+            "description": "Jun has approved a different report",
+            "observed": "met"
+          }
+        ],
+        "actions": [
+          {
+            "id": "ask",
+            "description": "Request publication approval",
+            "requirements": []
+          },
+          {
+            "id": "publish",
+            "description": "Publish the report",
+            "requirements": [
+              {
+                "condition": "approval",
+                "applicability": "applicable"
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "steps": [
+          {
+            "kind": "branch",
+            "condition": "approval",
+            "when_met": [
+              {
+                "kind": "branch",
+                "condition": "approval",
+                "when_met": [],
+                "when_unmet": [
+                  {
+                    "kind": "action",
+                    "action": "foreign"
+                  }
+                ],
+                "when_unknown": []
+              }
+            ],
+            "when_unmet": [],
+            "when_unknown": []
+          }
+        ]
+      }
+    },
+    "expected": {
+      "status": "invalid",
+      "occurrences": []
+    }
+  }
+]

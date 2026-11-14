@@ -78,14 +78,121 @@ pub struct Trajectory {
     /// reconstructed before this recording can be used for a comparison.
     #[serde(default)]
     pub harness_calls: usize,
+    /// Frozen requests and owner versions. Empty only for explicit legacy
+    /// replay; callers reading a transcript must use extract_transcript.
+    #[serde(default)]
+    pub goal_decisions: Vec<(
+        crate::goal_context::DecisionBinding,
+        crate::goal_context::ContextVersion,
+    )>,
 }
 
 impl Trajectory {
     pub fn ensure_replayable(&self) -> anyhow::Result<()> {
         anyhow::ensure!(self.harness_calls == 0,
             "recording contains harness tool calls; replay of check observations is not yet supported");
+        if !self.goal_decisions.is_empty() {
+            for (binding, version) in &self.goal_decisions {
+                binding.validate()?;
+                version.validate()?;
+                anyhow::ensure!(
+                    binding.version() == version.revision(),
+                    "dynamic replay decision/context mismatch"
+                );
+            }
+            anyhow::ensure!(
+                !self.steered,
+                "dynamic goal replay with mid-run steering is unsupported"
+            );
+            anyhow::ensure!(
+                self.goal_decisions[0].0.run_start(),
+                "dynamic goal recording begins inside a run"
+            );
+        }
         Ok(())
     }
+}
+
+/// Reconstruct exact recorded goal versions, including boundaries whose message
+/// positions a later compaction removed. Never consult the current charter.
+pub fn extract_transcript(transcript: &crate::session::Transcript) -> anyhow::Result<Trajectory> {
+    let state = &transcript.convo.goal_context;
+    if state.versions().is_empty() {
+        return Ok(extract(&transcript.convo.messages));
+    }
+    anyhow::ensure!(
+        !state.decisions().is_empty(),
+        "dynamic goal transcript has no recorded decision boundaries"
+    );
+    let mut trajectory = extract(&transcript.convo.messages);
+    // Collect original tool batches once by their recorded ids. A rewrite may
+    // remove them from the loaded messages, but cannot erase a frozen request.
+    let mut seen_uses = std::collections::HashSet::new();
+    let mut seen_results = std::collections::HashSet::new();
+    // History predating activation is already in the first frozen seed, not
+    // work the replay will execute. Never put those calls on its cursor.
+    for message in state.decisions()[0].messages() {
+        for block in &message.content {
+            match block {
+                Block::ToolUse { id, .. } => {
+                    seen_uses.insert(id.clone());
+                }
+                Block::ToolResult { tool_use_id, .. } => {
+                    seen_results.insert(tool_use_id.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut history = Vec::new();
+    for messages in state
+        .decisions()
+        .iter()
+        .map(|d| d.messages())
+        .chain(std::iter::once(transcript.convo.messages.as_slice()))
+    {
+        let mut ids_in_snapshot = std::collections::HashSet::new();
+        for id in messages
+            .iter()
+            .flat_map(|m| m.tool_uses().into_iter().map(|(id, _, _)| id))
+        {
+            anyhow::ensure!(
+                ids_in_snapshot.insert(id),
+                "dynamic replay has ambiguous reused tool call ids"
+            );
+        }
+        for message in messages {
+            let mut kept = message.clone();
+            kept.content.retain(|block| match block {
+                Block::ToolUse { id, .. } => seen_uses.insert(id.clone()),
+                Block::ToolResult { tool_use_id, .. } => seen_results.insert(tool_use_id.clone()),
+                _ => false,
+            });
+            if !kept.content.is_empty() {
+                history.push(kept);
+            }
+        }
+    }
+    let historic = extract(&history);
+    trajectory.calls = historic.calls;
+    trajectory.harness_calls = historic.harness_calls;
+    for binding in state.decisions() {
+        let version = state
+            .version(binding.version())
+            .ok_or_else(|| anyhow::anyhow!("missing historical goal context version"))?;
+        trajectory
+            .goal_decisions
+            .push((binding.clone(), version.clone()));
+    }
+    // A changed owner context inside one run is delivered steering. The replay
+    // driver cannot reproduce its delivery timing and must not call it a turn.
+    for pair in trajectory.goal_decisions.windows(2) {
+        if !pair[1].0.run_start() && pair[0].0.version() != pair[1].0.version() {
+            trajectory.steered = true;
+        }
+    }
+    trajectory.ensure_replayable()?;
+    Ok(trajectory)
 }
 
 /// Reduce a recorded conversation to a replayable trajectory.

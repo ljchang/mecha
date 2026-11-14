@@ -1,0 +1,37 @@
+{
+  "decisions": {
+    "D1": {
+      "coverage_any": [
+        "O1",
+        "O2"
+      ],
+      "route": "complete",
+      "status": "selected"
+    },
+    "D2": {
+      "coverage_any": [
+        "O1",
+        "O2"
+      ],
+      "route": "compact",
+      "status": "selected"
+    },
+    "D3": {
+      "coverage_any": [
+        "O3"
+      ],
+      "route": "compact",
+      "status": "selected"
+    },
+    "D4": {
+      "coverage_any": [
+        "O3"
+      ],
+      "route": null,
+      "status": "abstained"
+    }
+  },
+  "family": "report-release-v1",
+  "private_marker": "PRIVATE_GOLD_report_release_v1",
+  "protocol": "ordinary-lifetime-gold-v1"
+}

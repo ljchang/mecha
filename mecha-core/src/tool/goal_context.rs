@@ -78,6 +78,15 @@ impl Tool for GoalContext {
             }).collect();
         let mut answer = json!({"serves":goal,"confirmed_goal":anchor,"lessons":lessons,"examples":examples,
             "evidence_limit":"These are applicable learned rules, not proof that this goal has been achieved. Declare the expected outcome and a relevant check in the plan."});
+        if let Some(version) = ctx
+            .goal_context_version
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .as_ref()
+        {
+            answer["goal_context_revision"] = json!(version.revision());
+            answer["owner_goal_evidence"] = json!(version.prompt_block());
+        }
         if let Some(past) = &ctx.goal_appraisals {
             past_appraisals(&mut answer, past, goal.as_ref());
         }

@@ -11,7 +11,8 @@ use crate::tool::{Capabilities, Egress, Tool, ToolCtx, ToolFailureKind, ToolOutp
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,6 +22,489 @@ use tokio::sync::oneshot;
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// A tool's actual MCP origin and effective policy, captured at construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpToolDescriptor {
+    pub server_name: String,
+    pub local_name: String,
+    pub remote_name: String,
+    pub schema_digest: String,
+    pub description_digest: String,
+    pub read_only: bool,
+    pub capabilities: Capabilities,
+    pub effect: Option<crate::tool::effect::Effect>,
+    pub deferred: bool,
+    pub fixed_workspace: PathBuf,
+}
+
+/// The descriptor cannot be paired with an unrelated Tool by a caller.
+pub struct ListedMcpTool {
+    tool: Arc<dyn Tool>,
+    descriptor: McpToolDescriptor,
+}
+
+impl ListedMcpTool {
+    pub fn tool(&self) -> &Arc<dyn Tool> {
+        &self.tool
+    }
+
+    pub fn descriptor(&self) -> &McpToolDescriptor {
+        &self.descriptor
+    }
+}
+
+/// A validated owner-selected launch, without a running child. The exact
+/// environment and resolved command are frozen here, then consumed by connect.
+/// Deliberately not Debug: command/environment values may contain credentials.
+pub struct PreparedSelectedGraph {
+    config: McpServerConfig,
+    sandbox: Sandbox,
+    workspace: PathBuf,
+    command: tokio::process::Command,
+    preflight: Option<tokio::process::Command>,
+    selected_remote_names: BTreeSet<String>,
+    launch_digest: String,
+}
+
+pub struct SelectedGraphTools {
+    client: Arc<McpClient>,
+    tools: Vec<ListedMcpTool>,
+    launch_digest: String,
+}
+
+impl SelectedGraphTools {
+    pub fn client(&self) -> &Arc<McpClient> {
+        &self.client
+    }
+
+    pub fn tools(&self) -> &[ListedMcpTool] {
+        &self.tools
+    }
+
+    pub fn launch_digest(&self) -> &str {
+        &self.launch_digest
+    }
+}
+
+impl PreparedSelectedGraph {
+    pub fn launch_digest(&self) -> &str {
+        &self.launch_digest
+    }
+
+    /// Spawn only the selected server; partial inventory or unsafe selected
+    /// metadata fails this start, never falls back to ordinary MCP attachment.
+    pub async fn connect(self) -> Result<SelectedGraphTools> {
+        if let Some(mut preflight) = self.preflight {
+            let output = tokio::time::timeout(
+                std::time::Duration::from_secs(60),
+                preflight
+                    .stdin(std::process::Stdio::null())
+                    .kill_on_drop(true)
+                    .output(),
+            )
+            .await
+            .context("selected graph bwrap preflight timed out")?
+            .context("starting selected graph bwrap preflight")?;
+            anyhow::ensure!(
+                output.status.success()
+                    && output.stdout
+                        == format!("{}\n", crate::sandbox::SELECTED_BWRAP_MARKER).as_bytes(),
+                "selected graph bwrap preflight failed"
+            );
+        } else if self.config.sandbox {
+            self.sandbox
+                .preflight(&self.workspace)
+                .await
+                .context("selected graph sandbox preflight failed")?;
+        }
+        let client = McpClient::connect_command(
+            &self.config,
+            &self.sandbox,
+            &self.workspace,
+            self.command,
+            true,
+        )
+        .await?;
+        let inventory = client.list_tools_with_descriptors().await?;
+        let mut tools = Vec::new();
+        for listed in inventory {
+            let d = listed.descriptor();
+            if !self.selected_remote_names.contains(&d.remote_name) {
+                continue;
+            }
+            anyhow::ensure!(
+                d.server_name == self.config.name
+                    && d.read_only
+                    && d.capabilities.private_data
+                    && d.capabilities.untrusted_input
+                    && d.capabilities.egress == Egress::None
+                    && !d.capabilities.destructive
+                    && d.effect == Some(crate::tool::effect::Effect::ReadThatRecords)
+                    && !d.deferred
+                    && d.fixed_workspace == self.workspace,
+                "selected graph tool `{}` has an unsupported effect or capability",
+                d.local_name
+            );
+            tools.push(listed);
+        }
+        anyhow::ensure!(
+            tools.len() == self.selected_remote_names.len(),
+            "selected graph server is missing a required enabled tool"
+        );
+        tools.sort_by(|left, right| left.descriptor.local_name.cmp(&right.descriptor.local_name));
+        Ok(SelectedGraphTools {
+            client,
+            tools,
+            launch_digest: self.launch_digest,
+        })
+    }
+}
+
+/// Freeze effective launch configuration before checking an existing chat's
+/// binding. This binds configuration, not executable bytes or graph contents;
+/// replacement at the same resolved path is outside the attestation claim.
+pub fn prepare_selected_graph(
+    config: &McpServerConfig,
+    sandbox: &Sandbox,
+    workspace: &Path,
+    selected_remote_names: &BTreeSet<String>,
+) -> Result<PreparedSelectedGraph> {
+    use crate::tool::effect::FirstParty;
+    anyhow::ensure!(
+        config.from_operator
+            && !config.disabled
+            && FirstParty::of(config) == Some(FirstParty::Graph),
+        "selected graph requires an enabled operator-global graph server"
+    );
+    anyhow::ensure!(
+        !selected_remote_names.is_empty()
+            && selected_remote_names
+                .iter()
+                .all(|name| matches!(name.as_str(), "kg_search" | "kg_entity" | "kg_task_list")),
+        "selected graph permits only kg_search, kg_entity and kg_task_list"
+    );
+    anyhow::ensure!(
+        !selected_remote_names
+            .iter()
+            .any(|name| config.disabled_tools.contains(name)),
+        "selected graph tool is disabled by its server configuration"
+    );
+    anyhow::ensure!(
+        !(config.sandbox && sandbox.backend() == Backend::Docker),
+        "selected graph cannot bind an executable resolved inside a Docker image"
+    );
+    let workspace = workspace
+        .canonicalize()
+        .context("resolving selected graph workspace")?;
+    anyhow::ensure!(
+        workspace.is_dir(),
+        "selected graph workspace is not a directory"
+    );
+    let mut config = config.clone();
+    // This restricted reader always handles graph content as untrusted,
+    // including configurations constructed in code rather than loaded from TOML.
+    config.capabilities.untrusted_input = true;
+    let environment = effective_environment(&config);
+    let executable = resolve_executable(&config.command, &environment, &workspace)?;
+    let mut resolved = config.clone();
+    resolved.command = executable
+        .to_str()
+        .context("selected graph command path is not UTF-8")?
+        .to_string();
+    let sandbox = match config.network {
+        Some(network) => sandbox.with_network(network),
+        None => sandbox.clone(),
+    };
+    let (mut command, mut preflight) = if config.sandbox && sandbox.backend() == Backend::Bwrap {
+        let (server, preflight) = sandbox.selected_mcp_bwrap_command(
+            &resolved.command,
+            &resolved.args,
+            &workspace,
+            &environment,
+        )?;
+        (server, Some(preflight))
+    } else {
+        (
+            McpClient::build_command_with_env(&resolved, &sandbox, &workspace, &environment)?,
+            None,
+        )
+    };
+    // Sandbox overrides cannot forge posture, including the selected bwrap
+    // path whose entire environment is carried outside argv.
+    command.env(SERVER_POSTURE.0, SERVER_POSTURE.1);
+    if let Some(preflight) = &mut preflight {
+        preflight.env(SERVER_POSTURE.0, SERVER_POSTURE.1);
+    }
+    let process = command.as_std();
+    let environment = process
+        .get_envs()
+        .map(|(key, value)| {
+            Ok((
+                key.to_str()
+                    .context("selected graph environment name is not UTF-8")?
+                    .to_string(),
+                value
+                    .context("selected graph environment unexpectedly removed")?
+                    .to_str()
+                    .context("selected graph environment value is not UTF-8")?
+                    .to_string(),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let args = process
+        .get_args()
+        .map(|arg| arg.to_str().context("selected graph argument is not UTF-8"))
+        .collect::<Result<Vec<_>>>()?;
+    let program = process
+        .get_program()
+        .to_str()
+        .context("selected graph launcher is not UTF-8")?;
+    let launcher = resolve_executable(program, &environment, &workspace)?;
+    // Only the digest leaves this function. Never log the descriptor: it holds
+    // explicit credentials and the effective permitted inherited environment.
+    let launch_digest = digest_json(&json!({
+        "version": "selected-graph-launch-v1",
+        "config": config,
+        "owner_zone": config.owner_zone,
+        "from_operator": config.from_operator,
+        "resolved_executable": executable,
+        "launcher": launcher,
+        "arguments": args,
+        "environment": environment,
+        "sandbox": sandbox.configuration(),
+        "workspace": workspace,
+    }));
+    Ok(PreparedSelectedGraph {
+        config,
+        sandbox,
+        workspace,
+        command,
+        preflight,
+        selected_remote_names: selected_remote_names.clone(),
+        launch_digest,
+    })
+}
+
+pub async fn connect_selected_graph(
+    config: &McpServerConfig,
+    sandbox: &Sandbox,
+    workspace: &Path,
+    selected_remote_names: &BTreeSet<String>,
+) -> Result<SelectedGraphTools> {
+    prepare_selected_graph(config, sandbox, workspace, selected_remote_names)?
+        .connect()
+        .await
+}
+
+fn effective_environment(config: &McpServerConfig) -> BTreeMap<String, String> {
+    let mut environment: BTreeMap<_, _> = Sandbox::child_env(&config.env_passthrough)
+        .into_iter()
+        .collect();
+    if let Some(zone) = &config.owner_zone {
+        environment.insert("MECHA_TZ".into(), zone.clone());
+    }
+    environment.extend(config.env.clone());
+    // Last: no explicit override may forge a run's posture for a shared server.
+    environment.insert(SERVER_POSTURE.0.into(), SERVER_POSTURE.1.into());
+    environment
+}
+
+fn resolve_executable(
+    program: &str,
+    environment: &BTreeMap<String, String>,
+    workspace: &Path,
+) -> Result<PathBuf> {
+    let executable = |path: &Path| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            path.metadata()
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        }
+        #[cfg(not(unix))]
+        {
+            path.is_file()
+        }
+    };
+    let path = Path::new(program);
+    let candidates: Vec<_> = if path.components().count() > 1 || path.is_absolute() {
+        vec![if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            workspace.join(path)
+        }]
+    } else {
+        let directories: Vec<_> = std::env::split_paths(
+            environment
+                .get("PATH")
+                .context("selected graph launch has no PATH")?,
+        )
+        .collect();
+        // PATH lookup must not implicitly choose code from the model workspace.
+        // Validate the whole list even if an earlier absolute entry matches.
+        anyhow::ensure!(
+            directories.iter().all(|directory| directory.is_absolute()),
+            "selected graph PATH requires only absolute directories"
+        );
+        directories
+            .into_iter()
+            .map(|directory| directory.join(path))
+            .collect()
+    };
+    candidates
+        .into_iter()
+        .find(|path| executable(path))
+        .context("selected graph executable is unavailable")?
+        .canonicalize()
+        .context("resolving selected graph executable")
+}
+
+fn digest_bytes(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn digest_json(value: &Value) -> String {
+    // Sorting recursively also stays deterministic if serde_json's
+    // preserve_order feature is enabled by a downstream application.
+    fn canonical(value: &Value) -> Value {
+        match value {
+            Value::Object(object) => {
+                let sorted: BTreeMap<_, _> = object
+                    .iter()
+                    .map(|(key, value)| (key.clone(), canonical(value)))
+                    .collect();
+                serde_json::to_value(sorted).expect("JSON map serializes")
+            }
+            Value::Array(array) => Value::Array(array.iter().map(canonical).collect()),
+            value => value.clone(),
+        }
+    }
+    digest_bytes(&serde_json::to_vec(&canonical(value)).expect("JSON value serializes"))
+}
+
+fn valid_input_schema(schema: Option<&Value>) -> bool {
+    schema.is_some_and(|schema| {
+        schema.get("type").and_then(Value::as_str) == Some("object")
+            && valid_schema_shape(schema, 0)
+    })
+}
+
+/// Structural validation, without resolving references or executing a schema.
+/// Unsupported annotation types must not silently become permissive defaults.
+fn valid_schema_shape(schema: &Value, depth: usize) -> bool {
+    if depth > 64 {
+        return false;
+    }
+    let Some(object) = schema.as_object() else {
+        return schema.is_boolean();
+    };
+    let strings = |value: &Value| {
+        value.as_array().is_some_and(|values| {
+            let mut unique = BTreeSet::new();
+            values
+                .iter()
+                .all(|value| value.as_str().is_some_and(|s| unique.insert(s)))
+        })
+    };
+    let schema_array = |value: &Value| {
+        value.as_array().is_some_and(|values| {
+            !values.is_empty()
+                && values
+                    .iter()
+                    .all(|value| valid_schema_shape(value, depth + 1))
+        })
+    };
+    object.iter().all(|(key, value)| match key.as_str() {
+        "type" => {
+            let known = |name: &str| {
+                matches!(
+                    name,
+                    "null" | "boolean" | "object" | "array" | "number" | "integer" | "string"
+                )
+            };
+            value.as_str().is_some_and(known)
+                || (strings(value)
+                    && value.as_array().is_some_and(|values| {
+                        !values.is_empty() && values.iter().all(|v| v.as_str().is_some_and(known))
+                    }))
+        }
+        "properties" | "patternProperties" | "$defs" | "definitions" | "dependentSchemas" => value
+            .as_object()
+            .is_some_and(|values| values.values().all(|v| valid_schema_shape(v, depth + 1))),
+        "additionalProperties"
+        | "unevaluatedProperties"
+        | "propertyNames"
+        | "additionalItems"
+        | "unevaluatedItems"
+        | "contains"
+        | "not"
+        | "if"
+        | "then"
+        | "else"
+        | "contentSchema" => valid_schema_shape(value, depth + 1),
+        "items" => valid_schema_shape(value, depth + 1) || schema_array(value),
+        "allOf" | "anyOf" | "oneOf" | "prefixItems" => schema_array(value),
+        "required" => strings(value),
+        "dependentRequired" => value
+            .as_object()
+            .is_some_and(|values| values.values().all(strings)),
+        "dependencies" => value.as_object().is_some_and(|values| {
+            values
+                .values()
+                .all(|v| strings(v) || valid_schema_shape(v, depth + 1))
+        }),
+        "enum" => value.as_array().is_some_and(|values| !values.is_empty()),
+        "minimum" | "maximum" => value.is_number(),
+        "multipleOf" => value.as_f64().is_some_and(|number| number > 0.0),
+        "exclusiveMinimum" | "exclusiveMaximum" => value.is_number() || value.is_boolean(),
+        "minLength" | "maxLength" | "minItems" | "maxItems" | "minProperties" | "maxProperties"
+        | "minContains" | "maxContains" => value.as_u64().is_some(),
+        "uniqueItems" | "readOnly" | "writeOnly" | "deprecated" => value.is_boolean(),
+        "$schema" | "$id" | "$ref" | "$anchor" | "$dynamicRef" | "$dynamicAnchor" | "$comment"
+        | "title" | "description" | "format" | "pattern" | "contentEncoding"
+        | "contentMediaType" => value.is_string(),
+        // JSON Schema permits annotations and extension keywords. They confer
+        // no tool authority and are still bound by the schema digest.
+        _ => true,
+    })
+}
+
+fn valid_tool_annotations(tool: &Value) -> bool {
+    tool.get("annotations").is_none_or(|annotations| {
+        annotations.is_object()
+            && [
+                "readOnlyHint",
+                "destructiveHint",
+                "openWorldHint",
+                "idempotentHint",
+            ]
+            .iter()
+            .all(|key| annotations.get(key).is_none_or(Value::is_boolean))
+    }) && tool.get("_meta").is_none_or(|meta| {
+        meta.is_object() && meta.get(BACKGROUND_META).is_none_or(Value::is_boolean)
+    })
+}
+
+fn text_only_result(result: &Value) -> bool {
+    result.get("isError").is_none_or(Value::is_boolean)
+        && result
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|parts| {
+                !parts.is_empty()
+                    && parts.iter().all(|part| {
+                        part.get("type").and_then(Value::as_str) == Some("text")
+                            && part.get("text").is_some_and(Value::is_string)
+                    })
+                    && parts
+                        .iter()
+                        .any(|part| part["text"].as_str().is_some_and(|text| !text.is_empty()))
+            })
+}
 
 /// Only locally observed transport failures carry this type. A JSON-RPC
 /// error or tool refusal is not evidence of an outage.
@@ -66,6 +550,8 @@ const SERVER_POSTURE: (&str, &str) = (
 
 pub struct McpClient {
     name: String,
+    /// Selected memory graph connections refuse unsupported content rather than flattening it.
+    text_only: bool,
     /// Whether tools register as `<name>__<tool>` (the collision-proof
     /// default) or under their raw names. See [`McpServerConfig::prefix_tools`].
     prefix_tools: bool,
@@ -124,6 +610,15 @@ impl McpClient {
         cfg: &McpServerConfig,
         sandbox: &Sandbox,
         workspace: &Path,
+    ) -> Result<tokio::process::Command> {
+        Self::build_command_with_env(cfg, sandbox, workspace, &effective_environment(cfg))
+    }
+
+    fn build_command_with_env(
+        cfg: &McpServerConfig,
+        sandbox: &Sandbox,
+        workspace: &Path,
+        environment: &BTreeMap<String, String>,
     ) -> Result<tokio::process::Command> {
         // Same rule as `shell`: asking to be confined and silently not being
         // confined is the worst outcome, because the decision was made on the
@@ -184,19 +679,7 @@ impl McpClient {
         // inherited environment, which is how a server ends up holding your
         // provider keys without anyone deciding it should.
         command.env_clear();
-        command.envs(Sandbox::child_env(&cfg.env_passthrough));
-        // The owner's zone from `[agent] timezone`, beneath `env` so an
-        // explicit value still wins. See `McpServerConfig::owner_zone`.
-        if let Some(zone) = &cfg.owner_zone {
-            command.env("MECHA_TZ", zone);
-        }
-        command.envs(&cfg.env);
-        // Last, so no `env` line can name it: a server outlives the run that
-        // started it and serves whichever run holds the agent, so no run's
-        // posture is true of it — and unstamped would read as the owner at a
-        // terminal, the worse forgery `closure::decide` names (review of
-        // #293). `unknown` refuses a closure from anything the server spawns.
-        command.env(SERVER_POSTURE.0, SERVER_POSTURE.1);
+        command.envs(environment);
 
         Ok(command)
     }
@@ -213,7 +696,17 @@ impl McpClient {
         sandbox: &Sandbox,
         workspace: &Path,
     ) -> Result<Arc<Self>> {
-        let mut command = Self::build_command(cfg, sandbox, workspace)?;
+        let command = Self::build_command(cfg, sandbox, workspace)?;
+        Self::connect_command(cfg, sandbox, workspace, command, false).await
+    }
+
+    async fn connect_command(
+        cfg: &McpServerConfig,
+        sandbox: &Sandbox,
+        workspace: &Path,
+        mut command: tokio::process::Command,
+        text_only: bool,
+    ) -> Result<Arc<Self>> {
         let container = if cfg.sandbox && sandbox.backend() == Backend::Docker {
             let container = DockerContainer::create(command).await?;
             command = container.start_command();
@@ -284,6 +777,7 @@ impl McpClient {
 
         let client = Arc::new(McpClient {
             name: cfg.name.clone(),
+            text_only,
             prefix_tools: cfg.prefix_tools.unwrap_or(true),
             forced: cfg.capabilities.into(),
             trust_result_claims: cfg.trust_result_claims,
@@ -485,6 +979,43 @@ impl McpClient {
 
     /// Ask the server what it can do, and wrap each answer as a [`Tool`].
     pub async fn list_tools(self: &Arc<Self>) -> Result<Vec<Arc<dyn Tool>>> {
+        Ok(self
+            .list_tools_inner(false)
+            .await?
+            .into_iter()
+            .map(|tool| Arc::new(tool) as Arc<dyn Tool>)
+            .collect())
+    }
+
+    /// Strict inventory for a caller that binds a selected server's actual surface.
+    /// Origin is carried beside tool construction, never inferred from its name.
+    pub async fn list_tools_with_descriptors(self: &Arc<Self>) -> Result<Vec<ListedMcpTool>> {
+        Ok(self
+            .list_tools_inner(true)
+            .await?
+            .into_iter()
+            .map(|tool| {
+                let descriptor = McpToolDescriptor {
+                    server_name: self.name.clone(),
+                    local_name: tool.local_name.clone(),
+                    remote_name: tool.remote_name.clone(),
+                    schema_digest: digest_json(&tool.schema),
+                    description_digest: digest_bytes(tool.description.as_bytes()),
+                    read_only: tool.read_only,
+                    capabilities: tool.capabilities,
+                    effect: tool.effect,
+                    deferred: tool.background,
+                    fixed_workspace: self.workspace.clone(),
+                };
+                ListedMcpTool {
+                    tool: Arc::new(tool),
+                    descriptor,
+                }
+            })
+            .collect())
+    }
+
+    async fn list_tools_inner(self: &Arc<Self>, strict: bool) -> Result<Vec<McpTool>> {
         // Paged: a server with more tools than one page returns a
         // `nextCursor`, and stopping at page one silently shrinks its
         // surface — tools the config counted on simply would not exist.
@@ -492,12 +1023,25 @@ impl McpClient {
         // startup.
         let mut tools = Vec::new();
         let mut cursor: Option<String> = None;
+        let mut cursors = BTreeSet::new();
         for _ in 0..100 {
             let params = match cursor.take() {
                 Some(c) => json!({"cursor": c}),
                 None => json!({}),
             };
             let result = self.request("tools/list", params).await?;
+            if strict {
+                anyhow::ensure!(
+                    result.get("tools").is_some_and(Value::is_array),
+                    "selected MCP inventory has no tools array"
+                );
+                anyhow::ensure!(
+                    result
+                        .get("nextCursor")
+                        .is_none_or(|value| value.is_string()),
+                    "selected MCP inventory has an invalid cursor"
+                );
+            }
             tools.extend(
                 result
                     .get("tools")
@@ -506,15 +1050,58 @@ impl McpClient {
                     .unwrap_or_default(),
             );
             match result.get("nextCursor").and_then(Value::as_str) {
-                Some(c) if !c.is_empty() => cursor = Some(c.to_string()),
+                Some(c) if !c.is_empty() => {
+                    anyhow::ensure!(
+                        !strict || cursors.insert(c.to_string()),
+                        "selected MCP inventory repeats a pagination cursor"
+                    );
+                    cursor = Some(c.to_string());
+                }
                 _ => break,
             }
         }
         if cursor.is_some() {
+            anyhow::ensure!(
+                !strict,
+                "selected MCP inventory is incomplete after 100 pages"
+            );
             tracing::warn!(
                 server = %self.name,
                 "tools/list still paging after 100 pages; taking what arrived"
             );
+        }
+
+        if strict {
+            let mut remote_names = BTreeSet::new();
+            let mut local_names = BTreeSet::new();
+            for tool in &tools {
+                let remote = tool
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.is_empty())
+                    .context("selected MCP inventory has an invalid tool name")?;
+                let local = if self.prefix_tools {
+                    format!("{}__{remote}", self.name)
+                } else {
+                    remote.to_string()
+                };
+                anyhow::ensure!(
+                    remote_names.insert(remote) && local_names.insert(local),
+                    "selected MCP inventory contains duplicate tool names"
+                );
+                anyhow::ensure!(
+                    valid_input_schema(tool.get("inputSchema")),
+                    "selected MCP inventory contains an invalid input schema"
+                );
+                anyhow::ensure!(
+                    valid_tool_annotations(tool),
+                    "selected MCP inventory contains malformed annotations"
+                );
+                anyhow::ensure!(
+                    tool.get("description").is_none_or(Value::is_string),
+                    "selected MCP inventory contains an invalid description"
+                );
+            }
         }
 
         // A name the config withholds that the server does not list is a
@@ -570,7 +1157,7 @@ impl McpClient {
                         .filter(|e| *e != crate::tool::effect::Effect::Workspace),
                 );
 
-                Some(Arc::new(McpTool {
+                Some(McpTool {
                     background,
                     persona: None,
                     effect,
@@ -621,7 +1208,7 @@ impl McpClient {
                         .cloned()
                         .unwrap_or_else(|| json!({"type": "object"})),
                     client: Arc::clone(self),
-                }) as Arc<dyn Tool>)
+                })
             })
             .collect())
     }
@@ -637,8 +1224,14 @@ impl McpClient {
 
     /// A `tools/call` result as a [`ToolOutput`] — one conversion for the
     /// inline call and the deferred one, so a late result carries exactly the
-    /// provenance an inline one would (`external`, always; §8).
+    /// provenance an inline one would: retained server content is external;
+    /// a local withholding notice contains only the harness's words (§8).
     fn output_of(&self, result: &Value) -> ToolOutput {
+        if self.text_only && !text_only_result(result) {
+            return ToolOutput::err(
+                "Selected graph response withheld: expected nonempty text-only MCP content.",
+            );
+        }
         // Content is a list of typed parts; we flatten the text ones and note
         // anything else rather than silently dropping it.
         let mut text = Vec::new();
@@ -991,6 +1584,60 @@ fn result_claims_not_dispatched(result: &Value, trusted: bool, is_error: bool) -
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[cfg(unix)]
+    fn selected_path_rejects_workspace_relative_components_before_prepare() {
+        use std::os::unix::fs::PermissionsExt;
+        let workspace =
+            std::env::temp_dir().join(format!("mecha-selected-path-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(workspace.join("bin")).unwrap();
+        for directory in [&workspace, &workspace.join("bin")] {
+            let program = directory.join("mecha-graph-mcp");
+            std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let mut config = McpServerConfig {
+            name: "graph".into(),
+            command: "mecha-graph-mcp".into(),
+            from_operator: true,
+            ..Default::default()
+        };
+        let selected = ["kg_search".to_string()].into();
+        let absolute = workspace.join("bin").display().to_string();
+        let mut accepted = Vec::new();
+        for path in [
+            ".".to_string(),
+            String::new(),
+            "bin".to_string(),
+            format!(".:{absolute}"),
+            format!(":{absolute}"),
+            format!("bin:{absolute}"),
+            format!("{absolute}:"),
+            format!("{absolute}:."),
+            format!("{absolute}:bin"),
+        ] {
+            config.env.insert("PATH".into(), path.clone());
+            if prepare_selected_graph(&config, &Sandbox::default(), &workspace, &selected).is_ok() {
+                accepted.push(path);
+            }
+        }
+        config.env.insert("PATH".into(), absolute);
+        assert!(
+            prepare_selected_graph(&config, &Sandbox::default(), &workspace, &selected).is_ok()
+        );
+        // An explicit operator-authored relative command is not PATH lookup.
+        config.command = "./bin/mecha-graph-mcp".into();
+        config.env.insert("PATH".into(), ".".into());
+        assert!(
+            prepare_selected_graph(&config, &Sandbox::default(), &workspace, &selected).is_ok()
+        );
+        std::fs::remove_dir_all(workspace).unwrap();
+        assert!(
+            accepted.is_empty(),
+            "selected PATH accepted workspace-relative components: {accepted:?}"
+        );
+    }
+
     #[test]
     fn local_transport_evidence_survives_without_trusting_error_text() {
         let pipe =

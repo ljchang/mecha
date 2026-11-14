@@ -635,6 +635,7 @@ mod tests {
         use crate::message::{Block, Message, Role};
         let call = |id: &str, input: Value| Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::Assistant,
@@ -663,6 +664,7 @@ mod tests {
             // Not this tool's call, whatever its arguments say.
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,

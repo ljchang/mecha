@@ -29,10 +29,19 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 mod docker;
 pub mod seatbelt;
+
+pub(crate) const SELECTED_BWRAP_MARKER: &str = "mecha-selected-bwrap-ok";
+
+#[derive(Clone, Copy)]
+enum BwrapEnvironment {
+    ClearInherited,
+    FrozenSelectedMcp,
+}
 pub(crate) use docker::DockerContainer;
 
 /// Push a run of arguments. A closure would borrow the vector for its whole
@@ -187,6 +196,12 @@ impl Sandbox {
             }
         }
         Sandbox { cfg }
+    }
+
+    /// The policy captured by a prepared selected MCP launch, including
+    /// Landlock rules which cannot be recovered from process arguments.
+    pub(crate) fn configuration(&self) -> &SandboxConfig {
+        &self.cfg
     }
 
     pub fn backend(&self) -> Backend {
@@ -390,6 +405,69 @@ impl Sandbox {
                 Ok(c)
             }
         }
+    }
+
+    /// A selected MCP launch carries only its frozen allowlist in the process
+    /// environment, never in argv. Ordinary sandbox commands still clear their
+    /// inherited environment inside bwrap. Scoped launchers are refused here:
+    /// their environment additions have not been qualified for this path.
+    pub(crate) fn selected_mcp_bwrap_command(
+        &self,
+        program: &str,
+        args: &[String],
+        workspace: &Path,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<(tokio::process::Command, tokio::process::Command)> {
+        anyhow::ensure!(
+            self.cfg.kind == Backend::Bwrap,
+            "selected MCP requires bwrap"
+        );
+        anyhow::ensure!(
+            self.cfg.memory_mb.is_none() && self.cfg.cpus.is_none(),
+            "selected graph does not support bwrap scoped resource limits"
+        );
+        let environment = self.selected_mcp_environment(workspace, environment)?;
+        validate_selected_bwrap_environment(&environment)?;
+        let launcher = selected_bwrap_launcher(&environment, workspace)?;
+        let confined = self.bwrap_args_with_environment(
+            workspace,
+            workspace,
+            BwrapEnvironment::FrozenSelectedMcp,
+        )?;
+        Ok(selected_bwrap_commands(
+            &launcher,
+            &confined,
+            &environment,
+            program,
+            args,
+        ))
+    }
+
+    fn selected_mcp_environment(
+        &self,
+        workspace: &Path,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<BTreeMap<String, String>> {
+        let mut environment = environment.clone();
+        // Match ordinary bwrap precedence: synthetic defaults, then explicit
+        // sandbox overrides. The MCP caller forces its server posture last.
+        environment.insert(
+            "PATH".into(),
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into(),
+        );
+        environment.insert(
+            "HOME".into(),
+            absolute(workspace)?
+                .to_str()
+                .context("selected MCP workspace is not UTF-8")?
+                .into(),
+        );
+        for name in &self.cfg.env {
+            if let Ok(value) = std::env::var(name) {
+                environment.insert(name.clone(), value);
+            }
+        }
+        Ok(environment)
     }
 
     /// Landlock has no wrapper argv: the rules are applied *in the child*,
@@ -611,6 +689,15 @@ impl Sandbox {
     /// Arguments up to (but not including) the command itself. Split out so the
     /// policy can be asserted on in tests without spawning anything.
     pub fn bwrap_args(&self, workspace: &Path, cwd: &Path) -> Result<Vec<String>> {
+        self.bwrap_args_with_environment(workspace, cwd, BwrapEnvironment::ClearInherited)
+    }
+
+    fn bwrap_args_with_environment(
+        &self,
+        workspace: &Path,
+        cwd: &Path,
+        environment: BwrapEnvironment,
+    ) -> Result<Vec<String>> {
         let mut a: Vec<String> = Vec::new();
 
         // `--die-with-parent` so a wedged command cannot outlive mecha.
@@ -664,6 +751,10 @@ impl Sandbox {
         }
 
         args!(a, "--chdir", absolute(cwd)?.display());
+
+        if matches!(environment, BwrapEnvironment::FrozenSelectedMcp) {
+            return Ok(a);
+        }
 
         // Nothing from the parent environment survives unless it is named.
         // API keys live in the environment; a confined command that inherits
@@ -1021,6 +1112,85 @@ fn diagnose(kind: Backend, stderr: &str) -> String {
     }
 }
 
+fn selected_bwrap_commands(
+    launcher: &Path,
+    confined: &[String],
+    environment: &BTreeMap<String, String>,
+    program: &str,
+    args: &[String],
+) -> (tokio::process::Command, tokio::process::Command) {
+    let build = |program: &str, args: &[String]| {
+        let mut command = tokio::process::Command::new(launcher);
+        command
+            .env_clear()
+            .envs(environment)
+            .args(confined)
+            .arg("--")
+            .arg(program)
+            .args(args);
+        command
+    };
+    (
+        build(program, args),
+        build("/bin/echo", &[SELECTED_BWRAP_MARKER.into()]),
+    )
+}
+
+fn validate_selected_bwrap_environment(environment: &BTreeMap<String, String>) -> Result<()> {
+    // These can load code into the launcher before namespaces are established.
+    // Refuse them regardless of which explicit allowlist supplied the value.
+    anyhow::ensure!(
+        !environment.keys().any(|name| name.starts_with("LD_")
+            || name.starts_with("DYLD_")
+            || matches!(name.as_str(), "GCONV_PATH" | "GLIBC_TUNABLES")),
+        "selected graph bwrap refuses dynamic-loader environment controls"
+    );
+    Ok(())
+}
+
+fn selected_bwrap_launcher(
+    environment: &BTreeMap<String, String>,
+    workspace: &Path,
+) -> Result<PathBuf> {
+    let path = environment
+        .get("PATH")
+        .context("selected bwrap has no PATH")?;
+    let directories: Vec<_> = std::env::split_paths(path).collect();
+    anyhow::ensure!(
+        directories.iter().all(|directory| directory.is_absolute()),
+        "selected bwrap PATH requires only absolute directories"
+    );
+    let launcher = directories
+        .into_iter()
+        .map(|directory| directory.join("bwrap"))
+        .find(|candidate| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                candidate
+                    .metadata()
+                    .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+            }
+            #[cfg(not(unix))]
+            {
+                candidate.is_file()
+            }
+        })
+        .context("selected bwrap launcher is unavailable on its frozen PATH")?
+        .canonicalize()
+        .context("resolving selected bwrap launcher")?;
+    // Unlike an explicitly owner-selected server, the confinement executable
+    // must not be writable through the model's workspace, even via a symlink.
+    let workspace = workspace
+        .canonicalize()
+        .context("resolving selected bwrap workspace")?;
+    anyhow::ensure!(
+        !launcher.starts_with(&workspace),
+        "selected bwrap launcher must be outside the workspace"
+    );
+    Ok(launcher)
+}
+
 fn absolute(path: &Path) -> Result<PathBuf> {
     path.canonicalize()
         .with_context(|| format!("cannot resolve {}", path.display()))
@@ -1335,6 +1505,254 @@ mod tests {
             .map(|(i, _)| args[i + 1].clone())
             .collect();
         assert_eq!(binds, vec![workspace.display().to_string()]);
+    }
+
+    #[test]
+    fn selected_bwrap_keeps_confinement_and_credentials_out_of_argv() {
+        let workspace = std::env::temp_dir().canonicalize().unwrap();
+        let sandbox = Sandbox::new(cfg(Backend::Bwrap));
+        let ordinary = sandbox.bwrap_args(&workspace, &workspace).unwrap();
+        let selected = sandbox
+            .bwrap_args_with_environment(
+                &workspace,
+                &workspace,
+                BwrapEnvironment::FrozenSelectedMcp,
+            )
+            .unwrap();
+        let clear = ordinary.iter().position(|arg| arg == "--clearenv").unwrap();
+        assert_eq!(selected, ordinary[..clear]);
+        assert!(!selected
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "--clearenv" | "--setenv")));
+        let environment = sandbox
+            .selected_mcp_environment(
+                &workspace,
+                &BTreeMap::from([
+                    ("GRAPH_AUTH".into(), "authored-secret-sentinel".into()),
+                    ("PATH".into(), "authored-ignored-path".into()),
+                    ("HOME".into(), "authored-ignored-home".into()),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(environment["GRAPH_AUTH"], "authored-secret-sentinel");
+        assert_eq!(environment["HOME"], workspace.to_str().unwrap());
+        assert_eq!(
+            environment["PATH"],
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        );
+        assert!(!selected
+            .iter()
+            .any(|arg| arg.contains("authored-secret-sentinel")));
+        let sandbox = Sandbox::new(SandboxConfig {
+            env: vec!["PATH".into()],
+            ..cfg(Backend::Bwrap)
+        });
+        if let Ok(path) = std::env::var("PATH") {
+            assert_eq!(
+                sandbox
+                    .selected_mcp_environment(&workspace, &environment)
+                    .unwrap()["PATH"],
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn selected_bwrap_preflight_and_server_share_frozen_launch_without_secret_argv() {
+        let workspace = std::env::temp_dir().canonicalize().unwrap();
+        let sandbox = Sandbox::new(cfg(Backend::Bwrap));
+        let args = sandbox
+            .bwrap_args_with_environment(
+                &workspace,
+                &workspace,
+                BwrapEnvironment::FrozenSelectedMcp,
+            )
+            .unwrap();
+        let environment =
+            BTreeMap::from([("GRAPH_AUTH".into(), "authored-secret-sentinel".into())]);
+        let launcher = workspace.join("authored-bwrap");
+        let (server, preflight) =
+            selected_bwrap_commands(&launcher, &args, &environment, "/authored/server", &[]);
+        for command in [&server, &preflight] {
+            let command = command.as_std();
+            assert_eq!(command.get_program(), launcher.as_os_str());
+            let actual: Vec<_> = command.get_args().collect();
+            assert_eq!(
+                &actual[..args.len()],
+                args.iter().map(std::ffi::OsStr::new).collect::<Vec<_>>()
+            );
+            assert!(!actual
+                .iter()
+                .any(|arg| arg.to_string_lossy().contains("authored-secret-sentinel")));
+            assert_eq!(
+                command.get_envs().collect::<Vec<_>>(),
+                vec![(
+                    std::ffi::OsStr::new("GRAPH_AUTH"),
+                    Some(std::ffi::OsStr::new("authored-secret-sentinel"))
+                )]
+            );
+        }
+        assert_eq!(
+            preflight.as_std().get_args().last().unwrap(),
+            SELECTED_BWRAP_MARKER
+        );
+    }
+
+    #[test]
+    fn selected_bwrap_refuses_loader_controls_without_disclosing_values() {
+        for name in [
+            "LD_PRELOAD",
+            "LD_AUDIT",
+            "LD_LIBRARY_PATH",
+            "DYLD_INSERT_LIBRARIES",
+            "GCONV_PATH",
+            "GLIBC_TUNABLES",
+        ] {
+            let environment = BTreeMap::from([(name.into(), "authored-loader-secret".into())]);
+            let error = Sandbox::new(cfg(Backend::Bwrap))
+                .selected_mcp_bwrap_command("server", &[], &std::env::temp_dir(), &environment)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("dynamic-loader"));
+            assert!(!error.contains("authored-loader-secret"));
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn selected_path_rejects_workspace_relative_components_before_bwrap() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "mecha-selected-bwrap-path-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let workspace = root.join("workspace");
+        let trusted = root.join("trusted");
+        std::fs::create_dir_all(workspace.join("bin")).unwrap();
+        std::fs::create_dir_all(&trusted).unwrap();
+        for directory in [&workspace, &workspace.join("bin"), &trusted] {
+            let program = directory.join("bwrap");
+            std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let absolute = trusted.display().to_string();
+        let mut accepted = Vec::new();
+        for path in [
+            ".".to_string(),
+            String::new(),
+            "bin".to_string(),
+            format!(".:{absolute}"),
+            format!(":{absolute}"),
+            format!("bin:{absolute}"),
+            format!("{absolute}:"),
+            format!("{absolute}:."),
+            format!("{absolute}:bin"),
+        ] {
+            let environment = BTreeMap::from([("PATH".into(), path.clone())]);
+            if selected_bwrap_launcher(&environment, &workspace).is_ok() {
+                accepted.push(path);
+            }
+        }
+        let environment = BTreeMap::from([("PATH".into(), absolute)]);
+        assert_eq!(
+            selected_bwrap_launcher(&environment, &workspace).unwrap(),
+            trusted.join("bwrap").canonicalize().unwrap()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(
+            accepted.is_empty(),
+            "selected bwrap PATH accepted workspace-relative components: {accepted:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn selected_bwrap_refuses_launchers_inside_the_workspace_even_through_symlinks() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let root =
+            std::env::temp_dir().join(format!("mecha-bwrap-containment-{}", uuid::Uuid::new_v4()));
+        let workspace = root.join("workspace");
+        let outside = root.join("outside");
+        let trusted = root.join("trusted");
+        for directory in [&workspace, &outside, &trusted] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        for directory in [&workspace, &trusted] {
+            let program = directory.join("bwrap");
+            std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        symlink(workspace.join("bwrap"), outside.join("bwrap")).unwrap();
+        let mut accepted = Vec::new();
+        for directory in [&workspace, &outside] {
+            let environment = BTreeMap::from([("PATH".into(), directory.display().to_string())]);
+            if selected_bwrap_launcher(&environment, &workspace).is_ok() {
+                accepted.push(directory.display().to_string());
+            }
+        }
+        let environment = BTreeMap::from([("PATH".into(), trusted.display().to_string())]);
+        assert_eq!(
+            selected_bwrap_launcher(&environment, &workspace).unwrap(),
+            trusted.join("bwrap").canonicalize().unwrap()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(
+            accepted.is_empty(),
+            "selected bwrap accepted workspace-owned launcher targets: {accepted:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn selected_bwrap_resolves_the_launcher_from_its_final_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            std::env::temp_dir().join(format!("mecha-selected-launcher-{}", uuid::Uuid::new_v4()));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        for directory in ["first", "second"] {
+            std::fs::create_dir_all(root.join(directory)).unwrap();
+            let executable = root.join(directory).join("bwrap");
+            std::fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        for directory in ["first", "second"] {
+            let environment =
+                BTreeMap::from([("PATH".into(), root.join(directory).display().to_string())]);
+            let launcher = selected_bwrap_launcher(&environment, &workspace).unwrap();
+            assert_eq!(
+                launcher,
+                root.join(directory).join("bwrap").canonicalize().unwrap()
+            );
+            assert!(launcher.is_absolute());
+        }
+        assert!(selected_bwrap_launcher(
+            &BTreeMap::from([("PATH".into(), "missing".into())]),
+            &workspace
+        )
+        .is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn selected_bwrap_refuses_unqualified_scoped_limits() {
+        for limits in [(Some(64), None), (None, Some(1.0))] {
+            let sandbox = Sandbox::new(SandboxConfig {
+                memory_mb: limits.0,
+                cpus: limits.1,
+                ..cfg(Backend::Bwrap)
+            });
+            let result = sandbox.selected_mcp_bwrap_command(
+                "server",
+                &[],
+                &std::env::temp_dir(),
+                &BTreeMap::new(),
+            );
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("scoped resource limits"));
+        }
     }
 
     #[test]

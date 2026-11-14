@@ -83,6 +83,7 @@ mecha run [OPTIONS] [PROMPT]
 | `--no-stream` | Wait for the whole answer instead of streaming it. |
 | `--resume <ID>` | Continue a saved session by id or unique prefix. |
 | `--goal <KIND:ID>` | Confirm what this run serves: `task:<id>`, `project:<id>`, `charter:<id>` or `setpoint:<id>`. Overrides the saved anchor when resuming; omitting it preserves the anchor. |
+| `--episodic-memory <FILE>` | Experimental encrypted memory for a fresh ordinary run, available in `memory-prototype` builds. Requires an explicit host manifest, confirmed goal and supported restricted profile; see [episodic memory](/docs/features/memory#experimental-episodic-memory-for-ordinary-runs). |
 | `--appraisal-evidence <FILE>` | Owner-authored commitment/check evidence for the matching `--goal`; see [anticipatory appraisal](/docs/features/appraisal/anticipation). |
 | `--mismatch-case <FILE>` | Owner-authored JSON fixture for isolated artifact validation of later mismatches; `mecha validate --trigger mismatch` reads it back. Conflicts with `--resume`, `--no-session`, `--image` and `--appraisal-evidence`. |
 | `--no-session` | Do not write a transcript. |
@@ -126,6 +127,25 @@ mecha run --json --yes --max-cost 0.25 \
 # Piped in, continuing an earlier session.
 git log --oneline -20 | mecha run - --resume 20260805T091500
 ```
+
+## `memory-session`
+
+Host-only management of an explicitly selected ordinary-session memory store.
+Available in builds with `memory-prototype`:
+
+```text
+mecha memory-session --request FILE init
+mecha memory-session --request FILE retry RUN_ID
+mecha memory-session --request FILE forget RUN_ID
+```
+
+`init` creates a new encrypted database, key and private authority; it never
+overwrites existing paths. `retry` admits an already sealed capture after current
+source checks, and `forget` withdraws an episode and purges dependent memory in
+the selected store. These commands print JSON and execute no provider or tool.
+They do not require the original task directory and do not discover other stores.
+See [episodic memory](/docs/features/memory#experimental-episodic-memory-for-ordinary-runs)
+for the manifest, supported run profile and external-file protection limits.
 
 ## `chat`
 
@@ -1077,7 +1097,72 @@ mecha polls pick POLL_ID 1
 outcomes into poll records; repeating it is safe. Review the chosen action in
 the outbox. See [Polls](/docs/features/public-surface/polls).
 
+## `memory` (experimental build only)
+
+Synthetic memory-store qualification through the main Mecha binary. Build with
+`cargo build -p mecha-cli --features memory-prototype --locked`; normal builds
+omit this command. Both acknowledgement and database path are required:
+
+```sh
+mecha memory --experimental --db /tmp/demo.memory-prototype.sqlite demo
+mecha memory --experimental --db /tmp/demo.memory-prototype.sqlite inspect
+mecha memory --experimental --db /tmp/demo.memory-prototype.sqlite query works --valid-at 2026-07-01T00:00:00Z
+mecha memory --experimental --db /tmp/demo.memory-prototype.sqlite query works --known-at 4 --valid-at 2026-07-01T00:00:00Z
+mecha memory --experimental --db /tmp/demo.memory-prototype.sqlite forget employment
+```
+
+`demo` creates a new synthetic fixture; existing files are never overwritten.
+The required suffix is `.memory-prototype.sqlite`; canonical ancestor directories
+named `.mecha` or `.mecha-graph` are refused. Commands return JSON. `query` defaults
+to current knowledge and definite temporal matches; `--include-possible` admits
+unknown bounds, and `--limit N` changes the default cap of 20. `forget` removes
+the source and dependent revisions from historical queries too.
+
+This command family remains **synthetic-data only**. The basic examples above
+use plaintext SQLite and do not load Mecha configuration or call a model.
+Supported native and read/write commands can explicitly select encrypted storage
+with `--key-file`; `key-generate`, `backup` and `restore` provide key creation,
+encrypted snapshots and bounded historical recovery. External JSONL, authority
+files and task artifacts are outside database encryption.
+
+`evaluate-hybrid --synthetic-input` compares lexical, dense and combined retrieval
+in a new plaintext synthetic fixture. It requires `--endpoint`, `--expected-alias`,
+`--artifact-revision`, `--dimensions`, `--pooling` and `--normalization` explicitly.
+Only numeric loopback HTTP is accepted; redirects and proxies are disabled.
+It uses the embedding service, keeps vectors in RAM and reports fallback separately
+from successful semantic retrieval. Key selection and existing output databases
+are refused. This does not enable vector search in ordinary chat.
+
+`native-session --recall-request /absolute/path/recall.json` selects controlled
+lexical or dense recall for one synthetic session. The host JSON supplies the
+exact query and, for dense mode, the explicit local embedding profile. One call
+is allowed under a 15-second retrieval deadline; source authority and the existing
+packet limits still apply. The saved report distinguishes successful recall from
+fallback, missing calls and failures. An unsatisfied recall protocol returns
+nonzero even when the saved answer is correct. Omit the flag for ordinary native
+prototype behavior; it does not change normal chat/web retrieval.
+
+`native-session --completion-request /absolute/path/completion.json` enables
+one bounded completion notice inside the original run. The public shape file
+looks like `{"rows":1,"keys":["choice"]}`: exact row count and string-valued
+keys, without answer values. It checks the saved artifact and any selected
+required recall, while hidden answer correctness remains a separate evaluation.
+It cannot repeat a consumed recall or reset the session budgets. Unsatisfied
+completion returns nonzero, and the saved report retains first/latest readiness
+observations. Omit the flag to leave native completion behavior unchanged.
+
+Explicitly selected model-evaluation, extraction and native-session workflows
+can call resident local models through explicit settings; they bypass ordinary
+provider configuration. See the
+[prototype guide](https://github.com/ljchang/mecha/blob/codex/mecha-memory-v2-prototype/prototypes/memory/README.md)
+for supported commands, acknowledgements and recovery limits. These commands do
+not migrate graph data or nightly jobs, or activate normal chat/web memory.
+Production integration and private-data qualification remain separate work.
+
 ## `kg`
+
+The experimental replacement memory store has a separate command (above).
+`kg` continues to use the existing graph.
 
 Read and maintain the graph through the configured `kg_*` MCP tools.
 

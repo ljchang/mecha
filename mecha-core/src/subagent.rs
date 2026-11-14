@@ -352,6 +352,10 @@ impl Tool for Subagent {
             // The child's own `max_turns` comes from its profile, via its
             // config — a parent's remaining budget is not the child's business.
             budget: Default::default(),
+            // Advice is opt-in for the run that requested it, never inherited.
+            budget_notice: false,
+            completion_observer: None,
+            completion_deadline: None,
             // Cancelling the parent cancels the child with it: the child is
             // one of the parent's tool calls, and a Ctrl-C that left a
             // subagent running would be a lie. From the *caller's* context —
@@ -383,6 +387,8 @@ impl Tool for Subagent {
             // Steering is addressed to the parent. The child was given a
             // self-contained task and has no conversation to redirect.
             queued_input: None,
+            owner_steering: None,
+            goal_ingress: None,
             // **Inherited, like hooks and the outbox route**, and for exactly
             // that reason: a tool the parent run may not dispatch must not
             // become reachable by delegating. A subagent's own `tools`

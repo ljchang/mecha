@@ -9,6 +9,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental encrypted CLI task chat persists versioned todo plans and check
+  declarations in Mecha memory, with explicit `enable-planning` migration,
+  `--memory-task` creation and `--memory-task-resume` restoration. Native audit
+  reconciliation and storage-only repair distinguish committed plans from
+  completed recordings. The local-only profile preserves checks as Skipped;
+  web/task-board migration and executable verification remain separate work.
+
+- Experimental memory has host-only, session-bound task records with versioned
+  updates, conflict checks, exact retry receipts and forgetting. Explicit keyed
+  migration enables schema v9; encrypted backups retain their source schema,
+  and restored historical task copies cannot authorize live task operations.
+  Existing task-board consumers remain separate from the CLI task-chat adapter.
+
+- Experimental authenticated web chat can opt into encrypted episodic memory
+  through an explicitly configured `serve --episodic-memory` profile and the
+  **Memory +** control. Each conversation owns its fixed runtime and memory
+  reader; exact typed input, goal/charter versions and per-turn source lineage
+  survive authenticated resume. The page separates execution from retention,
+  rejects delayed duplicate turns, and preserves unsent drafts on refusal.
+  The first profile supports local file/context tools and typed input only;
+  todos, compaction, graph MCP and uploads remain unavailable in web memory.
+  Database encryption does not encrypt external transcripts or recovery files.
+
+- Experimental encrypted CLI chat can opt into one owner-configured read-only
+  graph MCP with `--memory-graph-server NAME`. Selected tools and their runtime
+  definitions are bound to the conversation; resume refuses changes before
+  inference. Delivered graph snapshots retain native source/provenance and
+  failure receipts without migrating the owner graph or treating results as facts.
+  Existing result limits and complete-turn retention still apply.
+
+- Experimental `chat --episodic-memory FILE --dynamic-goals` connects local,
+  recorded CLI conversations to the explicit encrypted memory store. Each turn
+  retains attributed observations under its own immutable transcript prefix and
+  historical owner/charter context. Authenticated resume preserves the source
+  chain; unflagged or conflicting writers refuse. Host retry never repeats
+  actions, and forgetting remains available after source deletion. This bounded
+  profile stops after incomplete capture and does not support compaction,
+  web/TUI memory attachment or automatic learning. Task success stays unevaluated.
+
+- Experimental `--dynamic-goals` records changing owner instructions and charter
+  snapshots in CLI chat, TUI and authenticated assistant web chat through
+  `serve --dynamic-goals`. Web provider rebuilds preserve the opt-in. Each provider
+  attempt is bound to its context version, effective messages and tool surface;
+  historical replay refuses missing or incompatible context. The charter remains
+  owner-authored. Ambiguous historical appraisal is reported as partial rather
+  than evaluated against today's charter. Default-off; encrypted memory uses
+  its own explicit opt-in and capture contract.
+
+- Ordinary one-shot and CLI-chat memory capture retain bounded action metadata
+  for tool arguments above 1,024 serialized bytes instead of withholding the
+  whole capture. The full-input digest, native pointer and receipt remain;
+  omitted arguments are explicitly marked oversized and are not factual support.
+  Existing tool-result and transcript limits remain unchanged.
+
+- Experimental `memory-session sources` and `learn` connect authenticated
+  ordinary-session observations to bounded native concept induction and revision.
+  Host-selected sources retain current access checks across one local model call;
+  failed calls preserve their audit report, and recovery handles cannot learn.
+  A versioned ordinary-session development runner compares no memory, episodic
+  recall and bounded concept learning over the same chronological observations,
+  preserving failed slots and separating decision correctness from recall
+  qualification. This does not activate automatic learning in ordinary chat.
+  Concepts remain provisional rather than becoming trusted facts or instructions.
+
 - **Mail rules can draft template replies.** A rule's `reply` action with a
   `template` file is rendered (the sender's first name, the subject and the
   date are the only slots) and staged in your outbox to release, edit or
@@ -16,6 +80,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   senders, mailing lists, your own addresses, conversations you have joined,
   and anyone the rule answered in the last week, and the ledger says which.
   `mail_reply` gains `from_only`, which answers only the message's From.
+
+- Experimental `run --episodic-memory` retains source-linked observations from
+  explicitly selected fresh ordinary sessions in encrypted v8 storage. Guarded
+  recall uses the existing Agent loop; retention is reported separately from the
+  answer, with semantic success explicitly not evaluated. Host-only
+  `memory-session init`, `retry` and `forget` manage the selected store without
+  executing a model or repeating actions. The first profile supports bounded
+  direct file tools and `goal_context`; broader tool integration remains separate
+  work. Multi-turn CLI chat uses the distinct opt-in protocol described above.
+
+- Experimental native memory sessions accept `--completion-request` for one
+  bounded opportunity to finish a missing required recall or JSON artifact.
+  Feedback checks only the public output shape, never hidden answer values, and
+  stays inside the original session budgets. Reports distinguish operational
+  readiness from answer correctness; ordinary native sessions remain unchanged.
+
+- Experimental native memory sessions accept an explicit `--recall-request` for
+  one bounded lexical or dense retrieval. The existing evidence packet and source
+  checks carry through to recapture; host reports distinguish completion, fallback,
+  cancellation and rejected calls from artifact correctness. A portable paired
+  synthetic trial measures decisions separately from supporting evidence.
+
+- Experimental memory adds bounded, invocation-local hybrid evidence retrieval
+  and `memory evaluate-hybrid` for a frozen synthetic comparison. Dense candidates
+  are independent of lexical matches, while complete source authorization,
+  historical filters, current forgetting and packet budgets remain in force.
+  Unavailable embeddings or changed eligibility report fresh lexical fallback.
+  This does not enable persistent indexing or ordinary chat integration.
+
+- Embedding transport no longer follows redirects or environmental proxies.
+  An additive checked API preserves full input, binds an explicit encoding
+  profile, validates indexed model responses, and bounds requests, responses
+  and overflow retries. Existing persona embedding APIs remain compatible.
+
+- Experimental memory adds explicit keyed storage, complete encrypted database
+  snapshots and restore into a fresh historical copy. Restore preserves current
+  forgetting and refuses weaker access scopes using a separately selected current
+  store. Keys remain host-only; source authorization still applies. JSONL and task
+  artifacts are outside database encryption, and full disaster recovery is not
+  provided. SQLCipher/vendored OpenSSL and direct key-helper dependencies follow
+  `memory-prototype`; ordinary builds use bundled SQLite. Existing plaintext
+  stores remain plaintext with either backend.
+
+- Experimental native memory packets use compact authenticated metadata while
+  retaining full original text and provenance under the existing reader budget.
+  Explicit concept-aware appraisal separates hypotheses from observed facts,
+  checks applicability coverage and rechecks every source after inference. Rich
+  v8 consulted lineage supports 64 records; legacy limits and defaults remain
+  unchanged. These mechanics do not establish model reasoning quality.
+
+- Experimental native memory sessions connect actual jailed actions, independent
+  artifact checks, v8 capture and reopened recall through explicit `init-native`
+  and `native-session` commands. Guarded native concept/rumination APIs preserve
+  canonical episode identity, complete source dependencies and restrictions.
+  Concepts remain provisional; reuse cannot count as independent support, and
+  normal chat/web sessions and automatic learning remain unchanged.
+
+- Experimental synthetic concept comparison adds an explicit induction, paired
+  decisions, counterexample revision and follow-up lifecycle. It preserves first
+  responses and failed slots, holds original evidence equal, and uses an offline
+  fixture scorer. Concepts remain provisional; the comparison does not activate
+  automatic learning or establish improved decisions.
+
+- Experimental native appraisal adds an opt-in checks-first response and paired
+  typed comparison. Host checks reject invalid artifact citations and inconsistent
+  verdicts while preserving raw replies. Separate literal-copy controls test all
+  three verdicts; these diagnostics do not establish semantic reliability.
+
+- Experimental native appraisal selects host-issued IDs for complete typed source
+  evidence and rechecks all dependencies without retaining a model judgment. A
+  paired synthetic runner compares raw and typed presentations under matched
+  budgets. Provisional concept rumination preserves prior evidence, counterexamples
+  and access scopes through one explicit revision cycle. Both remain default-off;
+  semantic reliability, native concept admission and automatic learning are unqualified.
+
+- Experimental atomic appraisals use a compact contextual presentation that
+  preserves source provenance without repeating stored draft text. The synthetic
+  runner reports storage, canonical export and recall separately, retaining audit
+  evidence when contextual recall fails. The reader budget and security checks
+  remain unchanged; this does not establish semantic reliability.
+
+- Experimental atomic appraisal separates observation extraction, original-source
+  checks and a derived current-goal judgment. A synthetic paired runner compares
+  this policy with one direct judgment using identical initial evidence and
+  bounded total output/time allowances. Independent artifact auditing checks
+  source bindings, retained records and recall. This remains default-off and
+  does not establish reliable semantic evaluation or production readiness.
+
+- Experimental evidence-aware appraisal (`--evidence-v3`) distinguishes authenticated
+  capture context, evaluates each original citation, and selects a later supported
+  judgment when an earlier candidate is Unknown. Conflicting supported bearings
+  remain Unknown. Legacy reports and SQLite v8 retain their existing behavior;
+  this is a default-off synthetic prototype, not production semantic qualification.
 
 - **Mail rules can match on what a message says.** A rule with
   `match.describe` (or *Description* in the new-rule form) is checked by the
@@ -88,6 +245,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from outside content. It becomes active with owner origin, so recalling it
   no longer marks the new chat untrusted; memories approved the old way can
   be vouched later, and `--chat <id> --clean` handles a whole source chat.
+- Experimental plan repair now selects bounded keep/gate/defer edits over existing
+  steps instead of generating replacement procedures. The host preserves every
+  step's requirement IDs, condition scope and withholding behavior, and marks
+  all-deferred plans as abstention. Routing goal IDs and storage metadata stay out
+  of model evidence; conditional output schemas require questions for unknowns.
+  Reports use `bound-repair-v5`; judgments remain advisory, never action authority.
+
+- Experimental plan evaluation now records source-linked requirements, their
+  scope/state and exact per-step guards. Host aggregation withholds consideration
+  for unmet or unresolved unguarded requirements. Outcome uncertainty is assessed
+  separately from action validity; reports include the requirement states.
+  This remains advisory and does not authorize actions.
+
+- Experimental plan evaluation now supplies no-concept applicability in the host,
+  separates original evidence from concept citations, and preserves an existing
+  recommended plan instead of always rewriting it. Repair prompts prioritize
+  known blockers and explicit guards; reports identify skipped versus reassessed
+  revisions. These remain advisory synthetic evaluations.
+
+- Experimental plan assessments now select host-issued passage IDs; Mecha
+  constructs exact quotations and source byte ranges. Invalid or repeated IDs
+  fail closed. A six-case development calibration separates prerequisite
+  judgments and independent revision review from citation-format validity.
+
+- An opt-in synthetic memory prototype with isolated SQLite storage, evidence
+  provenance, temporal queries, revision history and source forgetting. Its
+  `mecha memory --experimental --db PATH` command is available when built with
+  `--features memory-prototype`; it and the standalone harness share the same
+  fixture. Live graph stores and nightly jobs are unchanged;
+  see `prototypes/memory/README.md` for usage and current limitations.
+  It also supports explicit synthetic JSONL session import, BM25 evidence recall
+  with source citations and context windows, and a 32-case retrieval/oracle
+  evaluation report without model calls. An explicit `evaluate-model` command
+  compares lexical, bounded goal-aware and oracle evidence with a resident
+  local model on 16 new synthetic cases, reporting structured decisions,
+  source citations, abstention, latency and token usage. The optional
+  `--follow-evidence` comparison adds one bounded search hop based on initial
+  episodes and schema-constrained citation selection across all conditions;
+  `--development` keeps debugging separate from its new synthetic case set.
+
+- Experimental memory adds `evaluate-mentions`, a no-model replay of saved
+  synthetic searches with disclosed manual name bindings. Core `recall_mention`
+  requires a literal name/phrase in anchors before ranking limits, preserving
+  access/time filters and bounded evidence. This is a retrieval diagnostic,
+  not automatic entity resolution or a production memory migration.
+  `evaluate-model --auto-bindings` adds a source-grounded planner whose identical
+  queries/names are compared with and without name enforcement, plus oracle
+  evidence. Shared planner costs and per-arm answers are recorded separately;
+  the prior12 cases are development data and14 new cases form the fresh split.
+
+- Experimental `mecha run --memory-context PATH` can serve read-only synthetic
+  memory through the existing `goal_context` tool. Explicit goal/account/domain/
+  scopes and `--memory-synthetic` are required. Packets preserve source revisions,
+  temporal relations and dependency provenance, with exact-source-quote follow-up
+  searches and private/untrusted taint. Normal runs are unchanged; this does not
+  enable private-data ingestion, concept learning or nightly processing.
+
+- Experimental `memory distill-concept` generates a provisional concept from
+  explicit synthetic source episodes using a resident local model. Exact quote
+  provenance, distinct supporting episodes, current source scopes and revisions
+  are host-validated; all consulted sources remain dependencies. Context can
+  retrieve concept/source bundles without promoting them to trusted rules.
+  Recall budget omissions and strict nested source-selection decoding are fixed;
+  automatic-binding reports now include a nullable `grounded_binding_count`.
+
+- Experimental `memory evaluate-plans` assesses synthetic candidate plans against
+  prerequisites, source evidence and concept applicability. `--revise` adds one
+  revision and reassessment. Reports preserve unknowns, source provenance and
+  model fallibility; no action or trusted-rule authority is granted. The opt-in
+  memory goal-context schema now exposes its exact confirmed goal and provides
+  an actionable repair hint for mismatched IDs.
 
 - **A persona's life profile, and a draft of it from what you wrote.**
   `life.toml` says who a persona lives with (people on their People tab),
@@ -314,6 +542,128 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a Mac; `[image] unload_after_secs` still unloads. `mecha setup engine
   --adopt` is still Linux-only.
 
+- The synthetic memory prototype supports explicit v7 stores with source-linked,
+  provisional interpretations of an episode under different confirmed goals.
+  An opt-in planning reader distinguishes current interpretations from historical
+  dependencies; default readers and privileged learning remain unchanged. Shared
+  interpretation parsing and grounding preserve the existing graph follow-up,
+  while private needs assessment remains outside model prompts and reader memory.
+
+- New explicit v8 prototype stores capture bounded native action inputs and actual
+  artifact observations, then require a separate factual-support assessment before
+  retaining an interpretation. Host rendering excludes rejected claims, labels
+  speculation and accounts for every goal judgment. Old formats are not migrated;
+  the local model's support assessment remains fallible and production capture
+  remains disabled.
+
+- The synthetic factual-support trial can explicitly opt into wire-v2: constrained
+  local output, request-bound citation choices and separate current-criterion and
+  premise-sufficiency checks. The existing v8 storage and legacy trial path are
+  unchanged. Model assessments remain provisional; schema validity is not factual
+  support or action permission.
+
+- The synthetic memory trial can opt into a turn-budget notice before its last
+  two model turns, preserving ordinary tools, guards and hard limits. A separate
+  paired diagnostic records completion, notice exposure and premature abstention.
+  New episode captures distinguish harness advice from owner requests; raw
+  transcripts and existing stored episodes remain unchanged.
+
+- A bounded synthetic native-memory comparison runs paired ordinary tasks with
+  recalled experience or an empty store. It retains independently checked
+  artifacts, capture failures, provenance, model calls, token usage and latency, with frozen
+  inputs and no automatic model load or inference retry. Production memory
+  capture remains disabled.
+
+- An opt-in synthetic appraisal bridge connects ordinary task execution,
+  independent artifact checks and existing appraisal to source-linked v6 memory.
+  An explicit example reopens memory in another process under a changed task
+  criterion. Current source checks guard recall; capture retries do not replay
+  actions, and host sensor data stays outside reader memory. This is authored
+  integration qualification, not automatic production capture or a learning claim.
+
+- A separately versioned, synthetic 48-response memory-benefit diagnostic compares
+  source-only and recalled-outcome decisions with frozen inputs, independent
+  scoring, authored transport qualification and no retries. It leaves earlier
+  experiments and production behavior unchanged.
+
+- Experimental outcome recall adds opt-in `feasibility-provenance` response
+  protocol v4. Complete host comparison provenance stays separate from exact
+  model citations; every effective measurement must still be cited and checked.
+  Superseded-source omissions remain visible, explanations remain unverified,
+  and source revocation still applies to the full packet. Existing modes and
+  historical scores are unchanged; no new database schema or action authority.
+
+- Experimental outcome recall adds opt-in feasibility-first responses and bounded
+  reasoning. Per-option measurements, source attribution and hard-constraint checks
+  are independently verified; inconsistent proposals are withheld without rewriting
+  the model answer. Legacy requests remain unchanged. A separate frozen diagnostic
+  distinguishes genuine abstention from host withholding.
+
+- Experimental memory adds a read-only outcome-recall comparison. Original source
+  expectations and an actual retained outcome stay separate while two matched
+  model conditions evaluate a new goal. Frozen retrieval, current-source guards
+  and independent scoring keep historical feedback distinct from current advice;
+  this does not execute another action or enable production memory.
+
+- Experimental memory adds an explicit v5 synthetic-action store and
+  `init-action` / `durable-act bind/run/status/cancel`. A separately authorized
+  fixed simulator can consume one authenticated recommendation, retain actual
+  measurements independently of source expectations, and save deterministic
+  step feedback for later recall. Unresolved actions are never replayed;
+  cancellation, source restrictions and forgetting remain enforced. This adds
+  no production action executor or automatic learning.
+
+- Experimental memory adds an explicit v4 model-decision store and
+  `init-model` / `durable-decide bind/run/status/cancel`. A successful guarded
+  synthetic measurement read can support one initial model attempt and one
+  source-checked reconsideration. Responses are retained before assessment;
+  restart reuses settled responses and never replays unresolved calls. Decisions
+  remain advisory, and cancellation/forgetting/current-source checks apply.
+
+- Experimental memory adds a separate v3 durable-read store and explicit
+  start/resume/status/cancel/finish commands. One host-bound synthetic file read
+  uses ordinary Mecha guards; reservations survive crashes, settled results are
+  reused, and unresolved reads are never silently repeated. Cancellation and
+  forgetting invalidate later commits. Supplied final proposals remain untrusted;
+  this does not activate automatic chat memory or model reasoning.
+
+- Experimental `workflow-trial --observe --reconsider` reuses the bounded
+  source-only reconsideration step after acquisition. Original drafts, failed
+  attempts and checks remain recorded; the same evidence receipt is rechecked
+  at commit. Earlier protocols remain available; synthetic development only.
+
+- Experimental memory adds `workflow-trial --observe`: one bounded missing
+  measurement request, a persisted observed/unavailable result, and a fresh
+  checked decision. Paired control cases retain missing evidence; corrected
+  observations preserve history. Query citations are enumerated; final decisions
+  receive a source-only missing-evidence/feasibility check. Synthetic source-selected
+  evaluation only.
+
+- Experimental memory adds `workflow-trial --checked`: paired initial decisions,
+  source-grounded constraint/evidence checks and at most one reconsideration on
+  fresh synthetic cases. Unsupported final proposals are recorded as host-withheld
+  no-action outcomes, separately from model abstention and task success. No live
+  data, schema migration or production action authority.
+
+- Experimental memory adds `workflow-trial --recall-views` for deterministic
+  measurement/scoped-appraisal comparisons and `--unseen` for a fixed follow-up
+  with new synthetic values, missing evidence and a corrected source. Original
+  source records and the baseline protocol remain intact; no production actions.
+
+- Experimental memory adds a synthetic `workflow-trial`: persisted event,
+  proposed decision and host-observed outcome traces, then a matched
+  no-memory/retrieved/oracle decision comparison after reopening SQLite.
+  All consulted sources are rechecked before an atomic trace write; partial
+  JSONL progress survives failed model calls. No production actions or data.
+
+- Experimental memory plan diagnostic adds opt-in direct coverage judgments and
+  reasoning-enabled comparisons, with source receipts and count-only reasoning
+  audit. No actions execute; source membership is not semantic validation.
+
+- Experimental memory: add tool-free, source-linked extraction of synthetic plan actions, conditions and branches, with provenance checks and separate semantic/guard-coverage diagnostics. No actions execute.
+
+- Experimental memory: pure typed action/branch guard coverage with separate rule applicability and met/unmet/unknown arms; synthetic qualification only, no action execution or authority.
+
 ### Changed
 
 - **Building mecha needs Rust 1.96 or newer** (it was 1.89). Code mode's
@@ -352,6 +702,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and what mecha publishes getting a lasting link.
 
 ### Fixed
+
+- Session taint readers agree after an explicit goal-context clear, preventing
+  stale clean checkpoints from covering new untrusted messages. A new suffix
+  without a checkpoint remains unknown.
+- `sessions show` can inspect memory-attached transcripts without attempting to
+  resume them. Strict parsing and ordinary execution restrictions remain intact.
+
+- `questions answer` and `tasks work --resume` explicitly refuse versioned
+  dynamic-goal sessions at their resume boundaries, preserving pending questions
+  and native history instead of failing later with an unusable flag suggestion.
+
+- Live dynamic-goal sessions explicitly refuse unsupported provider-pause
+  continuation instead of silently adding a user turn or changing prior goal
+  evidence. Ordinary pause handling and exact historical replay remain unchanged.
+
+- Ordinary memory capture preserves exact owner text and request histories when
+  the agent appends an empty-response retry nudge or boredom notice. Canonical
+  loop notes remain audit-only; unknown notes and rewritten histories refuse.
+- Selected graph responses withheld by Mecha now carry harness provenance.
+  Retained server text/errors remain external, and prior conversation taint is
+  never cleared by a local refusal.
+
+- Web archive/delete recognizes ordinary native recordings with blank lines,
+  future message blocks and an ordinary torn final payload. Known memory
+  attachments, ambiguous records and malformed UTF-8 still refuse mutation,
+  including when memory support is compiled out.
+
+- Selected graph launches refuse relative or empty PATH lookup components. Their
+  bubblewrap launcher must resolve outside the model workspace, including through
+  symlinks, so workspace code cannot stand in for confinement. Explicit
+  owner-selected relative server commands retain their existing behavior.
+
+- Memory-attached recordings refuse replay with live divergence before runtime
+  setup; historical Stop/Error replay remains available. Cancellation during
+  compaction no longer appends a budget notice for an unsent request.
+
+- **Disabled step checks stay silent.** Deliberately disabling the check lever no
+  longer adds a missing-check notice to the model context. Enabled checks without
+  a registered shell still report that verification was unavailable; both remain
+  unverified and existing frozen-check protections are unchanged.
+
+- Experimental memory CLI inference now refuses router autoload on each request,
+  preserving its no-load/no-switch promise if a model disappears after the
+  residency check. Normal provider behavior is unchanged.
+
+- Plan checks no longer dispatch a nonexistent shell in runs without that tool.
+  Newly completed checked steps explicitly remain unverified when execution is
+  unavailable or disabled. Registered checks retain ordinary security guards.
+
+- Experimental goal-memory retrieval refreshes relation-validity time on every
+  call while retaining the invocation's knowledge snapshot. Reusing a tool no
+  longer keeps expired relations current; time remains controlled by the host.
+
+- Experimental `extract-plan --thinking-budget` now accepts 1–4096, reserving
+  answer capacity within the 8192-token total allowance. Larger budgets are
+  rejected before inference, matching outcome recall's existing cap.
 
 - **A mail rule's ledger records each observation once.** A rule in shadow,
   or a message that arrived before a rule was active, wrote a new ledger row

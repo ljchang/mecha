@@ -38,9 +38,9 @@ libc = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 # Persona memory (`docs/PERSONA-DESIGN.md` §9.10): one SQLite file per
 # persona plus `shared.db`, opened only by mecha core and never `graph.db`.
-# `bundled` compiles SQLite in (FTS5 included), so `forget` and keyword
-# search do not depend on whichever libsqlite3 the box happens to carry.
-rusqlite = { version = "0.40", features = ["bundled", "hooks", "limits"] }
+# Ordinary bundled SQLite includes FTS5 for plaintext stores. Enabling core
+# memory-prototype unifies this linkage with its SQLCipher-enabled backend.
+rusqlite = { version = "0.41.1", features = ["bundled", "hooks", "limits"] }
 serde = { version = "1", features = ["derive"] }
 # `preserve_order`: a tool schema reaches llama-server in the order it is
 # written. Its grammar fixes the order of optional properties, so sorted

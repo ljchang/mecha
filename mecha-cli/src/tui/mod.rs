@@ -43,8 +43,9 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use futures::StreamExt;
-use mecha_core::agent::{Agent, AgentEvent, Conversation, Phase, RunOutcome};
+use mecha_core::agent::{Agent, AgentEvent, Conversation, Phase, QueuedSteer, RunOutcome};
 use mecha_core::config::PermissionMode;
+use mecha_core::goal_context::{OwnerInput, OwnerSource};
 use mecha_core::message::{Block as MsgBlock, Message, Usage};
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
 use mecha_core::tool::{Approver, ModeApprover};
@@ -65,7 +66,7 @@ struct Running {
     handle: JoinHandle<RunResult>,
     cancel: mecha_core::agent::CancelHandle,
     /// Where a mid-run line goes. Shared with the [`RunContext`] the task holds.
-    queue: Arc<Mutex<VecDeque<String>>>,
+    queue: Arc<Mutex<VecDeque<QueuedSteer>>>,
     started: std::time::Instant,
     /// Set once Ctrl-C has been pressed, so the status line can say so and a
     /// second press can mean something stronger.
@@ -827,6 +828,10 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
     if let Some(id) = &resume {
         let path = Session::find(&session_dir, id)?;
         let (meta, prior) = Session::load(&path)?;
+        anyhow::ensure!(
+            !prior.has_dynamic_goal_context() || global.dynamic_goals,
+            "resume this chat with --dynamic-goals"
+        );
         // D15, before anything renders: the live pane polls the todo handle,
         // and a resumed conversation whose plan is only in the transcript
         // shows an empty pane beside a model that knows exactly where it got
@@ -1376,7 +1381,7 @@ async fn run_loop(
                 // Joined rather than submitted one at a time: the first would
                 // start a run and the rest would queue into it, which is the
                 // same trap one turn later.
-                let leftover: Vec<String> = app
+                let leftover: Vec<QueuedSteer> = app
                     .running
                     .as_mut()
                     .and_then(|r| r.queue.lock().ok().map(|mut q| q.drain(..).collect()))
@@ -1399,11 +1404,15 @@ async fn run_loop(
                     app.transcript.push(Entry::Notice(
                         "the run ended before folding these in — sending them now".into(),
                     ));
-                    let carried = leftover.join("\n");
+                    let carried = leftover.iter().map(QueuedSteer::text).collect::<Vec<_>>().join("\n");
+                    let owners = leftover.into_iter().filter_map(|steer| match steer {
+                        QueuedSteer::Owner(input) => Some(input),
+                        QueuedSteer::Unverified(_) => None,
+                    }).collect();
                     // `from_remote` suppresses the echo: whatever queued this
                     // already announced itself when it arrived.
                     if let Err(e) =
-                        submit(app, carried, Vec::new(), &mut events_tx, &mut events_rx, live, session, true)
+                        submit(app, carried, Vec::new(), &mut events_tx, &mut events_rx, live, session, SubmitOrigin::Carried(owners))
                     {
                         app.transcript
                             .push(Entry::Error(format!("could not carry steering over: {e:#}")));
@@ -2960,7 +2969,14 @@ fn on_key(
                 // is on screen has to be what gets sent.
                 let images = take_dropped(app, &text);
                 submit(
-                    app, text, images, events_tx, events_rx, live, session, false,
+                    app,
+                    text,
+                    images,
+                    events_tx,
+                    events_rx,
+                    live,
+                    session,
+                    SubmitOrigin::Keyboard,
                 )?;
             }
         }
@@ -3477,11 +3493,20 @@ fn run_command(
         }),
 
         Command::Clear => {
+            if app.running.is_some() && agent.dynamic_goals_enabled() {
+                say("stop the running turn before clearing this conversation".into());
+                return Ok(());
+            }
             // A whole new conversation, not just an emptied message list: taint
             // is a property of the conversation, so dropping the context has to
             // drop what entered it. Keeping the taint here would leave the
             // interlock armed by a page nothing in context has read any more.
-            app.convo = Conversation::new();
+            if let Err(err) = app.convo.clear_with_recording(session) {
+                app.transcript.push(Entry::Error(format!(
+                    "could not clear conversation: {err:#}"
+                )));
+                return Ok(());
+            }
             app.usage = Usage::default();
             app.prompt_tokens = 0;
             // Same rule, one field over: `affect` describes the *last run
@@ -3764,6 +3789,12 @@ fn run_command(
 
 /// Either start a run or steer the one already going — the same key, and from
 /// the user's side the same gesture.
+enum SubmitOrigin {
+    Keyboard,
+    Remote,
+    Carried(Vec<OwnerInput>),
+}
+
 #[allow(clippy::too_many_arguments)]
 fn submit(
     app: &mut App,
@@ -3782,9 +3813,10 @@ fn submit(
     // from the keyboard. It suppresses the echo: the line is already in the
     // thread, put there by the person who typed it, and posting it back would
     // have the bot quoting the user to themselves.
-    from_remote: bool,
+    origin: SubmitOrigin,
 ) -> Result<()> {
     let agent = &live.agent;
+    let from_remote = !matches!(origin, SubmitOrigin::Keyboard);
     // The shell escape is handled before steering, like slash commands: a
     // `!git status` typed mid-run is the user checking on the world, not an
     // instruction meant for the model.
@@ -3800,6 +3832,18 @@ fn submit(
         return run_command(app, cmd, live, session);
     }
 
+    let keyboard_input = if !from_remote && agent.dynamic_goals_enabled() {
+        match OwnerInput::new(OwnerSource::Tui, text.clone()) {
+            Ok(input) => Some(input),
+            Err(err) => {
+                app.transcript.push(Entry::Error(format!("{err:#}")));
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
+
     if let Some(run) = &app.running {
         // Steering. The loop picks this up at the top of its next turn and
         // folds it in beside the tool results, so the model reads it without
@@ -3811,14 +3855,23 @@ fn submit(
             // an ignored future — the task is meant to detach and finish.
             drop(spawn_echo(a, &text, true));
         }
+        let steer = match keyboard_input {
+            Some(input) => QueuedSteer::Owner(input),
+            None => QueuedSteer::Unverified(text),
+        };
         if let Ok(mut queue) = run.queue.lock() {
-            queue.push_back(text);
+            queue.push_back(steer);
         }
         return Ok(());
     }
 
     // Text first, images after: the order both provider families document,
     // and the one `encode_message` preserves.
+    let owner_inputs = match origin {
+        SubmitOrigin::Keyboard => keyboard_input.into_iter().collect(),
+        SubmitOrigin::Carried(inputs) => inputs,
+        SubmitOrigin::Remote => Vec::new(),
+    };
     let mut blocks = vec![MsgBlock::text(&text)];
     blocks.extend(images);
     // Folded, not pushed, when the tail is already a user message — Ctrl-C
@@ -3854,6 +3907,7 @@ fn submit(
     } else {
         let user = Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: mecha_core::message::Role::User,
@@ -3889,13 +3943,16 @@ fn submit(
     *events_rx = rx;
 
     let queue = Arc::new(Mutex::new(VecDeque::new()));
-    let cx = agent
+    let mut cx = agent
         .context()
         .as_ref()
         .clone()
         .with_cancel(CancellationToken::new())
         .with_phase(app.phase)
-        .with_queued_input(Arc::clone(&queue));
+        .with_owner_steering(Arc::clone(&queue));
+    if agent.dynamic_goals_enabled() {
+        cx = cx.with_goal_ingress(owner_inputs, session.cloned().map(Arc::new));
+    }
     // The handle, not the bare token: Ctrl-C cancels *as the owner*, and the
     // outcome records `Stopped` rather than the unknown-which `Interrupted`.
     let cancel = cx.cancel_handle().expect("with_cancel just set it");
@@ -7440,7 +7497,14 @@ fn deliver_inbound(
         // delivered anywhere. One line failing is a line to report, not a
         // reason to stop reading the rest.
         if let Err(e) = submit(
-            app, prompt, images, events_tx, events_rx, live, session, true,
+            app,
+            prompt,
+            images,
+            events_tx,
+            events_rx,
+            live,
+            session,
+            SubmitOrigin::Remote,
         ) {
             app.transcript.push(Entry::Error(format!(
                 "could not deliver a Slack line: {e:#}"

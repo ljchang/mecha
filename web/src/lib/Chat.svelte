@@ -37,6 +37,29 @@
 
   let key = $state('main');
   let mode = $state('read_only');
+  // Only authenticated responses establish session identity. These hints live
+  // in RAM and never authorize a turn; the server rechecks the sealed ordinal.
+  const memorySessions = new Map();
+  let memoryAvailable = $state(false);
+  let memoryIntent = $state(false);
+  let memory = $state(null);
+  let memorySession = $state(null);
+  let memoryConnected = $state(false);
+  let memorySending = $state(false);
+  let memoryOpening = $state(false);
+  let memoryRevision = 0;
+  let memoryConnection = $state(0);
+  let memoryNeedsResume = $state(false);
+  const memoryMaxBytes = 2048;
+  const memoryReady = $derived(memoryConnected && !memorySending && !running && memory?.phase === 'ready'
+    && Number.isSafeInteger(memory?.next_turn_ordinal) && memory.next_turn_ordinal > 0);
+  $effect(() => {
+    const controller = new AbortController();
+    fetch('/api/summary', { signal: controller.signal }).then(r => r.ok ? r.json() : null).then(data => {
+      if (!controller.signal.aborted) memoryAvailable = data?.chat_memory?.available === true;
+    }).catch(() => {});
+    return () => controller.abort();
+  });
   // The directories outside the workspace this chat's runs may reach —
   // standing ones first — as the server last said (`grants` events, the
   // transcript read). `grantsOpen` is the panel the chip and `/grant` open.
@@ -358,6 +381,7 @@
 
   // True when it replaced the transcript with the server's.
   async function load(sessionKey = key, signal, { carry = false } = {}) {
+    const memorySeq = memoryRevision;
     const seq = doneSeq;
     const qSeq = queueSeq;
     const gen = ++loadGen;
@@ -373,6 +397,16 @@
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).trim()}`);
       const data = await res.json();
       if (signal?.aborted || sessionKey !== key || gen !== loadGen) return false;
+      // A local send, refusal, or SSE transition supersedes this snapshot.
+      if (memoryIntent && (memoryNeedsResume || memoryRevision !== memorySeq)) return false;
+      if (memoryIntent && data.memory?.mode !== 'episodic') throw new Error('Memory session unavailable; explicitly resume its saved session.');
+      if (data.memory?.mode === 'episodic') {
+        memoryIntent = true;
+        memorySession = data.session ?? memorySession;
+        memorySessions.set(sessionKey, memorySession);
+        if (memoryRevision === memorySeq) memory = data.memory;
+        memoryConnected = true;
+      }
       // The server's waiting list is the truth for a bubble still waiting:
       // one it no longer holds — its turn started and the page missed the
       // event — goes, and its receipt is forgotten so a late event draws it.
@@ -476,9 +510,15 @@
       // An incognito chat that has gone keeps nothing in this tab, and a run
       // cancelled by End still streams its partial turn: dropped, not drawn
       // (review of #326). The effect below closes the stream as well.
-      if (gone) return;
+      if (gone || sessionKey !== key) return;
       const ev = JSON.parse(raw.data);
       switch (ev.type) {
+        case 'memory':
+          if (memoryIntent && ev.memory?.mode === 'episodic') {
+            memoryRevision += 1;
+            memory = ev.memory;
+          }
+          break;
         case 'delta':
           streaming += ev.text;
           scrollDown();
@@ -734,13 +774,22 @@
     // The uplink ring is audio of the chat being left and outlives calls on
     // purpose; an incognito chat's must not outlive the visit (the composer
     // below is the same rule).
-    if (incognito || k.startsWith(INCOGNITO_PREFIX)) {
+    if (memoryIntent || memorySessions.has(k) || incognito || k.startsWith(INCOGNITO_PREFIX)) {
       endVoice();
       vEntries = [];
       vTyped = ''; // a line typed into the call is the composer's kind (review of #499)
     }
     if (incognito) dropRing(key);
     key = k;
+    memoryIntent = memorySessions.has(k);
+    memorySession = memorySessions.get(k) ?? null;
+    memory = null;
+    memoryRevision += 1;
+    memoryConnected = false;
+    memorySending = false;
+    memoryNeedsResume = false;
+    running = false;
+    if (memoryIntent) attachments = [];
     receivedInputs.clear();
     inputDelivery.clear();
     entries = [];
@@ -1013,17 +1062,29 @@
     }
   });
 
-  async function resumeSession(id) {
+  async function resumeSession(id, episodic = false) {
     try {
       const res = await fetch('/api/resume', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id }),
+        body: JSON.stringify(episodic ? { id, memory: 'episodic' } : { id }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
+      if (episodic && data.memory?.mode !== 'episodic') throw new Error('Server did not authenticate a memory session.');
+      if (episodic) memorySessions.set(data.key, data.session ?? id);
       drawer = false;
       switchTo(data.key);
+      if (episodic) {
+        memoryIntent = true;
+        memorySession = data.session ?? id;
+        memory = data.memory;
+        memoryRevision += 1;
+        memoryConnected = false;
+        memoryNeedsResume = false;
+        // Re-arm the connection effect even when resume returns the same key.
+        memoryConnection += 1;
+      }
       // Opening an archived one un-archives it server-side; the lists catch up.
       refreshLists();
     } catch (e) {
@@ -1055,11 +1116,38 @@
   /// here (it is an address: it has to be unique and URL-safe, and nothing
   /// else), and the *name* arrives from the conversation itself once there
   /// is one to summarise.
+  async function newMemorySession() {
+    if (!memoryAvailable || memoryOpening) return;
+    memoryOpening = true;
+    // The server's browser keys are at most 32 characters. Keep 24 UUID hex
+    // characters; persistent native identity is still assigned by core.
+    const entropy = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}${Math.random().toString(36).slice(2)}`;
+    const k = `chat-${entropy.replaceAll('-', '').slice(0, 24)}`;
+    try {
+      const res = await fetch(`/api/chat/${k}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ memory: 'episodic' }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.memory?.mode !== 'episodic' || !data.session) throw new Error('Server did not authenticate a memory session.');
+      memorySessions.set(k, data.session);
+      drawer = false;
+      switchTo(k);
+      memory = data.memory;
+      queueMicrotask(() => inputEl?.focus());
+    } catch (e) {
+      pushEntry({ kind: 'notice', text: `Memory chat could not open: ${e?.message ?? e}. Check saved sessions before trying again.` });
+    } finally {
+      memoryOpening = false;
+    }
+  }
+
   function newSession() {
     // Already sitting in an empty one: opening a second would leave a
     // trail of blank sessions behind a button people press to clear their
     // head. Nothing to do but put the cursor where they expect it.
-    if (!entries.length && !running && !incognito) {
+    if (!entries.length && !running && !incognito && !memoryIntent) {
       drawer = false;
       queueMicrotask(() => inputEl?.focus());
       return;
@@ -1074,6 +1162,8 @@
   // conversation, so switching is just pointing the rendering elsewhere.
   $effect(() => {
     const sessionKey = key;
+    const connectionVersion = memoryConnection;
+    const episodic = untrack(() => memoryIntent);
     // Read here so the stream closes when an incognito chat goes — its
     // cleanup below runs — and is not reopened for a chat that is over.
     if (gone) return;
@@ -1083,6 +1173,7 @@
     let retry;
     let retryDelay = 1500;
     const reconnect = () => {
+      if (episodic && sessionKey === key) memoryConnected = false;
       source?.close();
       source = null;
       clearTimeout(retry);
@@ -1092,11 +1183,12 @@
       }
     };
     async function connect() {
+      if (episodic && untrack(() => memoryNeedsResume)) return;
       try {
         // GET and EventSource only read existing chats. Opening one is an
         // explicit, guarded mutation, also repeated after a server restart.
         const res = await fetch(`/api/chat/${sessionKey}`, {
-          method: 'POST', signal: controller.signal,
+          method: episodic ? 'GET' : 'POST', signal: controller.signal,
         });
         if (res.status === 410) {
           // An incognito chat the server closed while this page was away
@@ -1110,16 +1202,26 @@
           // Authentication, invalid keys and other permanent client errors
           // need intervention, not an endless POST loop from every tab.
           if (res.status >= 400 && res.status < 500 && ![408, 429].includes(res.status)) {
-            error = message;
+            error = episodic ? `${message}. Explicitly resume the saved memory session; it will not be recreated.` : message;
             return;
           }
           throw new Error(message);
         }
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || connectionVersion !== memoryConnection) return;
         source = subscribe(sessionKey);
         source.onopen = () => { retryDelay = 1500; };
         source.onerror = reconnect;
-        await load(sessionKey, controller.signal);
+        let loaded = await load(sessionKey, controller.signal);
+        // SSE may overtake the first transcript read. Retry only reads, with a
+        // bound, and never cross a local refusal that requires explicit resume.
+        for (let attempt = 0; episodic && !loaded && attempt < 2
+          && !controller.signal.aborted && !memoryNeedsResume; attempt++) {
+          loaded = await load(sessionKey, controller.signal);
+        }
+        if (episodic && !loaded && !controller.signal.aborted) {
+          memoryConnected = false;
+          error ??= 'Could not refresh memory status. Resume the saved session before sending.';
+        }
         if (!controller.signal.aborted) loadRail();
       } catch (e) {
         if (controller.signal.aborted) return;
@@ -1219,6 +1321,7 @@
   // session outlived the transport, and clearing the pane would say
   // otherwise to the one person who just watched it fail.
   function startVoice({ keep = false } = {}) {
+    if (memoryIntent) return;
     // connect() inside the tap handler — the audio unlock needs the gesture.
     if (!keep) vEntries = [];
     // A reconnect supersedes the notices that led to it: keep the speech.
@@ -1364,7 +1467,60 @@
 
   // `onFail`: what a send of fixed words does when the server refuses it —
   // a Send again puts its bubble back.
+  async function sendMemory({ fixed, regenerate, regions, onFail }) {
+    // Never trim owner input, route slash commands, steer, queue, or attach
+    // files through the typed-only memory door. Retain the draft until ACK.
+    if (fixed !== null || regenerate !== null || regions !== null || attachments.length) {
+      pushEntry({ kind: 'notice', text: 'Memory chat currently accepts typed text only.' });
+      onFail?.();
+      return false;
+    }
+    if (memorySending || running || !memoryConnected || memory?.phase !== 'ready'
+      || !Number.isSafeInteger(memory?.next_turn_ordinal) || memory.next_turn_ordinal < 1) return false;
+    const text = draft;
+    if (!text.trim()) return false;
+    if (new TextEncoder().encode(text).length > memoryMaxBytes) {
+      pushEntry({ kind: 'notice', text: `Memory input is limited to ${memoryMaxBytes} UTF-8 bytes. Your draft is unchanged.` });
+      return false;
+    }
+    const sessionKey = key;
+    const seq = ++memoryRevision;
+    memorySending = true;
+    try {
+      const request_id = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const res = await fetch(`/api/chat/${sessionKey}/send`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text, request_id, memory_turn: memory.next_turn_ordinal }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+      const data = await res.json();
+      if (sessionKey !== key) return false;
+      if (data.started !== true) throw new Error('The server did not acknowledge a new memory turn.');
+      if (draft === text) draft = '';
+      // A fast run may already have broadcast its final retention status.
+      const completedBeforeAck = memoryRevision !== seq && ['ready', 'blocked'].includes(memory?.phase);
+      if (memoryRevision === seq) {
+        memoryRevision += 1;
+        memory = { ...memory, phase: 'running', next_turn_ordinal: null };
+      }
+      receiveInput({ type: 'user', text, request_id, spoken: false });
+      if (completedBeforeAck) running = false;
+      return true;
+    } catch (e) {
+      if (sessionKey === key) {
+        memoryRevision += 1;
+        memoryConnected = false;
+        memoryNeedsResume = true;
+        pushEntry({ kind: 'notice', text: `Memory send refused or unconfirmed: ${e?.message ?? e}. Your draft is unchanged; resume the session before retrying.` });
+      }
+      return false;
+    } finally {
+      if (sessionKey === key) memorySending = false;
+    }
+  }
+
   async function send({ text: fixed = null, regenerate = null, regions = null, onFail = null } = {}) {
+    if (memoryIntent) return sendMemory({ fixed, regenerate, regions, onFail });
     const own = fixed === null;
     // The owner's `/grant` and `/revoke` go to the grants endpoint, never to
     // the model; attachments wait for the next message.
@@ -1682,7 +1838,7 @@
   let dragDepth = $state(0); // dragenter/leave fire at every child boundary
   // Not behind the edit modal: a file dropped there would join
   // `attachments` unseen and ride out on the modal's own send (review of #429).
-  const canDrop = $derived(!gone && !voiceOpen && !editing);
+  const canDrop = $derived(!memoryIntent && !gone && !voiceOpen && !editing);
 
   function onDragEnter(e) {
     if (!carriesFiles(e.dataTransfer)) return;
@@ -1714,6 +1870,7 @@
   }
 
   async function uploadFiles(files) {
+    if (memoryIntent) return;
     const sessionKey = key;
     for (const f of files) {
       uploads += 1;
@@ -1922,6 +2079,9 @@
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10h18M6 10l1.6-4.2A1.5 1.5 0 019 5h6a1.5 1.5 0 011.4.8L18 10" /><circle cx="7.5" cy="15.5" r="2.5" /><circle cx="16.5" cy="15.5" r="2.5" /><path d="M10 15.5h4" /></svg>
     </button>
     {/if}
+    {#if memoryAvailable}
+      <button class="newbtn header memory-new" onclick={newMemorySession} disabled={memoryOpening} title="new chat with encrypted episodic memory" aria-label="new memory chat">Memory +</button>
+    {/if}
     <span class="title" title={incognito ? 'incognito' : key}>{incognito ? 'Incognito' : heading}</span>
     <div class="meta">
       <!-- §6.2's readout on the typed surface. The voice logo's tint only
@@ -1960,7 +2120,7 @@
           {taint.private ? 'private' : ''}{taint.private && taint.untrusted ? ' + ' : ''}{taint.untrusted ? 'untrusted' : ''}
         </span>
       {/if}
-      {#if grants.length}
+      {#if !memoryIntent && grants.length}
         <button
           class="chip grantchip"
           class:open={grantsOpen}
@@ -1968,6 +2128,7 @@
           title="directories outside the workspace this chat's runs may reach — tap to see or revoke"
         >{grants.length} {grants.length === 1 ? 'grant' : 'grants'}</button>
       {/if}
+      {#if !memoryIntent}
       <button
         class="chip modechip"
         class:ask={mode === 'ask'}
@@ -1976,13 +2137,39 @@
         title="read-only: reads run, sends stage · ask: every other call becomes an approval card · allow: nothing asks (the interlock still refuses sends once this conversation holds private and untrusted content)"
       >{MODE_LABEL[mode] ?? mode}</button>
       <ModelChip {model} {incognito} />
+      {:else}
+        <span class="chip" title="Model and tool profile are fixed for this memory conversation">{model || 'Fixed profile'}</span>
+      {/if}
       {#if incognito && !gone}
         <button class="chip endchip" onclick={endIncognito} title="end this chat now — everything in it is deleted">End</button>
       {/if}
     </div>
   </header>
 
-  {#if grantsOpen}
+  {#if memoryIntent}
+    <div class="memory-banner" role="status" aria-live="polite">
+      <strong>Encrypted episodic memory</strong>
+      <span>{!memoryConnected ? 'Disconnected — resume or reconnect before sending.' : memory?.phase === 'ready' ? `Ready · next turn ${memory.next_turn_ordinal}` : memory?.phase === 'blocked' ? `Paused · ${memory.blocked_reason ?? 'retention needs repair'}` : 'Working — input waits until this turn is sealed.'}</span>
+      {#if memory?.last_report}
+        <span>Last retention: {memory.last_report.status}. Evaluation: not evaluated.</span>
+        {#if memory.last_report.run_id}
+          <details class="memory-receipt">
+            <summary>Retention details</summary>
+            <span>Run identifier for host-only retry or forget:</span>
+            <code>{memory.last_report.run_id}</code>
+          </details>
+        {/if}
+      {:else}
+        <span>No retention receipt reported on this connection.</span>
+      {/if}
+      <span>Typed text only · fixed model and tools · {memoryMaxBytes} bytes per turn</span>
+      {#if memorySession && (!memoryConnected || memory?.phase === 'blocked')}
+        <button onclick={() => resumeSession(memorySession, true)}>Resume saved memory session</button>
+      {/if}
+    </div>
+  {/if}
+
+  {#if !memoryIntent && grantsOpen}
     <section class="grants" aria-label="grants">
       {#if grants.length === 0}
         <p class="ghint">
@@ -2021,12 +2208,13 @@
 
   {#snippet pastRow(h, archived)}
     <div class="dline">
-      <button class="drow past" onclick={() => resumeSession(h.id)}>
+      <button class="drow past" onclick={() => resumeSession(h.id, h.memory === 'episodic')}>
         <!-- The name it earned, and the opening line for one that has
              not earned one yet (or was renamed past where the listing
              scan reads). -->
         <span class="dsnippet">{nameOf(h.title) || h.snippet}</span>
         <span class="dmeta">
+          {#if h.memory === 'episodic'}<span class="dkind">memory</span>{/if}
           {#if h.kind === 'voice'}<span class="dkind">voice</span>{/if}
           {#if h.kind === 'task'}<span class="dkind">task</span>{/if}
           <!-- An archived row is dated by when it was put away: that is
@@ -2034,10 +2222,12 @@
           {archived && h.archived_at ? `archived ${h.archived_at.slice(0, 10)}` : h.created_at.slice(0, 10)}
         </span>
       </button>
+      {#if h.memory !== 'episodic'}
       <button class="dmore" class:open={menuFor === h.id} aria-label="archive or delete" aria-expanded={menuFor === h.id}
         onclick={() => (menuFor = menuFor === h.id ? null : h.id)}>⋯</button>
+      {/if}
     </div>
-    {#if menuFor === h.id}
+    {#if h.memory !== 'episodic' && menuFor === h.id}
       <div class="dactions">
         {#if archived}
           <button onclick={() => archiveChat(h.id, false)}>restore</button>
@@ -2083,21 +2273,22 @@
         <div class="dsection">open</div>
         {#each rail.length ? rail : [{ key: 'main', running: false }] as s}
           <div class="dline">
-            <button class="drow" class:dactive={s.key === key} onclick={() => { drawer = false; switchTo(s.key); }}>
+            <button class="drow" class:dactive={s.key === key} onclick={() => { drawer = false; if (s.memory === 'episodic') memorySessions.set(s.key, s.id ?? s.session); switchTo(s.key); }}>
               <span class="raildot" class:on={s.running}></span>
               <span class="dname">{s.incognito ? 'incognito chat' : sessionLabel(s)}</span>
+              {#if s.memory === 'episodic'}<span class="dkind">memory</span>{/if}
               {#if s.incognito}<span class="dkind incog">incognito</span>{/if}
               {#if s.title?.startsWith('voice')}<span class="dkind">voice</span>{/if}
               {#if s.title?.startsWith('task: ')}<span class="dkind">task</span>{/if}
               {#if s.taint?.untrusted}<span class="railtaint">▲</span>{/if}
             </button>
             <!-- An incognito chat has its own End, and nothing to archive. -->
-            {#if s.id && !s.incognito}
+            {#if s.id && !s.incognito && s.memory !== 'episodic'}
               <button class="dmore" class:open={menuFor === s.id} aria-label="archive or delete" aria-expanded={menuFor === s.id}
                 onclick={() => (menuFor = menuFor === s.id ? null : s.id)}>⋯</button>
             {/if}
           </div>
-          {#if s.id && menuFor === s.id}
+          {#if s.id && s.memory !== 'episodic' && menuFor === s.id}
             <div class="dactions">
               {#if s.running}
                 <span class="dwhy">stop the run to archive or delete</span>
@@ -2136,7 +2327,7 @@
     </aside>
   {/if}
 
-  {#if task}
+  {#if !memoryIntent && task}
     <!-- **The goal, above the conversation about it.** A task chat that
          only stated its subject in the opening turn made the subject scroll
          away — and "I can't see what the goal is" was a complaint about a
@@ -2164,7 +2355,7 @@
       {#if handNote}<div class="handnote">{handNote}</div>{/if}
     </div>
   {/if}
-  {#if todo.length}
+  {#if !memoryIntent && todo.length}
     <!-- Above the transcript rather than in it: the plan is current state,
          not something that was said at a moment. Scrolling back through a
          long run should not scroll past where it got to. -->
@@ -2596,13 +2787,13 @@
     <PictureQueue items={queue} oncancel={(id) => stopPicture(id)} onreorder={reorderPictures} />
     <div class="input-row">
       <input type="file" multiple hidden bind:this={fileInput} onchange={uploadPicked} />
-      <button class="round" disabled={uploading} onclick={() => fileInput?.click()} title="attach a file — it lands in this session's inbox/">
+      <button class="round" disabled={uploading || memoryIntent} onclick={() => fileInput?.click()} title="attach a file — it lands in this session's inbox/">
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--accent-400)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.5l-8.2 8.2a5.5 5.5 0 01-7.8-7.8L13.6 4.3a3.7 3.7 0 015.2 5.2l-8.4 8.4a1.85 1.85 0 01-2.6-2.6l7.8-7.8" /></svg>
       </button>
       <textarea
         rows="1"
         bind:this={inputEl}
-        placeholder={running ? 'Steer the run…' : 'Ask mecha…'}
+        placeholder={memoryIntent ? (memoryReady ? 'Ask Mecha…' : 'Draft your next message…') : running ? 'Steer the run…' : 'Ask mecha…'}
         bind:value={draft}
         onkeydown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) {
@@ -2615,7 +2806,7 @@
            the call and vouches for it, and the server admits a spoken turn
            into the chat only on that word (design §3.4). Only where calls
            are on (FEATURES-DESIGN.md §5). -->
-      {#if isShown(features.rows, 'calls')}
+      {#if !memoryIntent && isShown(features.rows, 'calls')}
       <button
         class="round voice"
         onclick={startVoice}
@@ -2629,7 +2820,7 @@
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="7" y="7" width="10" height="10" rx="1.5" /></svg>
         </button>
       {/if}
-      <button class="round send" onclick={() => send()} title="send">
+      <button class="round send" disabled={memoryIntent && !memoryReady} onclick={() => send()} title="send">
         <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="var(--void)" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
       </button>
     </div>
@@ -2776,6 +2967,12 @@
 {/if}
 
 <style>
+  .memory-banner { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem 1rem; padding: .65rem 1rem; border-bottom: 1px solid var(--line); font-size: .8rem; }
+  .memory-banner strong { color: var(--accent-400); }
+  .memory-receipt { max-width: 100%; }
+  .memory-receipt code { display: block; overflow-wrap: anywhere; }
+  .memory-banner button { color: inherit; background: transparent; border: 1px solid currentColor; border-radius: .3rem; padding: .25rem .5rem; }
+
   .chat {
     flex: 1;
     display: flex;
@@ -2984,6 +3181,11 @@
     justify-content: center;
     color: var(--accent-400);
     flex-shrink: 0;
+  }
+  .newbtn.header.memory-new {
+    width: auto;
+    padding: 0 8px;
+    white-space: nowrap;
   }
   .newbtn.header:hover {
     color: var(--accent-300);
