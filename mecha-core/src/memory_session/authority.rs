@@ -9,6 +9,7 @@ use std::{
 };
 /// The largest transcript a memory session reads. A long tool session
 /// runs to megabytes of results.
+pub(super) const SOURCE_MAX: usize = 32 * 1024 * 1024;
 /// The most bytes a recall may return and still be tracked. A recall's
 /// output is the goal context (the charter and the owner's recent lines,
 /// each up to 64 KiB) and then the memory packet (20,000 bytes): at
@@ -16,7 +17,6 @@ use std::{
 /// over, its attempt was left pending, and the turn lost its memory for
 /// having remembered something.
 pub(super) const RECALL_OUTPUT_MAX: usize = 160 * 1024;
-pub(super) const SOURCE_MAX: usize = 32 * 1024 * 1024;
 pub(super) fn digest(b: &[u8]) -> String {
     Sha256::digest(b)
         .iter()

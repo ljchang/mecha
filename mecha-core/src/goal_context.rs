@@ -277,7 +277,11 @@ impl ContextVersion {
             "accumulated owner evidence exceeds 64 KiB; start a new conversation"
         );
         ensure!(
-            self.earlier.is_none() || self.earlier.digest.len() == 64,
+            if self.earlier.is_none() {
+                self.earlier.digest.is_empty()
+            } else {
+                self.earlier.digest.len() == 64
+            },
             "goal context earlier evidence digest malformed"
         );
         ensure!(
@@ -289,12 +293,14 @@ impl ContextVersion {
     pub fn owner_prompt_block(&self) -> String {
         let evidence = serde_json::to_string(&self.owner_inputs).expect("owner strings serialize");
         // Said only once lines have left the window, so a short
-        // conversation's block is byte for byte what it was.
+        // conversation's block is byte for byte what it was. It does not
+        // say the earlier lines are above: a compaction may have cut the
+        // messages that held them, and then a summary is all that is.
         let earlier = if self.earlier.is_none() {
             String::new()
         } else {
             format!(
-                " These are the {} most recent of {}; the earlier ones are in the conversation above.",
+                " These are the {} most recent of {}; the earlier ones are earlier in the conversation, or in a summary of it if it was compacted.",
                 self.owner_inputs.len(),
                 self.total_inputs()
             )
@@ -1128,6 +1134,14 @@ mod tests {
             forged.content_digest = forged.computed_digest().unwrap();
             assert!(replayed.accept_version(forged).is_err(), "tamper {tamper}");
         }
+        // A revision whose window never slid records no chain. One that
+        // names a digest over no lines is a state its own digest does not
+        // cover and a round trip would drop, so it does not validate.
+        let mut forged = state.versions()[0].clone();
+        assert!(forged.earlier.is_none());
+        forged.earlier.digest = "0".repeat(64);
+        assert_eq!(forged.computed_digest().unwrap(), forged.content_digest);
+        assert!(forged.validate().is_err());
     }
 
     /// One line as large as the window's byte bound stays, alone: the

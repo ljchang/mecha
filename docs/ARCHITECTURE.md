@@ -8102,7 +8102,15 @@ and chained digest of the rest, and `accept_version` checks that the
 window slid over exactly the lines it dropped, so a revision cannot drop,
 reorder or rewrite one without the chain saying so. The newest line is
 never the one dropped. A revision whose window never slid has the bytes
-and the digest it always had. *Every request copied the request and the
+and the digest it always had. **The cost, with compaction**: before the
+window every request repeated every owner line, so an early line outlived
+a compaction cut word for word. Now a line that has left the window is in
+front of the model only as the message that held it, and a compaction
+that cuts that message leaves the summary's account of it and nothing
+else. The block says so (`owner_prompt_block`) and does not claim the
+earlier lines are above. A standing instruction that must outlive a long
+conversation belongs in the charter, which every request carries whole;
+relating the window to the cut is not built. *Every request copied the request and the
 whole conversation into the transcript*, so a transcript grew with the
 square of the conversation: an ordinary chat's host records a compact
 `DecisionBinding` (`RunContext::with_compact_goal_records`; the terminal
