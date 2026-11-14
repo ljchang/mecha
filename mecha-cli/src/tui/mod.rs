@@ -3951,7 +3951,9 @@ fn submit(
         .with_phase(app.phase)
         .with_owner_steering(Arc::clone(&queue));
     if agent.dynamic_goals_enabled() {
-        cx = cx.with_goal_ingress(owner_inputs, session.cloned().map(Arc::new));
+        cx = cx
+            .with_goal_ingress(owner_inputs, session.cloned().map(Arc::new))
+            .with_compact_goal_records();
     }
     // The handle, not the bare token: Ctrl-C cancels *as the owner*, and the
     // outcome records `Stopped` rather than the unknown-which `Interrupted`.

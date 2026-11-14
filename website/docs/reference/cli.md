@@ -1537,6 +1537,27 @@ mecha learning-report --json
 Use it alongside `mecha rules` to distinguish rules that improved measured work
 from rules that have not yet been measured. See [Learning](/docs/features/learning).
 
+## `corrections`
+
+Read what your own acts have taught, without a model call or network access:
+how many turns were kept as attempts, how many you judged and how, how many
+carry your words, how often something was handed to a later run, and the
+latest judgements.
+
+```bash
+mecha corrections
+mecha corrections --json
+```
+
+`--recent <N>` sets how many of the latest judgements are listed (default `10`).
+
+A judgement is something you did, never something you were asked for: a draft
+you edited before sending, a draft you rejected, a time you stepped in during
+a run, a call you refused. A draft you sent as written counts as good. It
+reads whether or not `[features] corrections` is on; switching the feature
+off stops the record growing. Deleting a conversation (`mecha sessions
+delete`) removes its lines.
+
 ## `validate`
 
 Probe whether the learned rules change the answers at the recorded moments the user

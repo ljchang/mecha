@@ -1378,6 +1378,10 @@ impl Tool for McpTool {
         Some(self.client.workspace.clone())
     }
 
+    fn provided_by_a_server(&self) -> bool {
+        true
+    }
+
     fn defers(&self) -> bool {
         self.background
     }

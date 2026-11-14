@@ -413,7 +413,15 @@ enabled = ["fs_read", "fs_write", "goal_context"]
         versions = {v["revision"]: v for d in decisions for v in d["versions"]}
         for decision, request in zip(decisions, live):
             binding = decision["binding"]
-            assert binding["system"] == system(request)
+            # An ordinary chat records each decision compactly: digests in
+            # place of a copy of the request and the conversation.
+            compact = binding["compact"]
+            assert binding["messages"] == [] and binding["conversation_messages"] is None
+            assert compact["system_digest"] == hashlib.sha256(system(request).encode()).hexdigest()
+            # The system prompt is the one copy kept, and only where it is
+            # not the previous decision's.
+            assert binding["system"] in (None, system(request))
+            assert len(json.dumps(dict(binding, system=None))) < 2048, "a compact decision record grew with the conversation"
             assert versions[binding["version"]]["owner_inputs"][-1]["source"] == "cli_chat"
         receipt_summary = inspect_chat_receipts(authority, transcript, [root / "live-initial.stderr", root / "live-resumed.stderr"])
         original = transcript.read_bytes()

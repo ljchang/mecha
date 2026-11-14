@@ -276,6 +276,15 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
         }
     };
     report.attempt("messages", purge_mailbox(&roots.messages, id));
+    // Corrections: the attempts this conversation made, the owner's verdicts
+    // on them, and every record of one being handed to or from it.
+    report.attempt(
+        "corrections",
+        filter_lines(
+            crate::attempts::Store::in_home(&roots.home).path(),
+            |line| crate::attempts::names_session(line, id),
+        ),
+    );
     // What the conversation's programs read (`CODE-MODE-DESIGN.md` §7): the
     // session's own blob directory, whole and unconditionally. Content is
     // addressed within one session only, so nothing else shares a blob.

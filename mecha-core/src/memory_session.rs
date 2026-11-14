@@ -6,6 +6,10 @@ mod inline_notes;
 pub mod learning;
 pub(crate) mod native_writer;
 mod recall;
+pub use recall::{
+    delivery_input, delivery_text, error_input, SearchTool, DELIVERY_STEM, ERROR_STEM, INVITATION,
+    SEARCH_NAME,
+};
 mod recording;
 pub mod router;
 pub mod surface;
@@ -19,6 +23,15 @@ use crate::{
     tool::Tool,
 };
 use anyhow::{ensure, Result};
+/// The source kind of an episode kept in the store (`tool::episodes`).
+const EPISODE_CONNECTOR: &str = "host-episode-v1";
+/// The source kind of a pattern kept in the store (`tool::concepts`).
+const PATTERN_CONNECTOR: &str = "host-pattern-v1";
+/// The source kind of an offer kept in the store (`tool::concepts`).
+const OFFER_CONNECTOR: &str = "host-offer-v1";
+/// The most records one read of the store returns (`Memory::search`'s own
+/// ceiling). Reaching it refuses the read.
+const EPISODE_READ_LIMIT: usize = 1000;
 use authority::{Authority, Frozen, Seal};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -207,6 +220,194 @@ impl SessionMemory {
             "ordinary database changed"
         );
         Ok(m)
+    }
+    /// Keep episodes in the store: one evidence record per episode, named
+    /// by its session and call, in the store's own scopes. Kept again under
+    /// the same name, a record gains a revision; that is how a verdict
+    /// reaches an outcome ([`Self::appraise_episode`]).
+    ///
+    /// Whether an episode quotes outside content is in its own JSON
+    /// (`Episode::external`), not in the store's provenance for the record.
+    /// So only [`Self::episodes`] and [`Self::episodes_with_failures`] may
+    /// read these: each hands them to `tool::episodes`, which labels what
+    /// it delivers. A reader that served
+    /// the record's text as evidence would serve it unlabelled.
+    pub fn retain_episodes(&self, episodes: &[crate::tool::episodes::Episode]) -> Result<usize> {
+        let mut memory = self.memory()?;
+        for episode in episodes {
+            memory.capture(crate::memory::Capture {
+                source: crate::memory::SourceKey {
+                    connector: EPISODE_CONNECTOR.into(),
+                    account: self.request.account.clone(),
+                    id: episode.source_id(),
+                },
+                text: serde_json::to_string(episode)?,
+                occurred_at: None,
+                scopes: self.request.scopes.clone(),
+                transcript: None,
+            })?;
+        }
+        Ok(episodes.len())
+    }
+    /// Every episode the store holds, oldest first, and how many records of
+    /// the episode kind could not be read as one.
+    fn episode_records(&self) -> Result<(Vec<crate::tool::episodes::Episode>, usize)> {
+        let memory = self.memory()?;
+        let (mut hits, stopped_at_limit) = memory.search_reporting(
+            &crate::memory::Query {
+                text: String::new(),
+                known_at: memory.snapshot()?,
+                valid_at: None,
+                include_possible: true,
+                limit: EPISODE_READ_LIMIT,
+            },
+            &self.access(),
+        )?;
+        // The search returns the newest records of every kind up to its
+        // limit. At the limit, older episodes may be missing, and a store
+        // read in part is not one to deliver from or to judge against.
+        // Asked of the search itself: its second authority pass can drop a
+        // hit, so a full read can come back one short (review of #875).
+        ensure!(
+            !stopped_at_limit,
+            "the store holds too many records to read its episodes whole"
+        );
+        hits.sort_by_key(|hit| hit.sequence);
+        let mut unreadable = 0;
+        let mut episodes = Vec::new();
+        for hit in hits {
+            let crate::memory::Record::Evidence(capture) = hit.record else {
+                continue;
+            };
+            if capture.source.connector != EPISODE_CONNECTOR {
+                continue;
+            }
+            match serde_json::from_str(&capture.text) {
+                Ok(episode) => episodes.push(episode),
+                Err(_) => unreadable += 1,
+            }
+        }
+        Ok((episodes, unreadable))
+    }
+    /// The store's episodes with the outcomes of failed tasks kept
+    /// (`tool::episodes::fold_all`), for a reader that hands them over as
+    /// failures.
+    pub fn episodes_with_failures(&self) -> Result<(Vec<crate::tool::episodes::Episode>, usize)> {
+        let (episodes, unreadable) = self.episode_records()?;
+        Ok((crate::tool::episodes::fold_all(episodes), unreadable))
+    }
+    /// The store's episodes, one per finding (`tool::episodes::fold`).
+    pub fn episodes(&self) -> Result<(Vec<crate::tool::episodes::Episode>, usize)> {
+        let (episodes, unreadable) = self.episode_records()?;
+        Ok((crate::tool::episodes::fold(episodes), unreadable))
+    }
+    /// Keep what a run showed (`tool::concepts::Pattern`): one record a
+    /// session, of its own kind, beside the episodes and read like them.
+    /// The same rule holds: only [`Self::concepts_kept`] may read these.
+    pub fn retain_pattern(&self, pattern: &crate::tool::concepts::Pattern) -> Result<()> {
+        self.memory()?.capture(crate::memory::Capture {
+            source: crate::memory::SourceKey {
+                connector: PATTERN_CONNECTOR.into(),
+                account: self.request.account.clone(),
+                id: pattern.source_id(),
+            },
+            text: serde_json::to_string(pattern)?,
+            occurred_at: None,
+            scopes: self.request.scopes.clone(),
+            transcript: None,
+        })?;
+        Ok(())
+    }
+    /// Keep the record of a run that was handed concepts
+    /// (`tool::concepts::Offer`).
+    pub fn retain_offer(&self, offer: &crate::tool::concepts::Offer) -> Result<()> {
+        self.memory()?.capture(crate::memory::Capture {
+            source: crate::memory::SourceKey {
+                connector: OFFER_CONNECTOR.into(),
+                account: self.request.account.clone(),
+                id: offer.source_id(),
+            },
+            text: serde_json::to_string(offer)?,
+            occurred_at: None,
+            scopes: self.request.scopes.clone(),
+            transcript: None,
+        })?;
+        Ok(())
+    }
+    /// Every pattern and every offer the store holds, oldest first, and how
+    /// many records of those kinds could not be read. Folded into concepts
+    /// by the reader (`tool::concepts::fold`).
+    pub fn concepts_kept(&self) -> Result<crate::tool::concepts::Kept> {
+        let memory = self.memory()?;
+        let (mut hits, stopped_at_limit) = memory.search_reporting(
+            &crate::memory::Query {
+                text: String::new(),
+                known_at: memory.snapshot()?,
+                valid_at: None,
+                include_possible: true,
+                limit: EPISODE_READ_LIMIT,
+            },
+            &self.access(),
+        )?;
+        ensure!(
+            !stopped_at_limit,
+            "the store holds too many records to read its concepts whole"
+        );
+        hits.sort_by_key(|hit| hit.sequence);
+        let mut kept = crate::tool::concepts::Kept::default();
+        for hit in hits {
+            let crate::memory::Record::Evidence(capture) = hit.record else {
+                continue;
+            };
+            if capture.source.connector == PATTERN_CONNECTOR {
+                match serde_json::from_str(&capture.text) {
+                    Ok(pattern) => kept.patterns.push(pattern),
+                    Err(_) => kept.unreadable += 1,
+                }
+            } else if capture.source.connector == OFFER_CONNECTOR {
+                match serde_json::from_str(&capture.text) {
+                    Ok(offer) => kept.offers.push(offer),
+                    Err(_) => kept.unreadable += 1,
+                }
+            }
+        }
+        Ok(kept)
+    }
+    /// Record how the task run in `session` was judged, as a revision of its
+    /// outcome record and of the pattern and the offer it left. `false` when
+    /// the session kept no outcome: its pattern and offer, which do not
+    /// depend on one, have been graded all the same by then.
+    ///
+    /// A pattern of a kind this build does not know is left as it was
+    /// written: read into this build's type and written back, it would lose
+    /// its kind and any field a later build added (review of #877).
+    pub fn appraise_episode(&self, session: &str, passed: bool) -> Result<bool> {
+        let kept = self.concepts_kept()?;
+        if let Some(mut pattern) = kept
+            .patterns
+            .into_iter()
+            .rev()
+            .find(|p| p.session == session)
+            .filter(|p| p.kind != crate::tool::concepts::Kind::Unknown)
+        {
+            pattern.judged = Some(passed);
+            self.retain_pattern(&pattern)?;
+        }
+        if let Some(mut offer) = kept.offers.into_iter().rev().find(|o| o.session == session) {
+            offer.judged = Some(passed);
+            self.retain_offer(&offer)?;
+        }
+        let Some(mut outcome) = self
+            .episode_records()?
+            .0
+            .into_iter()
+            .find(|e| e.outcome() && e.session == session)
+        else {
+            return Ok(false);
+        };
+        outcome.judged = Some(passed);
+        self.retain_episodes(std::slice::from_ref(&outcome))?;
+        Ok(true)
     }
     pub fn begin(
         &self,

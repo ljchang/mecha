@@ -338,6 +338,13 @@ impl Memory {
     }
 
     pub fn search(&self, query: &Query, access: &Access) -> Result<Vec<Hit>> {
+        Ok(self.search_reporting(query, access)?.0)
+    }
+
+    /// [`Self::search`], and whether it stopped at the query's limit. Asked
+    /// before the second authority pass, which can drop a hit: the length of
+    /// what comes back cannot say whether older records were left unread.
+    pub fn search_reporting(&self, query: &Query, access: &Access) -> Result<(Vec<Hit>, bool)> {
         self.check_access(access)?;
         ensure!(
             query.limit > 0 && query.limit <= 1000,
@@ -402,6 +409,7 @@ impl Memory {
             }
         }
         drop(statement);
+        let stopped_at_limit = hits.len() == query.limit;
         // Recheck external authority after selection with an independent cache.
         let final_checks = SourceChecks::new(self.source_guard.as_deref());
         let mut checked = Vec::new();
@@ -411,7 +419,7 @@ impl Memory {
             }
         }
         tx.commit()?;
-        Ok(checked)
+        Ok((checked, stopped_at_limit))
     }
 
     pub(crate) fn check_access(&self, access: &Access) -> Result<()> {
