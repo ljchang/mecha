@@ -66,6 +66,19 @@
 //! and a chat keeps the version it began with, so the record is the only
 //! honest source.
 //!
+//! **The teller's arm is the chat's, not the turn's.** Since the chat's
+//! ledger (`today::Ledger`), the teller's lines ride a turn only until they
+//! are said or their offers run out, so a chat with events on shows the
+//! heading on some turns and not others. Filed per turn, such a chat would
+//! scatter across two arms and its quiet turns would land beside chats with
+//! events off. So once a transcript has shown the teller, every later turn
+//! of it that shows her days is the events arm. For the whole file, not a
+//! stretch: a `Config` record is written at a router rebind too, which the
+//! ledger outlives, so a reset there would file the rest of an events-on
+//! chat as events off; and the switch is pinned with the chat, so one file
+//! is one regime. Readings from before the ledger had the heading on every
+//! such turn, which this reads the same way.
+//!
 //! **Counts, never words.** A reading holds numbers only. A name is
 //! looked for, never kept, so a reading can be pasted anywhere.
 
@@ -235,6 +248,9 @@ pub fn session_turns(path: &Path) -> Result<Vec<Stretch>> {
     let mut out: Vec<Stretch> = Vec::new();
     let mut now = Stretch::default();
     let mut people = false;
+    // Whether this transcript has carried the teller at all (see the module
+    // doc: the arm is the chat's regime, not the turn's note). Never reset.
+    let mut teller = false;
     let mut run = Turn::default();
     // The history so far, as its length and last message: appended
     // messages move it, a rewrite sets it. And the same as it stood at the
@@ -316,6 +332,12 @@ pub fn session_turns(path: &Path) -> Result<Vec<Stretch>> {
                 if notes.iter().any(|n| {
                     super::today::stem_of(n).is_some() && n.contains(super::today::EVENTS_HEADING)
                 }) {
+                    teller = true;
+                }
+                // Sticky for the chat: the teller's lines ride only
+                // some turns (`today::Ledger`), and every turn of a chat
+                // they ride in is that regime's.
+                if run.arm.days && teller {
                     run.arm.events = true;
                 }
             }
@@ -954,6 +976,46 @@ mod tests {
                 ..RunStats::default()
             }))
             .unwrap();
+        }
+
+        /// The teller's lines ride only some turns (`today::Ledger`), and
+        /// every later turn of a chat they rode in is the events arm, across
+        /// a `Config` record too: a router rebind writes one mid-chat and
+        /// the ledger outlives it (review of #867, passes 1 and 2).
+        #[test]
+        fn a_chat_that_showed_the_teller_stays_in_its_arm() {
+            let dir = std::env::temp_dir().join(format!("mecha-init-{}", uuid::Uuid::new_v4()));
+            let s = scratch(&dir);
+            config(&s, "# Who you are\n\nMara.", "2026-01-01T09:00:00Z");
+            let stem = super::super::super::today::TODAY_STEM;
+            let told = format!(
+                "{stem} you are reading. {} today: a small win.)",
+                super::super::super::today::EVENTS_HEADING,
+            );
+            let quiet = format!("{stem} you are reading.)");
+            let mut convo = Conversation::default();
+            run(&s, &mut convo, "morning", "Morning.", &[&quiet]);
+            run(&s, &mut convo, "hi", "Hello.", &[&told]);
+            run(&s, &mut convo, "and?", "Nothing.", &[&quiet]);
+            run(&s, &mut convo, "hm", "Hm.", &[]);
+            // A rebind: a new `Config`, the same chat, the ledger still held.
+            config(&s, "# Who you are\n\nMara.", "2026-01-01T10:00:00Z");
+            run(&s, &mut convo, "still there?", "Yes.", &[&quiet]);
+            let arms: Vec<(bool, bool)> = flat(&s.path)
+                .iter()
+                .map(|t| (t.arm.days, t.arm.events))
+                .collect();
+            assert_eq!(
+                arms,
+                [
+                    (true, false),
+                    (true, true),
+                    (true, true),
+                    (false, false),
+                    (true, true)
+                ]
+            );
+            std::fs::remove_dir_all(dir).ok();
         }
 
         #[test]

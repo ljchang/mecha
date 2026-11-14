@@ -526,6 +526,115 @@ roughly 20 s saving. It is built as §7.4 describes, with one change: the
 whole-picture note is left for later, so v1 sends only each region's words.
 `ARCHITECTURE.md` §images holds the invariants.
 
+## 8. What a painted edit did, and taking something out (2026-11-12)
+
+The owner's report after two days of use: painted edits are unreliable.
+Read back from the manifests, the complaint had two parts. A painted edit
+that returned the original was reported as drawn, and a painted area whose
+words asked for something to be removed mostly came back with the thing
+still there.
+
+**The rig.** `mecha replay --persona <chat> --at <line> --run-call 1` on
+recorded picture-panel turns, which until this change could not redo a
+painted edit (the fact kept the words but not the index; `edit::
+fact_painted_call` and `scene::stage::Staged::bring` close that). Three
+image seeds an arm at one `--image-seed-base`, sampling set by flag, the
+binary's hash recorded beside each output. A replay draws with no LoRAs,
+so these are not the chat's pictures; arms compare with each other.
+Judged by eye, by one reader, and by the read below.
+
+### 8.1 Reading the result
+
+`paint_read`: of the pixels under an area's paint, the share whose mean
+channel difference from the picture before the edit is over 12 of 255.
+Over the 14 recorded painted edits whose files remain (16 areas) and the
+24 replayed samples of §8.2:
+
+| By eye | Areas | Share changed |
+|---|---|---|
+| came back the same, but for the decoder's round trip | 5 (2 recorded, 3 replayed) | 0.1% to 0.3% |
+| drawn again to the same content | 4 (1, 3) | 2.3% to 5.8% |
+| part of the paint changed, the thing asked about did not | 6 (0, 6) | 6.5% to 26.9% |
+| changed as asked | 16 (4, 12) | 24.7% to 79.2% |
+| recorded, not judged one by one | 9 | 45.5% to 89.2% |
+
+So the read is of pixels, not of whether the change is the one asked for:
+it separates "nothing happened" from "something was drawn", and the third
+row shows it cannot do more. `PAINT_UNCHANGED` is 2% and `PAINT_BARELY`
+10%: below the first an area "came back as it was", between them "almost
+as it was … may not show", with the share. The layout correlation an
+unmasked edit is read by (`NEAR_COPY_LAYOUT`, 0.78) had been said on
+masked edits too; it called two that worked near-copies (0.79, 0.82) and
+is no longer said there.
+
+How far the drawing strayed where the mask keeps the canvas is recorded
+(`outside`, `outside_alike`) and not said. Under the noise mask it reads
+0.6 to 0.8 of 255, the decoder's round trip. A result sampled whole and
+laid back through the paint (a face region) can stray; none has been
+measured yet to set a line by.
+
+### 8.2 Guidance, and hiding what is to be taken out
+
+The earlier reading of the manifests was that masked edits at cfg 1 come
+back as the original and at cfg 3 do not. Unconfounded, that is not what
+separates them: the failures were removals.
+
+| Turn | Arm | Result |
+|---|---|---|
+| R1: a second figure, entwined with the first, to be taken out | cfg 1 | 0 of 3 (0.2% to 0.3% changed) |
+| R1 | cfg 3, negative | 0 of 3 (drawn again the same, 2.3% to 5.8%) |
+| R1 | cfg 1, **area hidden** | **3 of 3** (78% to 79%); a soft patch where a hand had been, each time |
+| R2: a second figure behind the first, and two smaller areas, in one colour | cfg 1 | figure kept 3 of 3; the smaller areas cleared in 2 |
+| R2 | cfg 3, negative | figure kept 3 of 3; the smaller areas cleared in 3 |
+| R2 | cfg 1, **area hidden** | **figure gone 3 of 3** (75% to 79%); 2 clean, 1 with the fill itself copied into the result as a blocky patch |
+| R3: a figure on an open floor | cfg 3, negative | 3 of 3 |
+| A1: a logo added to a plain garment | cfg 1 | 3 of 3 (27% to 49%); the lettering garbled in 2 |
+
+"Hidden" is `fill_from_around`: the area the words take out, grown as the
+mask is, filled from the surrounding pixels in the canvas and in the
+outlined copy the model is shown. §4's C′ hid the region for a pose and
+lost the person with it; for a removal losing the person is the point. A
+flat grey fill was copied into the result there, so the fill here is a
+smooth field of the surroundings' own colours with nothing to copy. The
+plan's own picture is not touched, so the lay-back and everything the
+mask keeps are as before. The words that count as taking out are a closed
+list (`picture::about_removal`).
+
+Guidance was not changed. It is the owner's per-persona setting, cfg 3
+doubles each step, and it did not move R1 or R2's figure.
+
+### 8.3 A crop for a small area
+
+Approach D with C's mask: a box around what the mask redraws, with a
+margin, sampled at its own edit canvas, sized back and laid over the
+canvas through the same mask. Built, measured on A1 and not shipped. At
+cfg 1 and the same three seeds the crop drew cleaner, larger strokes in 3
+of 3 (49% to 64% of the paint changed, against 27% to 49%), and ran the
+lettering to the paint's edge, where the mask cut it, in 3 of 3 against 0
+of 3. That is §4's finding again: in a crop the model has no sense of
+scale. One turn is not enough to ship a second render path on, and a
+wider margin was not tried. The code is kept on the local branch
+`exp/mask-crop`.
+
+### 8.4 Open
+
+- What the hidden area leaves behind: R1's soft patch in 3 of 3, and in
+  one R2 sample the fill itself, copied into the result with the
+  pyramid's blocks showing. A smoother fill, or a second pass over the
+  area alone, is untried. R3 was taken out 3 of 3 at cfg 3 with nothing
+  hidden, so hiding is not always needed; R3 at cfg 1, and R1 hidden at
+  cfg 3, were not run.
+- Words that take off something worn ask for what is under it, which the
+  model can then draw only from what it is shown around the area. No
+  recorded painted edit asks for that, and it is not measured.
+- A removal named in words (`mask` as words, S1) is found inside the job
+  and is not hidden.
+- One reader, three seeds, three chats: the rates are these scenes'.
+- The replay rig waits on every other process's hold of the chat model
+  before each sample (`wait_for_owner`), though a `--run-call` of a panel
+  turn sends the model nothing. With four sessions measuring at once a
+  sample waited up to half an hour.
+
 ## Sources
 
 - [QwenLM/Qwen-Image-2.1](https://github.com/QwenLM/Qwen-Image-2.1): "specify

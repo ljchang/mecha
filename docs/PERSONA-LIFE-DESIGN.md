@@ -973,6 +973,37 @@ one more reason §14's gate part 1 exists.
   happened" on the next turn; deck, routine/day, cast, intensity and director
   changes still redraw today. `persona::today::EVENTS_HEADING` marks the arm that
   `persona::initiative` reads back from the transcript.
+- **As built (the chat's ledger, `persona::today::Ledger`):** the doing-now
+  sentence rides every turn, since the clock moves it. The teller's three
+  lines (what happened, how she feels, the weather) do not: each rides until
+  her reply has said it or it has been offered `today::OFFERS` times, and
+  again on any turn the owner's message is about it. What she said stays in
+  the history, which is where a follow-up comes from. Before this the lines
+  rode every turn as the last thing read, and in one chat the weather came
+  up in 24 of 31 replies, 2 of them asked (owner, 2026-11-12). The match is
+  by word: closed sets for the weather and the levels, the titles' longer
+  words for events, so it errs toward dropping a line early. A new diary
+  day starts over; a changed events or feeling line (the noon turn) is a new
+  line; the weather is the day's first reading for that chat, so a forecast
+  refreshed mid-chat cannot contradict what she said. A turn that is
+  rolled back (a recording that fails, a run that errors) gives its offer
+  back, since she never read it; a run the owner stops is not rolled back,
+  since the request reached her. The note sits ahead of the
+  variety and scene notes, on purpose and unmeasured: it had been the last
+  text she read, which is where an instruction lands hardest, and the scene
+  note now is. The ledger is held by the process serving the chat and is
+  never stored, so a restart offers each line once more. It is the
+  within-chat half only: the nightly `told` flag below is still unbuilt,
+  and nothing here writes a world row.
+- **What this does to the initiative reading.** `persona::initiative` filed
+  each turn by whether its own note carried `EVENTS_HEADING`. With the
+  ledger that would scatter an events-on chat across two arms, so the
+  events arm is now the chat's: once a transcript has shown the teller,
+  every later turn of it that shows her days is the events arm
+  (`initiative`'s module doc), across a router rebind too, which writes a
+  `Config` record the ledger outlives. A reading of
+  chats from before the ledger reads the same way under both rules, since
+  the heading rode every turn then.
 - **The told-ledger** is the anti-repetition mechanism. The nightly writer
   already reads each chat; it marks which world events and people she
   mentioned. An untold event is fresh material. A told one fades as Rimé

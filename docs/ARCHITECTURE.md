@@ -801,6 +801,45 @@ The routes, in the result's own words and the manifest's `route`:
   refusal. On a picture with no record the names are left as written: its
   people are unknown. A character whose entry did not load, named anywhere
   in the call, is still refused (`broken_named_in`, review of #383).
+- **"Me" and "we" are the owner's character only when the library says
+  which** (`Library::owner`, `owner.toml`, written by `mecha imagelib
+  set-owner`; owner, 2026-10-29): the readers map the owner's my/me/I to it
+  and "we" to it and the persona, and a persona turn's reading may add it to
+  the persona's call (`imagegen::add_owner`), the one person a reading adds,
+  and only from the owner's own words. With none set, the owner is the
+  viewer. Never a name in code.
+- **A first-person camera's holder is the viewer** (`picture::first_person_holder`
+  for what the camera says and the owner's character, `picture::plan` for
+  the order and what the cast adds):
+  the name the camera gives a possessive; else the owner's character when
+  they are in the picture; else, for a first person
+  (`picture::first_person`) that names nobody, the cast member whose own
+  part is listed beside them; else the owner's character; never a name
+  alone, which the camera looks at, and never anyone where the camera gives
+  the view to someone the library does not hold. Left out of the cast beside
+  anyone else on a picture drawn from the scene, their act one line of what
+  the viewer's eyes see (`Plan::seen_from`, apart from `also`); a retouch
+  keeps them. **A described part of the viewer is not one more person**
+  (`picture::a_part_of`: the viewer's possessive, how the part is held, the
+  part, and after a comma only what it does, of nobody else): beside
+  anyone else it leaves the cast and the record, and `Plan::seen_from`
+  carries its words; alone it is what the picture shows. Listed as a
+  person beside the holder, the library refused the call, and a persona
+  sent it again until the run was ended (2026-11-12).
+- **An outfit is said outright** (2026-10-28, replay rig): a nude one is
+  spelled out (`picture::outfit_words`, clothed 3/3 before, 0/3 after), and
+  a change that takes the top off says "no top", into the record
+  (`picture::removed_top`, the portrait's top 3/3 before, 0/3 after). A
+  picture of one person sends the face crop in the portrait's slot, and
+  close-ups go to a cast of one only (`IMAGE-COMPILER-DESIGN.md` §9.4).
+- **The panel reader** never reads a pronoun as a name, rewrites the
+  owner's first person, joins a relative camera ask to the recorded camera,
+  and passes a retouch beside a scene change on with it (`Plan::also`). That
+  retouch keeps a picture out of layers, said in the result.
+- **A regions edit that mixes regions with and without a picture runs in two
+  passes** (`imagegen::PrePass`): the regions without one first, masked, then
+  the face and look regions on that, each laying back only its own paint. In
+  one pass a removal beside a face region removed nothing (0/6).
 - **At most five people with faces** (`picture::MAX_FACES`, the owner's
   provisional C5 ruling). More are refused, naming them, never trimmed.
   `EDIT_REFERENCE_BUDGET` is the canvas plus five crops, and `call` refuses
@@ -1049,6 +1088,9 @@ advances it.
 - `image` and `tool_use_id`, for orphan repair;
 - `seed` and `cast[].name`, for save-to-library;
 - `route`, `picture`, `mask`, `crops` and `layout_similarity`;
+- `people_check`: how many people the scene has, how many each render
+  showed, which was kept, and why a count was not made; null for a picture
+  not counted;
 - `roles`: whether the people's parts were split (`applied`, or `fell back:`
   and why), since the split is prompt-only and its fallback silent;
 - `reader`: what the scene reader merged into the call, or why it fell back;
@@ -1104,9 +1146,7 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   every picture this tool made, that canvas is the picture's own size. A
   larger photo is edited and returned at its canvas size, as a plain edit
   already is, and the result says so. A dab too small to survive the grow
-  step is refused rather than silently changing nothing. The near-copy check
-  reads only the painted cells (`layout_similarity_painted`), or every
-  masked edit would look unchanged. It landed 8 of 8 local edits in
+  step is refused rather than silently changing nothing. It landed 8 of 8 local edits in
   `IMAGE-REGION-EDIT-RESEARCH.md` §4 (the seam caveat is above). It
   under-edits a pose,
   which is left to a plain edit or a library redraw. A mask that marks
@@ -1116,6 +1156,43 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   local model read the refusal as the mask being at fault and retried
   without the mask: a whole-picture edit of a picture the owner had painted
   a region on.
+- **What a masked edit did is read from the pictures, never assumed**
+  (`read_masked`, `MaskRead`; `IMAGE-REGION-EDIT-RESEARCH.md` §8). Once the
+  result is laid back, the share of painted pixels that visibly changed
+  against the picture as it was before any pass of the edit (`paint_read`)
+  is read under the whole mask and under each region's own paint. Below
+  `PAINT_UNCHANGED` an area "came back as it was", and a result in which
+  every area did is never called redrawn; below `PAINT_BARELY` it "came
+  back almost as it was", said with its share as a change that may not
+  show; a region that failed is named beside the ones that took. The
+  layout line of an unmasked edit (`NEAR_COPY_LAYOUT`) is not said on a
+  masked one: over the recorded painted edits it called two that worked
+  near-copies (0.79 and 0.82), since a change inside a stroke keeps the
+  stroke's layout. The manifest keeps the numbers (`mask_read`), with
+  `layout_similarity` beside them. Before this a painted removal that
+  returned the original pixel for pixel was reported as "Only the area …
+  was redrawn", and the persona's reply said the change was made.
+- **What is to be taken out is hidden from the model** (`MaskPlan::fill`,
+  `fill_request`; §8 of the same document). A model shown the thing it is
+  asked to remove often draws it again under the mask. Of the six removals
+  among the recorded painted edits whose files remain, three came back
+  with the thing still there (0.1%, 0.3% and 4.4% of the area changed),
+  and replayed, a second figure entwined with the first came back 0 of 3
+  at cfg 1 and 0 of 3 at cfg 3. So where a painted area's words ask for
+  something to be taken out (`picture::only_removal` for one painted area,
+  whose words are the owner's whole sentence and may ask for more than the
+  removal, and `picture::about_removal` for a region, whose words are its
+  own; a closed list of plain verbs, and "replace" names what comes
+  instead and is not one), the
+  area, grown as the mask is, is filled from what surrounds it
+  (`fill_from_around`) in the canvas and the outlined copy the model is
+  shown: the same turn at the same seeds, 3 of 3 at cfg 1, and a second
+  turn 3 of 3, one of them with the fill copied into the result as a
+  blocky patch. Only what is
+  shown changes. The plan's own picture stays the original, so the
+  lay-back, the read and everything the mask keeps are as before, and the
+  result says the area was hidden. A mask named in words (S1) is found
+  inside the job and is not hidden yet.
 - **Several coloured regions, each with its own words, go in one masked
   edit** (the owner's ruling, 2026-10-10: M2 of
   `IMAGE-REGION-EDIT-RESEARCH.md` §7). The persona chat's edit panel paints
@@ -1140,11 +1217,17 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   (`docs/SEGMENTATION-DESIGN.md`; owner, 2026-10-16). SAM 3.1 is ComfyUI's
   own node (`sam_graph`), installed with the image slot
   (`recommend::SAM_SOURCE`), and runs only after the job is admitted and
-  only ahead of that job's render, so SAM never loads without the image
+  only beside that job's render (ahead of it for a mask, after it for the
+  count below), so SAM never loads without the image
   model the admission gauge assumes. A call that may segment asks for
   `SEGMENT_NEED_MB` on top, where the server can segment (a Mac, which is
   not asked, always). A call may segment when `mask` is words or a painted
-  region's words are about a face.
+  region's words are about a face. The count below is asked for beside it
+  only for a call that may be counted (`picture::Call::counts_people`: no
+  mask, regions or retouch) and
+  only where the memory is there: short of it the picture is admitted as
+  it was before the count existed and is not counted, never refused for
+  it.
   - **S1: words in `mask`** become the mask SAM finds for them, prepared as
     paint is. Anything that keeps them from being one (not installed, an
     error, nothing found, too small) draws the whole picture and says why;
@@ -1155,6 +1238,57 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
     SAM's face (and hair, when the words name it), so the photo keeps its
     own hairline; other regions keep their own paint, and nothing goes past
     the paint's edge. No face inside the paint keeps the paint, said.
+
+- **A new picture is counted after it is drawn** (`imagegen::PeopleCheck`,
+  2026-11-12). The finished picture goes back to SAM in the same job, one
+  mask a find (`people_graph`, `people_in`), and a picture showing more
+  people than its scene has is drawn again at a fresh seed, at most twice
+  more (`PEOPLE_REDRAWS`); the render with the fewest over is kept and its
+  seed is the record's.
+  - **"person" is what SAM is asked for.** It returns two people who
+    touch as one find, and a forearm reaching into the frame as a person.
+    "head" finds the touching copy but calls two heads in many faces seen
+    from the front (6 of 45 clean pictures), and acting only when both
+    words are over lost a copy whose head was out of sight, live. "torso"
+    was wrong both ways.
+  - **Which pictures:** one drawn new in one pass (`Render::New`: new,
+    restaged or redrawn) whose scene lists its people, with nobody named
+    out of frame (`Plan::offstage`) and no first-person view
+    (`Plan::seen_from`): there a hand or an arm of the person not drawn
+    is in the frame, and SAM counts it (3 to 5 finds where the scene had
+    2). An edit and a layered build are not counted.
+  - **Only a picture at a seed of its own is drawn again.** A restage
+    keeps the scene's seed, which keeps its room, and a caller's seed is
+    the caller's: those are counted and what was found is said.
+  - **What the result says:** nothing when the first render counted right;
+    that it was drawn again when a redraw fixed it; and, when none did or
+    none was allowed, how many people the picture seems to show against
+    the scene's. The manifest's `people_check` holds the counts.
+  - **Only too many is acted on.** Two people touching come back as one
+    body, so too few means nothing; that is also how the count misses a
+    copy that touches the original.
+  - **Measured on recorded pictures**, by eye against the counts
+    (2026-11-12). Of 31 drawn from behind, 26 had only the cast in the
+    scene: the 16 doubled ones counted over in 14 (the 2 missed are copies
+    touching the original), and none of the 10 clean ones did. Of 54 more
+    of every kind since 2026-11-08 (one to three people): all 9 with a
+    person too many counted over, and none of the 45 clean ones. A count
+    takes 1.5 s on a warm server (the first in a process 4.5 s) against a
+    30–60 s render.
+  - **A redraw does not fix a scene that asks for two.** One recorded
+    call, whose camera frames the person standing from the waist down
+    while their pose is a bend, drew a standing figure and a bending one
+    at every seed and with no reference picture at all (2 of 3): three
+    renders, and the result says the picture still seems to show two.
+  - **A count that cannot be made keeps the picture**: no SAM on the
+    server, or a failed job, is `stopped` in the manifest and never a
+    refusal. `[image] people_check = false` draws every picture once.
+  - **The picture panel's "remove the copy" is another try.** A record
+    holds each person once, so the reader can only answer by taking the
+    one person out, which drew an empty room (`Extracted::removes_a_copy`:
+    the record's only person, removed alone, by words that count two).
+    And a person taken out and described in the same answer stays
+    (`read_extraction_for`).
 
 - **A touching scene is built in layers when the persona's switch says
   so** (IMAGE-DESIGN.md §15; owner, 2026-10-10). The switch is
@@ -1241,6 +1375,22 @@ here:
   client never starts a server: the private server started its unit when
   it found it down, and a model call has no business starting services on
   the owner's machine.
+- **A stopped video server is said in the turn that asked; a picture's is
+  still said by its job.** `video_generate` asks before it hands the clip
+  over (`comfy::Client::refuses`, `videogen::tool::ASKED_WAIT`): a server
+  this process has never had an answer from, with every connect refused for
+  twelve seconds, is an error in that turn, with no job and nothing
+  promised. That is shorter than §Image generation's 45 s for an unseen
+  server, on purpose: twelve covers the usual restart (4-10 s), and the
+  refusal says the server may be restarting. Everything else is the job's
+  to wait for, as there: a server that accepts and is slow, and one already
+  seen (it is restarting, 90 s). So in a `serve` that has drawn a clip, a
+  server stopped afterwards is again "being made" with the failure later.
+  The call used to promise first; with the unit down after a reboot every
+  clip answered "being made" and failed turns later (2026-11-11).
+  `image_generate` keeps the promise-first shape on the same transport: its
+  server is restarted on purpose when idle, so an unseen refused connect
+  there is usually a restart, and nothing has measured the other way.
 - **`[video]` is `[image]`'s hazard, with the owner's pictures and voices
   added.** It is stripped from project layers, sits in
   `trial_env::OPERATOR_ONLY_TABLES`, and its `url` is refused off this
@@ -7966,6 +8116,17 @@ their recorders read the copies. *And the limit that remains* is
 left: a revision repeats what its window carries, so a long pasted line is
 written again in each of the next sixteen revisions.
 
+**A known limit: a steer that fills the window costs its turn its memory.**
+The window slides on bytes as well as on count, so one steer as long as an
+owner line may be (64 KiB) leaves the window holding the steer alone. The
+open recorder reads a turn's own lines out of its revisions' windows
+(`ChatContextVersion::from_version_tail`) and cannot capture a turn whose
+first line has left them: `finish_turn` reports the turn `Unavailable`,
+its records stay in the transcript, and the next turn is remembered as
+usual. Carrying the turn's line some other way means a change to the
+stored capture, which has not been made
+(`a_steer_that_fills_the_window_leaves_its_turn_unremembered_and_says_so`).
+
 **Replay of a compactly recorded session recovers what was not copied.**
 The history a request sent is the session's messages as they ended, cut at
 the recorded length and checked against the recorded chain head and tail
@@ -12869,7 +13030,18 @@ The things that decide the design:
   recovered on the next turn, after boredom's first notice named the
   repeat. So both of boredom's notices reach the model before the stop, and
   persona chats now carry boredom from the base config rather than
-  switching it off. For **both** triggers, a call the harness refused this
+  switching it off. **The persona door ends it at three**
+  (`Agent::with_refused_repeats`, held to `LoopGuard::FEWEST_REPEATS`): the
+  notices did not turn its runs around. On 2026-11-10 one refused picture
+  call was resent 31 times across three runs, each stopped at the seventh
+  with both notices read, 25 of the calls byte-identical to the one before.
+  At three the stop arrives with boredom's first notice and before its
+  second; one retry is still allowed, since a second identical failure is
+  what a server mid-restart looks like. The count keys on the error's text,
+  which an outage repeats as exactly as a deterministic refusal does, so
+  **a persona's `Loop` can mean the image server was down for three tries,
+  not that the model was stuck**; nothing in the result separates the two
+  yet. Every other door keeps seven. For **both** triggers, a call the harness refused this
   turn (the approver, a hook, a policy, the interlock: `denied` in the
   trace) never counts, because appraisal scores `Loop` against the run and
   a well-defended run must not read as a stuck one. A call refused once and
