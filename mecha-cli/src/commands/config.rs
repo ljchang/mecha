@@ -112,6 +112,7 @@ pub const FEATURES_STARTER: &str = r#"
 # system = false     # the assistant reads this machine's state (system_read)
 # code = false       # programs over tool results (code)
 # memory = false     # the assistant's own encrypted memory of its runs
+# corrections = false  # drafts you changed or rejected and steers, recalled on a like ask
 "#;
 
 /// A commented starting point rather than a dump of defaults — the point of the

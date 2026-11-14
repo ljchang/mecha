@@ -3,6 +3,7 @@ pub mod batch;
 pub mod charter;
 pub mod chat;
 pub mod config;
+pub mod corrections;
 pub mod corroborate;
 pub mod diagnose;
 pub mod distill;

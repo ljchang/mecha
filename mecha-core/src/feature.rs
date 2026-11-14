@@ -75,6 +75,11 @@ pub enum Feature {
     /// in every build, and available only in one built with the cargo
     /// feature `memory-prototype` ([`crate::memory_home::BUILT`]).
     Memory,
+    /// What the owner made of the assistant's attempts, kept and named when
+    /// a later run retraces one ([`crate::attempts`]): a draft edited or
+    /// rejected, a steer, a denial. A plain file under the mecha home, in
+    /// every build.
+    Corrections,
 }
 
 impl Feature {
@@ -106,6 +111,7 @@ impl Feature {
         Feature::System,
         Feature::Code,
         Feature::Memory,
+        Feature::Corrections,
     ];
 
     /// The name on the command line and on the wire.
@@ -138,6 +144,7 @@ impl Feature {
             Feature::System => "system",
             Feature::Code => "code",
             Feature::Memory => "memory",
+            Feature::Corrections => "corrections",
         }
     }
 
@@ -170,6 +177,9 @@ impl Feature {
             Feature::System => "Machine state for the assistant",
             Feature::Code => "Code mode (programs over tool results)",
             Feature::Memory => "Memory (what the assistant keeps from its own runs)",
+            Feature::Corrections => {
+                "Corrections (drafts you changed or rejected and steers, recalled on a like ask)"
+            }
         }
     }
 
@@ -256,7 +266,10 @@ impl Feature {
             | Feature::Frontdoor
             | Feature::Messages
             | Feature::System
-            | Feature::Code => true,
+            | Feature::Code
+            // Off, the web chat keeps no attempt, joins no verdict and hands
+            // nothing over.
+            | Feature::Corrections => true,
             // Its guards are still to come: today the switch says only that
             // the owner wants the home store, and every attachment is an
             // explicit `--episodic-memory`. Answers `true` in the change
@@ -318,6 +331,10 @@ impl Feature {
             // initializes one, and that is the experiment instrument's change
             // to make, with this answer.
             | Feature::Memory
+            // The owner's acts on the owner's drafts: an environment has
+            // neither, and a trial that kept attempts would keep them about
+            // fixtures.
+            | Feature::Corrections
             // A manifest's `live_servers` can carry the operator's graph in,
             // and the row cannot tell that entry from a declared one;
             // `config_at` defaults this bool instead (FEATURES-DESIGN §5.1).
@@ -958,7 +975,11 @@ fn evidence(facts: &Facts, f: Feature) -> bool {
         Feature::Frontdoor => facts.has_factory_binary,
         // Code mode and memory are newer than `[features]`: no install had
         // either to lose.
-        Feature::Messages | Feature::System | Feature::Code | Feature::Memory => false,
+        Feature::Messages
+        | Feature::System
+        | Feature::Code
+        | Feature::Memory
+        | Feature::Corrections => false,
         Feature::Incognito
         | Feature::Tasks
         | Feature::Ocr
@@ -2032,6 +2053,9 @@ fn own_state(facts: &Facts, f: Feature) -> State {
                 ),
             }
         }
+        // Nothing to set up: past the switch, it is on. Its file is made by
+        // the first attempt kept.
+        Feature::Corrections => on("attempts and your verdicts on them, in the mecha home"),
     }
 }
 
@@ -2609,12 +2633,13 @@ mod tests {
                 | Feature::Messages
                 | Feature::System
                 | Feature::Code
-                | Feature::Memory => {}
+                | Feature::Memory
+                | Feature::Corrections => {}
             }
         }
-        // The match above lists 27 — raise this with it, and a variant
+        // The match above lists 28 — raise this with it, and a variant
         // added to the match but not to `ALL` fails here.
-        assert_eq!(Feature::ALL.len(), 27);
+        assert_eq!(Feature::ALL.len(), 28);
     }
 
     #[test]
