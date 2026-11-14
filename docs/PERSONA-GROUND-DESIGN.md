@@ -1,7 +1,7 @@
 # Persona common ground: what the two of them share, and how it is said
 
-**Status:** proposal, 2026-11-14. Nothing here is built. §10 lists the decisions that are the
-owner's; §9 is a build order that measures before it fits.
+**Status:** proposal, 2026-11-14. Nothing here is built. §10 lists the eight decisions that are
+the owner's; §9 is a build order that measures before it fits.
 
 **The question:** a persona chat still reads as talking with a machine. It repeats what it has
 already said, explains what both sides already know, brings up the wrong thing or the right
@@ -34,7 +34,7 @@ Read from the tree at `b0995402e`. Symbols, not lines.
 | Told-ledger for three teller lines | `persona::today::Ledger`, held in `PersonaSession::told` | Word match on closed English lists; in process memory only, so a restart re-offers every line; covers events, feeling and weather and nothing else |
 | Per-turn recall | `persona::recall::per_turn`, keyed by the owner's words | Whatever is retrieved is put in the prompt; the only filter is `already`, a 60-character prefix match against the conversation |
 | Chat-start memory block | `recall::chat_start` | Chosen by budget and recency, not by what the chat turns out to be about |
-| Episodes carry `open_threads` | `persona::memory`, written nightly by `persona::writer` | Nothing reads them back as things to follow up |
+| Episodes carry `open_threads` | `persona::memory`, written nightly by `persona::writer`; `recall::chat_start` and `Memory::recall_search` append them to an episode's line | They ride in every chat-start block and in per-turn recall as text. Nothing gives a thread a time it falls due, records whether it was raised, or closes it when the owner passes |
 | A record of when a memory was used | Ruled as D28 (`PERSONA-DESIGN` §9.13), unbuilt | There is no record anywhere of a memory being recalled, offered or said |
 | The typed "shown set" beside `Record::Notes` | Designed in `PERSONA-LIFE-DESIGN` §4.5, unbuilt | A transcript says what text the model was told, not which items rode in it |
 | Memory v2 | `memory_session`, feature `memory-prototype` | Not wired to persona chats ("a persona chat has its own routes and its own memory"); pulled by the model through a tool, with no notion of a cue |
@@ -96,7 +96,7 @@ pair is opaque to an outsider *insider language*, and find:
 - Friends spoke fewer words in ten minutes and needed far more words to unpack what went unsaid
   (mean 186 against 49).
 - Strangers' insider language is mostly shared expertise; friends' is people and experiences,
-  and spread over more categories.
+  and spread over more categories (higher entropy over the kinds of thing referred to).
 - Turn by turn, insider language tracks the speakers' own ratings of connection, more strongly
   for strangers. In a lagged model it precedes connection, peaking five to seven turns later,
   and higher connection predicts *less* insider language next.
@@ -162,7 +162,8 @@ is threatened (Rossignac-Milon et al. 2021) [read].
 3. **Compression is earned.** A reference shortens only after the owner showed they followed the
    longer one, and lengthens again when they did not (§2.1, §2.2).
 4. **The handle is made from the words that were distinctive at first mention**, not from a
-   summary a model writes (§2.2).
+   summary a model writes (§2.2). The writer's pass may only pick spans of wording the chat
+   used; who may author a handle is §10's seventh decision.
 5. **Two levels.** The persona's written character and general knowledge are the communal
    prior; the ground is personal, per persona, and nothing in it crosses to another persona
    (§2.2).
@@ -185,8 +186,8 @@ An item:
 | `handle` | The pair's short form, and its earlier longer forms in order |
 | `meaning` | What an outsider would need to be told. Never put in a prompt as text to say |
 | `coined_by` | The owner, the persona, or both |
-| `source` | Chat and turn range, as memory rows carry it: the deletion key |
-| `origin` | Clean or untrusted, from the recorded taint of the stretch it came from |
+| `source` | Chat and turn range, as memory rows carry it: the deletion key. One chat; see §7 on forgetting |
+| `origin` | Clean or untrusted, from the recorded taint of the stretch it came from. A turn no checkpoint covers is unknown, and unknown loads as untrusted, as memory's does |
 | `grounded` | How far it is shared: said, acknowledged, taken up (the owner used it themselves) |
 | `due` | For a thread or a plan: when it can be asked about, and whose move it is |
 
@@ -270,8 +271,13 @@ curves do.
 - **The typed shown set.** The `offered` event is the record `PERSONA-LIFE-DESIGN` §4.5 already
   asked for beside `Record::Notes`: which items rode, not only which text.
 - **D28.** The event log is the access log D28 ruled, extended from "recalled" to "offered,
-  said and received". D28's rule holds as the default: uses are recorded and not fed back into
-  ranking until a measurement says to.
+  said and received". D28 also ruled that by default nothing in the log changes what is
+  recalled, "because use-driven strengthening is how a persona fixates". Memory ranking keeps
+  that. **The gate of §5.2 and the form of §5.3 are a departure from it**: they read the log to
+  decide what is offered and how. The direction is the opposite of the one D28 feared, since a
+  use makes an item rest and never makes it likelier, but it is an exception to a recorded
+  ruling and is the owner's to make (§10, decision 8). Step 1 of §9 records only and needs no
+  exception.
 - **Memory v2.** Not a dependency. The ground reads persona memory as it is. If personas later
   move onto memory v2, items map onto its objects and the event log onto its exposure record;
   that move is a separate decision.
@@ -280,12 +286,18 @@ curves do.
 
 - **No persona text in the repository.** Tests use made-up items; measurements keep numbers.
 - **Owner files are never rewritten.** Items are machine-written and owner-curated, as memory is.
-- **Forgetting is complete.** `persona::memory::forget_chat` erases every item and event sourced
-  to a chat. An item with events from several chats loses those events and survives only if
-  another chat introduced it.
+- **Forgetting is complete.** `persona::memory::forget_chat` erases every item sourced to a
+  chat, and every event from that chat. An item has one source, the chat that introduced it,
+  and it goes with that chat, events from other chats included: D27's interim rule, kept so the
+  erase stays deterministic and no model runs inside it. An item's earlier forms and its
+  meaning are wording from the chat that introduced it, so nothing of them may outlive it. If
+  the pair brings the thing up again later, the writer makes a new item from that chat.
 - **Incognito writes nothing.** An incognito chat reads the ground and appends no event.
-- **Taint.** An item from an untrusted stretch is a candidate: it may be understood, and is
-  never offered, until the owner vouches for it. A tainted stretch can mark an item said; it
+- **Taint.** An item from an untrusted stretch is a candidate, as an untrusted memory row is:
+  it is stored and enters no prompt, neither as background nor as an offer, until the owner
+  approves it, and an approved one rides under the untrusted stem. Its `meaning` is model-written
+  prose about outside content, and the ground is per persona, so it would otherwise surface in a
+  chat that never saw the stretch it came from. A tainted stretch can mark an item said; it
   cannot mark one taken up.
 - **Recall stays keyed to the owner's words**, never the persona's.
 - **Nothing crosses personas**, and nothing reaches the knowledge graph.
@@ -360,6 +372,12 @@ Each step is useful alone, and step 1 changes nothing the owner can see.
 5. **Where the instrument's readouts live.** Counts through `mecha persona measures`
    (proposed), with the graph view a later page.
 6. **Memory v2.** Build on persona memory as it is (proposed), or wait for personas to move.
+7. **Who authors a handle.** The writer's pass choosing among spans of wording the chat
+   actually used (proposed: §2.2 says which words survive, and it keeps a model from coining
+   the pair's shorthand), or free to write one.
+8. **An exception to D28** for the gate and the reference form (§6): the log deciding what is
+   offered, in the direction of resting an item after use and never of strengthening it. Needed
+   from step 2 of §9; step 1 needs none.
 
 ## Sources
 
