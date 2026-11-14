@@ -274,7 +274,7 @@ curves do.
 
 ### 5.4 Returned to
 
-- **Threads.** An unfinished thread or a stated plan may carry a `due_at`; whether it has been raised or closed is derived (§4). It is offered once, at a
+- **Threads** (§2.5). An unfinished thread or a stated plan may carry a `due_at`; whether it has been raised or closed is derived (§4). It is offered once, at a
   chat's opening or a change of topic, never across what the owner is in the middle of saying.
   If the owner passes it, it closes.
 - **Callbacks.** A callback is an item reused in a new context: the owner's current words cue
@@ -325,8 +325,11 @@ curves do.
   pair shortens them, so each form carries the chat it was first used in: forgetting that chat
   drops the forms it coined, and the reference steps back out to the longest form left. If the
   pair brings a forgotten thing up again later, the writer makes a new item from that chat.
-  The owner's single-record erase (`persona::memory::forget`) reaches the ground too: an item
-  made from a forgotten `uid` goes with it, `meaning` and forms included, and the record's
+  Both erases also cascade by record: an item made from a forgotten memory row goes with it,
+  `meaning` and forms included, whether the row went with its chat (`forget_chat`) or alone
+  (the owner's single-record `persona::memory::forget`), since an item sourced to one chat may
+  cite a row written from another. The match is over every `uid` in the record's lineage
+  (`Memory::lineage`), so an item made before a row was corrected is found; and the record's
   events are erased as D28 rules. And the erase does not fail soft: `forget_chat` reports a
   scene it could not remove and carries on, but an item that outlives its chat keeps riding in
   prompts. The ground is in `memory.db`, so its erase is part of the same transaction as the
@@ -464,7 +467,9 @@ the nightly pass writes items, and the owner sees them where memories are curate
 
 Bell & Healey 1992, *Human Communication Research* 18(3). Berntsen 2009, *Involuntary
 Autobiographical Memories*. Brennan & Clark 1996, *JEP: LMC* 22(6). Brown-Schmidt & Benjamin
-2018, *Policy Insights from the Behavioral and Brain Sciences* 5. Clark 1996, *Using Language*.
+2018, *Policy Insights from the Behavioral and Brain Sciences* 5. Ariel 1990, *Accessing
+Noun-Phrase Antecedents*. Chafe 1994, *Discourse, Consciousness, and Time*. Gundel, Hedberg &
+Zacharski 1993, *Language* 69. Clark 1996, *Using Language*.
 Clark & Brennan 1991, "Grounding in communication". Clark & Wilkes-Gibbs 1986, *Cognition* 22.
 Cox, Lee & Ooi 2023, arXiv:2308.04879. Ghibellini & Meier 2025, *Humanities & Social Sciences
 Communications* 12. Gopie & MacLeod 2009, *Psychological Science* 20(12). Hawkins, Frank &
