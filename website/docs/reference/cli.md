@@ -130,21 +130,32 @@ git log --oneline -20 | mecha run - --resume 20260805T091500
 
 ## `memory-session`
 
-Host-only management of an explicitly selected ordinary-session memory store.
+Host-only management of a memory store: the one under the mecha home
+(`~/.mecha/memory/`), or with `--request FILE` the one a manifest names.
 Available in builds with `memory-prototype`:
 
 ```text
+mecha memory-session init
+mecha memory-session retry RUN_ID
+mecha memory-session forget RUN_ID
 mecha memory-session --request FILE init
 mecha memory-session --request FILE retry RUN_ID
 mecha memory-session --request FILE forget RUN_ID
 ```
 
 `init` creates a new encrypted database, key and private authority; it never
-overwrites existing paths. `retry` admits an already sealed capture after current
-source checks, and `forget` withdraws an episode and purges dependent memory in
+overwrites existing paths. Without `--request` they are
+`memory/store/agent.memory-prototype.sqlite`, `memory/key/agent.key` and
+`memory/authority/` under the mecha home, each in a directory only you can
+read, and `mecha features` reads `memory` from those three files. Keep a copy
+of the key somewhere else: a store whose key is lost cannot be opened. `retry`
+admits an already sealed capture after current source checks, and `forget`
+withdraws an episode and purges dependent memory in
 the selected store. These commands print JSON and execute no provider or tool.
 They do not require the original task directory and do not discover other stores.
-See [episodic memory](/docs/features/memory#experimental-episodic-memory-for-ordinary-runs)
+See [the home store](/docs/features/memory#the-home-store-and-the-memory-switch)
+for the `memory` switch, and
+[episodic memory](/docs/features/memory#experimental-episodic-memory-for-ordinary-runs)
 for the manifest, supported run profile and external-file protection limits.
 
 ## `chat`

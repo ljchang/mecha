@@ -475,7 +475,7 @@ pub enum Command {
     #[cfg(feature = "memory-prototype")]
     Memory(commands::memory::Args),
 
-    /// Initialize or recover an explicitly selected ordinary-run memory store.
+    /// Initialize or recover a memory store: the mecha home's, or a manifest's.
     #[cfg(feature = "memory-prototype")]
     MemorySession(commands::memory_session::Args),
     /// Two readers with different sources ask each other about one entity.

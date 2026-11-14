@@ -30,6 +30,37 @@ reuses `goal_context` for source-checked recall across sessions. It does not
 replace mecha-graph, the learning store, or ordinary session JSONL, and does not
 automatically schedule concept learning or rumination.
 
+### The home store and the `memory` switch
+
+A store can live in two places. The examples below name one with a manifest
+(`--request FILE`, `--episodic-memory FILE`), which is how a disposable or
+experimental store is made. The other is **the home store**, the one mecha
+keeps for itself:
+
+```bash
+mecha memory-session init
+```
+
+With no `--request`, `memory-session` works on the store under the mecha home:
+`memory/store/agent.memory-prototype.sqlite`, `memory/key/agent.key` and
+`memory/authority/`, each in a directory only you can read. Those three paths
+are fixed. No configuration file can move them, so a cloned repository cannot
+say where your memory or its key is. `init` refuses a home that already holds
+any part of a store. **Keep a copy of the key somewhere else**: the database
+is encrypted with it, and a store whose key is lost cannot be opened.
+
+`[features] memory = true` (`mecha features enable memory`) says you want the
+home store. `mecha features` then reads the row from those files: **on** when
+all three are there, **unready** with `mecha memory-session init` when none
+is, and unready with a repair instruction when only some are or they cannot be
+read. In a build without `memory-prototype` the row reads as not in this
+build.
+
+**The switch does not attach memory to a session yet.** A run or chat still
+attaches a store only through `--episodic-memory FILE`, under the profile
+described below. Attaching the home store to ordinary sessions is the next
+change, and this page will say so when it lands.
+
 **Retention is separate from success.** A tool returning successfully or an
 assistant claiming completion does not establish that a task succeeded. The
 optional JSON `memory` report identifies retained, pending or unavailable capture,
@@ -325,8 +356,8 @@ benefit or private-data deployment readiness.
 ### Explicit concept learning
 
 The same experimental build provides host-only `memory-session sources` and
-`memory-session learn`. These operate on an explicitly selected ordinary memory
-store; they do not schedule background learning or change the agent's tool list.
+`memory-session learn`. These operate on the home store, or with `--request` on
+the store a manifest names; they do not schedule background learning or change the agent's tool list.
 Their current source-selection contract accepts one-shot captures; selecting the
 new per-turn chat captures for concept learning is a separate integration step.
 

@@ -46,8 +46,8 @@ pub(super) fn identity(conn: &Connection) -> Result<(String, String)> {
     )?)
 }
 
-pub(super) fn validate_existing_path(path: &Path) -> Result<PathBuf> {
-    let path = validate_path(path)?;
+pub(super) fn validate_existing_path(path: &Path, storage: &StorageAccess) -> Result<PathBuf> {
+    let path = validate_path(path, storage)?;
     let meta = std::fs::symlink_metadata(&path)?;
     ensure!(
         meta.is_file() && !meta.file_type().is_symlink(),
@@ -77,7 +77,7 @@ pub(super) fn check_identity(conn: &Connection) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn validate_path(path: &Path) -> Result<PathBuf> {
+pub(super) fn validate_path(path: &Path, storage: &StorageAccess) -> Result<PathBuf> {
     let name = path
         .file_name()
         .filter(|name| {
@@ -90,11 +90,15 @@ pub(super) fn validate_path(path: &Path) -> Result<PathBuf> {
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let parent = parent.canonicalize()?;
+    // A directory under a live mecha home holds a store only for an access
+    // admitted to exactly that directory (`StorageAccess::admitting_home_store`);
+    // the spelling of a path admits nothing.
     ensure!(
-        !parent
-            .components()
-            .any(|c| c.as_os_str() == ".mecha" || c.as_os_str() == ".mecha-graph"),
-        "live Mecha directories are not prototype roots"
+        storage.admits_home_store(&parent)
+            || !parent
+                .components()
+                .any(|c| c.as_os_str() == ".mecha" || c.as_os_str() == ".mecha-graph"),
+        "live Mecha directories are not memory roots"
     );
     // Retain legitimate ancestor aliases (such as /var on macOS) while
     // leaving the final name unresolved for exclusive/no-follow opens.

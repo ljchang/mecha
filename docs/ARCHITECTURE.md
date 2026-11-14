@@ -13254,6 +13254,24 @@ not acquire capture or new output fields.
 See `MECHA-MEMORY-DESIGN.md` for the production design and
 `../prototypes/memory/README.md` for this implemented subset.
 
+- **The home store's three paths are fixed in code, never configured**
+  (`memory_home`): `<home>/memory/store/`, `key/` and `authority/`, siblings
+  that never contain one another, because the key policy refuses a key under
+  the database's directory or the authority's. A layered `mecha.toml` must not
+  be able to say where the owner's memory or its key is, so there is no
+  `[memory]` path setting to strip. **The admission is the caller's, never
+  the path's**: `memory::sql::validate_path` refuses every directory under
+  `.mecha` unless the `StorageAccess` it is handed was admitted to exactly
+  that directory (`admitting_home_store`), and only `memory_session`'s
+  authority builds one, for a request whose database is in this process's
+  own home store. A rule by spelling admitted `mecha memory`'s synthetic
+  fixture surface to the live store too (review of #862).
+- **`memory` is a registered feature whose switch gates nothing yet**
+  (`Feature::Memory`, `gated() == false`): the row reads the build
+  (`memory_home::BUILT`), the switch and the store's three files, never an
+  open. Attachment is still an explicit `--episodic-memory`; `gated` turns
+  `true` in the change that attaches the home store to an ordinary session.
+
 - **Operational tasks have a typed authority boundary inside the memory store.**
   `memory::task` reuses object/revision/scopes and erasure, but `TaskSession` binds
   trusted host identity to one store, account and native session. Generic reads,

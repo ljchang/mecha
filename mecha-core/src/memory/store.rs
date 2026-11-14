@@ -39,7 +39,7 @@ impl Memory {
         extension: &str,
         storage: StorageAccess,
     ) -> Result<Self> {
-        let path = validate_path(path)?;
+        let path = validate_path(path, &storage)?;
         ensure!(
             !domain.trim().is_empty() && domain.len() <= 256,
             "invalid domain"
@@ -89,7 +89,7 @@ impl Memory {
     }
 
     pub fn open_with_storage(path: &Path, storage: StorageAccess) -> Result<Self> {
-        let path = validate_existing_path(path)?;
+        let path = validate_existing_path(path, &storage)?;
         let probe = connect_existing(&path, &storage, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let expected = identity(&probe)?;
         drop(probe);
@@ -115,7 +115,7 @@ impl Memory {
     }
 
     pub fn open_read_only_with_storage(path: &Path, storage: StorageAccess) -> Result<Self> {
-        let path = validate_existing_path(path)?;
+        let path = validate_existing_path(path, &storage)?;
         let conn = connect_existing(&path, &storage, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         configure_read_only(&conn)?;
         let (instance, domain) = identity(&conn)?;
