@@ -686,11 +686,19 @@ pub async fn execute(
             } else {
                 cx = cx
                     .with_goal_ingress(vec![owner_input], session.clone().map(std::sync::Arc::new));
+                // An ordinary chat records each request's goal decision
+                // compactly, so its transcript grows with the conversation
+                // and not with its square. The closed graph profile's
+                // recorder reads the copies a full record keeps.
+                if chat_memory.as_ref().is_none_or(|memory| memory.is_open()) {
+                    cx = cx.with_compact_goal_records();
+                }
             }
             #[cfg(not(feature = "memory-prototype"))]
             {
                 cx = cx
-                    .with_goal_ingress(vec![owner_input], session.clone().map(std::sync::Arc::new));
+                    .with_goal_ingress(vec![owner_input], session.clone().map(std::sync::Arc::new))
+                    .with_compact_goal_records();
             }
         }
         let result =

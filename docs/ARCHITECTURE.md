@@ -8092,6 +8092,57 @@ record refuses before lenient legacy parsing, including escaped or duplicate
 discriminators: recovering one as a plain message would silently erase context.
 An appended binding proves an attempted dispatch, not provider receipt.
 
+**A long conversation is bounded by what it adds up to, not by a count**
+(owner's ruling, 2026-11-12: fix dynamic goals rather than detach memory
+from them). Three things grew with the conversation and ended it early.
+*Every revision carried every owner line*, refused past 64 KiB of them and
+past 256 revisions: a `ContextVersion` now carries a window of the most
+recent lines (`WINDOW_INPUTS`, and under 64 KiB) and an `Earlier` count
+and chained digest of the rest, and `accept_version` checks that the
+window slid over exactly the lines it dropped, so a revision cannot drop,
+reorder or rewrite one without the chain saying so. The newest line is
+never the one dropped. A revision whose window never slid has the bytes
+and the digest it always had. **With compaction** (owner's ruling, 2026-11-14: the original instruction
+survives compaction, because losing it is how a conversation drifts): before
+the window every request repeated every owner line, so an early line
+outlived a compaction cut word for word, and the window alone would have
+left it to the summary. So a compaction now carries the owner's lines itself
+(§Compaction, `compact::OWNER_LINES_HEADER`), for every conversation and not
+only one with dynamic goals, and the block says where the earlier lines are
+(`owner_prompt_block`). *Every request copied the request and the
+whole conversation into the transcript*, so a transcript grew with the
+square of the conversation: an ordinary chat's host records a compact
+`DecisionBinding` (`RunContext::with_compact_goal_records`; the terminal
+chat when its memory is absent or open, the web chat, the TUI), which
+keeps the request's digest, the conversation's length, a hash-chain head
+over all but its last message (`history_heads`) and the last one's
+digest. The system prompt is the one copy kept, and only in the decision
+where it changed. The closed memory profiles keep full bindings, because
+their recorders read the copies. *And the limit that remains* is
+`MAX_HISTORY_BYTES` (64 MiB of revisions and bindings). The cost that is
+left: a revision repeats what its window carries, so a long pasted line is
+written again in each of the next sixteen revisions.
+
+**A known limit: a steer that fills the window costs its turn its memory.**
+The window slides on bytes as well as on count, so one steer as long as an
+owner line may be (64 KiB) leaves the window holding the steer alone. The
+open recorder reads a turn's own lines out of its revisions' windows
+(`ChatContextVersion::from_version_tail`) and cannot capture a turn whose
+first line has left them: `finish_turn` reports the turn `Unavailable`,
+its records stay in the transcript, and the next turn is remembered as
+usual. Carrying the turn's line some other way means a change to the
+stored capture, which has not been made
+(`a_steer_that_fills_the_window_leaves_its_turn_unremembered_and_says_so`).
+
+**Replay of a compactly recorded session recovers what was not copied.**
+The history a request sent is the session's messages as they ended, cut at
+the recorded length and checked against the recorded chain head and tail
+digest (`DecisionBinding::sent_conversation`); the request is rebuilt as
+the live run built it and checked against its digest; the system prompt is
+carried forward from the decision that recorded it
+(`with_system_from`). What cannot be recovered is a request whose history
+a later compaction or eviction rewrote: that replay refuses, saying so.
+
 `replay::extract_transcript` validates this history. Dynamic replay requires an
 exact recorded boundary and continuation; unsupported steering/branch changes
 refuse. Counterfactual harness probes refuse these transcripts until they can
@@ -12887,6 +12938,22 @@ off — for a while this section said "off by default" while the code derived a
 threshold, and a doc that contradicts the code is the shape this file exists
 to prevent.
 
+**What the owner typed is not left to the summary** (owner's ruling,
+2026-11-14: "I want the original instruction to survive compaction, that is
+how drift happens"). The head message, the owner's first ask, was always
+kept. Every later line of theirs in the stretch being cut — a new turn, or a
+steer beside tool results — is now copied word for word into a block in the
+head (`compact::OWNER_LINES_HEADER`, a JSON `OwnerLines` after it), between
+the summary and the carried state, and each later compaction reads that
+block back and carries it on with its own. It is bounded: a line past
+`OWNER_LINE_BYTES` is its head with a mark, and past `OWNER_LINES_BYTES` in
+all the earliest lines stay, the latest stay, and the middle is *counted*
+(`left_out`), never the first ones dropped. The words are the owner's and
+the block is the harness's: it is registered in `agent::is_harness_voice`,
+so `owner_text` of the head is still what the owner typed in that turn, and
+a carried line is not mined as a fresh steer at every compaction. Not
+measured: whether a model weighs a carried line as it weighed the turn.
+
 The things that decide the design:
 
 - **Exactly one summary survives a compaction, like the carried state.**
@@ -13452,11 +13519,29 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   key. The tool stays in the list the model is shown, as every withheld
   tool does. A persona chat has its own routes and its own memory and
   does not pass through this path.
-  **The sidecar still bounds a conversation**: a turn's context names at
-  most 128 decisions and 16 context versions in 24 KiB (later decisions
-  are left to the transcript), each version repeats every owner input so
-  far, an owner's line is at most 2,048 bytes and a conversation holds 64
-  of them and 256 turns. Those are the next limits a long chat meets.
+  **An ordinary chat's memory is no longer bounded by its length in
+  turns or owner lines.** Its turn chain is verified from where the
+  attachment last verified it (`ChatMemory::verified`: the lease makes
+  this process the only writer, and the transcript must still begin with
+  the bytes verified), where verifying from the first turn each time took
+  285 s for ninety short turns; a fresh attachment verifies the whole
+  chain once. Its sidecar names the turn's own owner lines and not the
+  window (`ChatContextVersion::from_version_tail`), an owner line may be
+  as long as an owner input may be (its passage holds the head), and it
+  may hold `OPEN_MAX_TURNS`. The closed profiles keep 256 turns, 64 owner
+  lines of 2,048 bytes and a sidecar that repeats them. **A tracked recall
+  may return what a recall returns** (`authority::RECALL_OUTPUT_MAX`): the
+  bound was 20,000 bytes for an output that is the goal context and then a
+  memory packet of up to 20,000, so a recall that found three full
+  passages left its attempt pending and the turn lost its memory for
+  having remembered something. What still bounds a remembered
+  conversation is its transcript (`SOURCE_MAX`, 32 MiB) and
+  `MAX_HISTORY_BYTES`. **On a `--chat-memory` server the recall tool is
+  announced with `GoalMemory`'s capabilities** (private and untrusted)
+  where the builtin it replaces is private only, for every conversation
+  the agent serves: a turn that names `goal_context` beside a tool whose
+  destination the model chooses is refused there, including in a task or
+  a spoken turn, where nothing can be recalled (review of #866).
 - **A capture's bounds are constants in one place** (`host_capture`):
   `MAX_ORIGINALS` and `MAX_RECEIPTS` (256), `MAX_CAPTURE_BYTES` (1 MiB),
   `MAX_PASSAGE_BYTES` (4,096). A field longer than a passage is stored as

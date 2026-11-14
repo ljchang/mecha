@@ -85,6 +85,12 @@ pub struct Trajectory {
         crate::goal_context::DecisionBinding,
         crate::goal_context::ContextVersion,
     )>,
+    /// The session's messages as they ended. A compactly recorded decision
+    /// keeps digests of the history its request sent, not a copy, and the
+    /// replay recovers that history from here
+    /// (`DecisionBinding::sent_conversation`).
+    #[serde(default)]
+    pub conversation: Vec<Message>,
 }
 
 impl Trajectory {
@@ -130,8 +136,18 @@ pub fn extract_transcript(transcript: &crate::session::Transcript) -> anyhow::Re
     let mut seen_uses = std::collections::HashSet::new();
     let mut seen_results = std::collections::HashSet::new();
     // History predating activation is already in the first frozen seed, not
-    // work the replay will execute. Never put those calls on its cursor.
-    for message in state.decisions()[0].messages() {
+    // work the replay will execute. Never put those calls on its cursor. A
+    // compact first decision copied no seed: its history is the session's
+    // own first messages, checked against the digests it recorded, and a
+    // session whose history was rewritten since has no seed to read and is
+    // refused here, where the driver would refuse it anyway.
+    let first = &state.decisions()[0];
+    let seed = if first.is_compact() {
+        first.sent_conversation(&transcript.convo.messages)?
+    } else {
+        first.messages().to_vec()
+    };
+    for message in &seed {
         for block in &message.content {
             match block {
                 Block::ToolUse { id, .. } => {
@@ -176,13 +192,15 @@ pub fn extract_transcript(transcript: &crate::session::Transcript) -> anyhow::Re
     let historic = extract(&history);
     trajectory.calls = historic.calls;
     trajectory.harness_calls = historic.harness_calls;
+    // A compact decision records its system prompt only where it changed.
+    let mut system: Option<String> = None;
     for binding in state.decisions() {
         let version = state
             .version(binding.version())
             .ok_or_else(|| anyhow::anyhow!("missing historical goal context version"))?;
-        trajectory
-            .goal_decisions
-            .push((binding.clone(), version.clone()));
+        let binding = binding.clone().with_system_from(system.as_deref());
+        system = binding.system().map(str::to_string);
+        trajectory.goal_decisions.push((binding, version.clone()));
     }
     // A changed owner context inside one run is delivered steering. The replay
     // driver cannot reproduce its delivery timing and must not call it a turn.
@@ -191,6 +209,7 @@ pub fn extract_transcript(transcript: &crate::session::Transcript) -> anyhow::Re
             trajectory.steered = true;
         }
     }
+    trajectory.conversation = transcript.convo.messages.clone();
     trajectory.ensure_replayable()?;
     Ok(trajectory)
 }

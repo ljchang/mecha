@@ -259,6 +259,13 @@ pub(crate) struct GoalIngress {
     #[cfg(feature = "memory-prototype")]
     pub(crate) task_recorder:
         Option<Arc<crate::memory_session::chat::task_host::TaskDecisionRecorder>>,
+    /// Record each request's decision as digests, not as a copy of the
+    /// request and the conversation (`DecisionBinding::compact`), and
+    /// carry a window of owner lines in each revision, not all of them
+    /// (`GoalContextState::transition`). The two go together: both are
+    /// what lets an ordinary chat be long, and both are what a closed
+    /// profile's recorder cannot read.
+    compact: bool,
 }
 
 /// What the loop consults that is properly per-*run* rather than per-agent:
@@ -1111,7 +1118,21 @@ impl RunContext {
             session,
             #[cfg(feature = "memory-prototype")]
             task_recorder: None,
+            compact: false,
         });
+        self
+    }
+
+    /// Record each request's goal decision compactly: digests of the
+    /// request and of the conversation's history in place of copies, so a
+    /// transcript grows with the conversation and not with its square. For
+    /// an ordinary chat. A host whose recorder reads the copies (the
+    /// closed memory profiles) or that wants a replay to restore the exact
+    /// recorded request leaves this off.
+    pub fn with_compact_goal_records(mut self) -> Self {
+        if let Some(ingress) = &mut self.goal_ingress {
+            ingress.compact = true;
+        }
         self
     }
 
@@ -2033,6 +2054,12 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         // owner correcting mecha about the date, which is the one subject on
         // which mecha is now instructed to defer to them.
         || text.starts_with(crate::date_context::REFERENCE_STEM)
+        // The owner's earlier lines, carried past a compaction
+        // (`compact::OWNER_LINES_HEADER`). Their words, the harness's
+        // block: unregistered, every compaction would hand each of them
+        // back as a line typed in the head turn, to be mined as a fresh
+        // steer and carried a second time.
+        || text.starts_with(crate::compact::OWNER_LINES_HEADER)
         // The seventh: the situation brief (`brief::render`), folded into
         // the first user turn when its delivery lever is on. A description
         // the harness wrote, never something the owner said.
@@ -4997,7 +5024,10 @@ impl Agent {
                 run_start || !binding.run_start(),
                 "dynamic goal replay changed a recorded run boundary"
             );
-            let evidence_bytes = if run_start {
+            // A full binding restores the request it recorded. A compact
+            // one kept no copy: the request is built as the live run built
+            // it, and the digests say whether it came out the same.
+            let evidence_bytes = if run_start && !binding.is_compact() {
                 request.messages = binding.messages().to_vec();
                 request.trailing_notes = binding.trailing_notes();
                 0
@@ -5010,7 +5040,19 @@ impl Agent {
                 request.trailing_notes == binding.trailing_notes(),
                 "dynamic goal replay changed recorded trailing notes"
             );
-            request.system = binding.system().map(str::to_string);
+            if binding.is_compact() {
+                // Carried forward from the decision that recorded it
+                // (`extract_transcript`); where none did, as the live run
+                // rendered it.
+                if let Some(system) = binding.system() {
+                    request.system = Some(system.to_string());
+                } else if let Some(config) = &self.goal_charter {
+                    request.system = config.render(version.charter().prompt_block());
+                }
+                binding.verify_system(request.system.as_deref())?;
+            } else {
+                request.system = binding.system().map(str::to_string);
+            }
             *cx.tools
                 .goal_context_version
                 .lock()
@@ -5053,11 +5095,24 @@ impl Agent {
         // leaves the live version, tool snapshot and decision ordinal unchanged.
         let mut candidate = state.clone();
         let mut versions = Vec::new();
+        // The host that records compactly is the ordinary chat's, and the
+        // one whose revisions carry a window of owner lines. Every other
+        // host's recorder reads the whole list out of each revision (the
+        // closed memory profiles compare it line for line), so its
+        // revisions carry every line, as they did before windows.
+        let windowed = ingress.compact;
+        let step = |candidate: &mut crate::goal_context::GoalContextState, input| {
+            if windowed {
+                candidate.transition(charter.clone(), input)
+            } else {
+                candidate.transition_whole(charter.clone(), input)
+            }
+        };
         if inputs.is_empty() {
-            versions.extend(candidate.transition(charter, None)?);
+            versions.extend(step(&mut candidate, None)?);
         } else {
             for input in inputs.iter().cloned() {
-                versions.extend(candidate.transition(charter.clone(), Some(input))?);
+                versions.extend(step(&mut candidate, Some(input))?);
             }
         }
         let version = candidate
@@ -5068,15 +5123,28 @@ impl Agent {
             request.system = config.render(version.charter().prompt_block());
         }
         let evidence_bytes = Self::attach_owner_evidence(request, &version);
-        let binding = DecisionBinding::new(
-            candidate.next_decision(),
-            version.revision(),
-            &request.messages,
-            request.system.clone(),
-            run_start,
-            request.trailing_notes,
-        )?
-        .with_conversation_messages(conversation_messages)?
+        let binding = if ingress.compact {
+            DecisionBinding::compact(
+                candidate.next_decision(),
+                version.revision(),
+                &request.messages,
+                request.system.as_deref(),
+                run_start,
+                request.trailing_notes,
+                conversation_messages,
+                candidate.decisions().last(),
+            )?
+        } else {
+            DecisionBinding::new(
+                candidate.next_decision(),
+                version.revision(),
+                &request.messages,
+                request.system.clone(),
+                run_start,
+                request.trailing_notes,
+            )?
+            .with_conversation_messages(conversation_messages)?
+        }
         .with_tool_surface(&request.tools, request.tool_choice)?;
         candidate.bind(binding.clone())?;
         let goal_stamp = crate::planning::GoalDecisionStamp::capture(&binding, &version)?;
@@ -8918,6 +8986,139 @@ mod tests {
             .unwrap()
             .text()
             .contains("<owner_context"));
+    }
+
+    /// A session with history before its first goal decision, recorded
+    /// compactly: the calls made before activation are in the seed the
+    /// replay starts from, not on its cursor.
+    #[tokio::test]
+    async fn a_compactly_recorded_run_keeps_earlier_calls_off_the_replay_cursor() {
+        use crate::goal_context::{OwnerInput, OwnerSource};
+        use crate::session::{Record, Session, SessionKind, SessionMeta};
+
+        for compact in [false, true] {
+            let id = Session::new_id();
+            let dir = std::env::temp_dir().join(&id);
+            let session = Arc::new(
+                Session::create(
+                    &dir,
+                    SessionMeta {
+                        id,
+                        created_at: chrono::Utc::now(),
+                        provider: "scripted".into(),
+                        model: "scripted-1".into(),
+                        workspace: dir.clone(),
+                        title: None,
+                        kind: Some(SessionKind::Test),
+                    },
+                )
+                .unwrap(),
+            );
+            let charter = dir.join("charter.toml");
+            std::fs::write(
+                &charter,
+                "[[line]]\nid = 'trays'\ntext = 'Keep the trays organized.'\n",
+            )
+            .unwrap();
+            let (agent, _provider) = agent_with_tools(
+                vec![
+                    assistant(
+                        vec![Block::ToolUse {
+                            id: "echo-later".into(),
+                            name: "echo".into(),
+                            input: json!({"value":"later"}),
+                        }],
+                        StopReason::ToolUse,
+                    ),
+                    assistant(vec![Block::text("done")], StopReason::EndTurn),
+                ],
+                vec![Arc::new(EchoTool)],
+                PermissionMode::Allow,
+            );
+            let agent = agent.with_goal_charter(charter, None).unwrap();
+            // What an earlier run without dynamic goals left behind.
+            let mut convo = Conversation::user("Count the trays.");
+            convo.messages.push(Message::assistant(vec![Block::ToolUse {
+                id: "echo-earlier".into(),
+                name: "echo".into(),
+                input: json!({"value":"earlier"}),
+            }]));
+            convo
+                .messages
+                .push(Message::tool_results(vec![Block::ToolResult {
+                    tool_use_id: "echo-earlier".into(),
+                    content: "earlier".into(),
+                    is_error: false,
+                }]));
+            convo
+                .messages
+                .push(Message::assistant(vec![Block::text("Four.")]));
+            for message in &convo.messages {
+                session.append(&Record::Message(message.clone())).unwrap();
+            }
+            let text = "Sort the trays by label.";
+            let mut cx = agent.context().as_ref().clone().with_goal_ingress(
+                vec![OwnerInput::new(OwnerSource::CliChat, text.to_string()).unwrap()],
+                Some(Arc::clone(&session)),
+            );
+            if compact {
+                cx = cx.with_compact_goal_records();
+            }
+            convo.messages.push(Message::user(text));
+            let before = convo.messages.clone();
+            session
+                .append(&Record::Message(before.last().unwrap().clone()))
+                .unwrap();
+            agent.run_in(&cx, &mut convo, None).await.unwrap();
+            session.record_run(&before, &convo).unwrap();
+
+            let transcript = Session::read(&session.path).unwrap();
+            assert_eq!(
+                transcript.convo.goal_context.decisions()[0].is_compact(),
+                compact
+            );
+            let trajectory = crate::replay::extract_transcript(&transcript).unwrap();
+            let inputs: Vec<_> = trajectory.calls.iter().map(|c| c.input.clone()).collect();
+            assert_eq!(
+                inputs,
+                vec![json!({"value":"later"})],
+                "compact = {compact}: only the call made after activation is replayed"
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    /// The window of owner lines is the ordinary chat's host's, with its
+    /// compact records. Any other host's revisions carry every line: a
+    /// closed memory profile's recorder compares them one for one.
+    #[tokio::test]
+    async fn only_a_host_that_records_compactly_slides_its_owner_lines() {
+        use crate::goal_context::{OwnerInput, OwnerSource};
+        for compact in [false, true] {
+            let turns = (0..20)
+                .map(|n| assistant(vec![Block::text(format!("Reply {n}"))], StopReason::EndTurn))
+                .collect();
+            let (agent, _) = agent_with_tools(turns, vec![], PermissionMode::Allow);
+            let mut convo = Conversation::default();
+            for n in 0..20 {
+                let text = format!("Owner line {n}");
+                let mut cx = agent.context().as_ref().clone().with_goal_ingress(
+                    vec![OwnerInput::new(OwnerSource::CliChat, text.clone()).unwrap()],
+                    None,
+                );
+                if compact {
+                    cx = cx.with_compact_goal_records();
+                }
+                convo.messages.push(Message::user(text));
+                agent.run_in(&cx, &mut convo, None).await.unwrap();
+            }
+            let version = convo.goal_context.current().unwrap();
+            assert_eq!(
+                (version.owner_inputs().len(), version.earlier_inputs()),
+                if compact { (16, 4) } else { (20, 0) },
+                "compact = {compact}"
+            );
+        }
     }
 
     #[tokio::test]

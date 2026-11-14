@@ -985,13 +985,7 @@ pub async fn drive(
                 .copied()
                 .unwrap_or(trajectory.goal_decisions.len());
             let group = &trajectory.goal_decisions[start..end];
-            convo.messages = group[0]
-                .0
-                .conversation_messages()
-                .ok_or_else(|| {
-                    anyhow::anyhow!("dynamic replay lacks the recorded pre-request conversation")
-                })?
-                .to_vec();
+            convo.messages = group[0].0.sent_conversation(&trajectory.conversation)?;
             convo.goal_context_replay = Some(group.iter().cloned().collect());
             convo.taint.private = true;
         } else {
@@ -1092,8 +1086,8 @@ pub async fn drive_branch(
             .enumerate()
             .filter_map(|(i, (binding, _))| {
                 binding
-                    .conversation_messages()
-                    .is_some_and(|messages| messages == convo.messages)
+                    .sent_conversation(&trajectory.conversation)
+                    .is_ok_and(|messages| messages == convo.messages)
                     .then_some(i)
             })
             .collect();
@@ -2866,6 +2860,7 @@ decision = "prompt"
             steered: false,
             harness_calls: 0,
             goal_decisions: Vec::new(),
+            conversation: Vec::new(),
         };
         let report = drive_scripted(
             vec![
@@ -2994,6 +2989,7 @@ decision = "prompt"
             steered: true,
             harness_calls: 0,
             goal_decisions: Vec::new(),
+            conversation: Vec::new(),
         };
         // The forced prefix: the first call already made and answered.
         let seed = vec![
@@ -3088,6 +3084,7 @@ decision = "prompt"
             steered: false,
             harness_calls: 0,
             goal_decisions: Vec::new(),
+            conversation: Vec::new(),
         };
 
         let report = drive_scripted(
@@ -3282,6 +3279,7 @@ decision = "prompt"
             steered: false,
             harness_calls: 0,
             goal_decisions: Vec::new(),
+            conversation: Vec::new(),
         };
         // The model calls `other` where the recording says `echo`; the refusal
         // comes back as a tool result, and the cancelled run ends the turn.

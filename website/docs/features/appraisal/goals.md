@@ -174,11 +174,19 @@ security provenance or misrepresent historical context. Readable fragments are
 not enough to authorize continuation; interrupted-history recovery remains a
 separate feature. Legacy unversioned sessions keep their existing recovery behavior.
 
-This bounded prototype refuses instead of silently discarding context above
-64 KiB of accumulated owner text, 256 revisions, 8 MiB per request snapshot or
-64 MiB of recorded context history. `/clear` preserves the historical revision
-and storage budgets. At either limit, exit and start a fresh session without
-resuming the old one. Exact recorded-decision replay is supported; mid-run steering and
+A conversation can be as long as you like. Each revision of the goal context
+carries your sixteen most recent messages (and no more than 64 KiB of them) and
+a count and digest of the earlier ones, which stay in the conversation itself.
+If the conversation is later compacted, your earlier messages are kept word
+for word at its top (see [compaction](../models/compaction.md)).
+An ordinary chat records each model request as digests instead of a copy of the
+request and the conversation, so its transcript grows with the conversation.
+What still refuses, instead of silently discarding context, is 8 MiB in one
+request or 64 MiB of recorded context history; at that limit, exit and start a
+fresh session without resuming the old one. `/clear` preserves the historical
+storage budget. Exact recorded-decision replay is supported, except for a
+request whose history a later compaction rewrote, which a compactly recorded
+session cannot replay; mid-run steering and
 counterfactual probes that cannot reconstruct their context refuse explicitly.
 Later replay requests also require the recorded boundary to match, so a changed
 model response can make a continuation incomparable.
