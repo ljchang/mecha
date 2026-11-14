@@ -5479,9 +5479,14 @@ impl Tool for ImageGenerate {
                 let was = match &ctx.shot_reader {
                     None => Ok(base
                         .as_ref()
-                        .and_then(|b| {
-                            b.shot
-                                .or_else(|| recorded.map(|c| crate::picture::Shot::read(&c.value)))
+                        .map(|b| {
+                            // The record's typed place, and its words for
+                            // any part that place leaves out.
+                            b.shot.unwrap_or_default().over(
+                                recorded
+                                    .map(|c| crate::picture::Shot::read(&c.value))
+                                    .unwrap_or_default(),
+                            )
                         })
                         .unwrap_or_default()),
                     Some(reader) => match ctx.resolve(path) {
@@ -13131,6 +13136,25 @@ mod tests {
             );
             std::fs::remove_dir_all(dir).ok();
         }
+        // The same crowd where no count could be made records nothing: the
+        // words stopped no count there.
+        let (url, _) = fake_with(Fake {
+            history: vec![done()],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        let out = tool(&url)
+            .call(
+                json!({"scene": {"setting": "a market, shoppers at every stall", "people": [
+                    {"who": "a gardener", "wearing": "overalls", "doing": "watering"}]}}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(manifest_of(&dir, &out.content)["people_check"], Value::Null);
+        std::fs::remove_dir_all(dir).ok();
         // A count whose job fails keeps the picture, and says nothing.
         let failed = json!({"job-1": {"status": {"status_str": "error", "completed": false,
             "messages": [["execution_error", {"exception_message": "boom"}]]}, "outputs": {}}});

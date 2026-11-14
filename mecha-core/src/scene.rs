@@ -635,14 +635,16 @@ impl Scene {
         }
         set_text(&mut next.light, &change.light, &mut d.light);
         set_text(&mut next.camera, &change.camera, &mut d.camera);
-        // Where the camera stands now: the call's typed view, or what its
+        // Where the camera stands now: the call's typed view and what its
         // camera words say of it, over what the record held. Words that say
         // nothing of a position leave the record's as it was.
+        // The view leads the words and the words fill what it leaves out,
+        // as `camera::target` reads the same call.
         let asked = change
             .view
-            .or_else(|| change.camera.as_deref().map(Shot::read))
-            .filter(|a| *a != Shot::default());
-        if let Some(asked) = asked {
+            .unwrap_or_default()
+            .over(change.camera.as_deref().map(Shot::read).unwrap_or_default());
+        if asked != Shot::default() {
             next.shot = Some(asked.over(prev.shot.unwrap_or_default()));
         }
         set_text(&mut next.style, &change.style, &mut d.style);
@@ -1772,6 +1774,25 @@ mod tests {
                 around: Some(4),
                 height: Some(Height::Low),
                 distance: Some(Distance::Wide),
+            })
+        );
+        // A view that names one part leaves the rest to the words beside it.
+        let side = Shot {
+            around: Some(2),
+            ..Default::default()
+        };
+        let (close, _) = Scene::apply(
+            None,
+            &change("a close up from the side", Some(side)),
+            Origin::Clean,
+            true,
+        );
+        assert_eq!(
+            close.shot,
+            Some(Shot {
+                around: Some(2),
+                height: None,
+                distance: Some(Distance::CloseUp),
             })
         );
         let json = serde_json::to_value(&next).unwrap();

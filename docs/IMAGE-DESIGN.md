@@ -786,7 +786,8 @@ first kept, where it shows a face the first did not, or a face under 0.6
 like the first's (kept pairs scored 0.72 to 0.96 over 28; two people score
 under 0.3). Where the faces cannot be compared (no detector, or a face in
 both and no identity weights) the second pass is kept only for a view from
-in front. The result says which pass it is and why, and the manifest keeps
+in front. A second pass that loses a face the first held is kept: none
+of nine did, and a face gone shows nobody who was not there. The result says which pass it is and why, and the manifest keeps
 `detail`, `detail_dropped` and `detail_alike`. A first pass kept this way
 has the softness §17.4 measured: the price of never showing a face that was
 not there.
