@@ -129,6 +129,51 @@ impl Drop for Fixture {
     }
 }
 #[test]
+fn episodes_are_kept_in_the_store_and_a_grade_revises_the_outcome() {
+    use mecha_core::tool::episodes::Episode;
+    let f = Fixture::new();
+    SessionMemory::initialize(&f.request).unwrap();
+    let mem = SessionMemory::open(&f.request, &f.workspace).unwrap();
+    assert_eq!(mem.episodes().unwrap(), (vec![], 0));
+    // Nothing kept for the session: the grade has nothing to revise, and says so.
+    assert!(!mem.appraise_episode("s1", false).unwrap());
+    let episode = |call: &str, concluded: Option<&str>| Episode {
+        session: "s1".into(),
+        call: call.into(),
+        tool: if concluded.is_some() { "" } else { "gate_open" }.into(),
+        failed_input: "{}".into(),
+        errors: if concluded.is_some() {
+            vec![]
+        } else {
+            vec!["E9".into()]
+        },
+        read_between: vec![],
+        fixed_input: None,
+        external: false,
+        asked: concluded.map(|_| "open the gate".into()),
+        concluded: concluded.map(str::to_string),
+        relied_on: concluded
+            .map(|_| vec!["gate_open".to_string()])
+            .unwrap_or_default(),
+        judged: None,
+        seen: 1,
+    };
+    let kept = [episode("a", None), episode("", Some("the key is red7"))];
+    assert_eq!(mem.retain_episodes(&kept).unwrap(), 2);
+    assert_eq!(mem.episodes().unwrap().0, kept);
+    // Judged a failure: the conclusion is retired by a revision of its own
+    // record, and what the call did stays.
+    assert!(mem.appraise_episode("s1", false).unwrap());
+    let reopened = SessionMemory::open(&f.request, &f.workspace).unwrap();
+    assert_eq!(reopened.episodes().unwrap().0, kept[..1]);
+    // The last judgement stands, and no record was added to make it.
+    assert!(reopened.appraise_episode("s1", true).unwrap());
+    let (held, unreadable) = reopened.episodes().unwrap();
+    assert_eq!((held.len(), unreadable), (2, 0));
+    assert_eq!(held[1].judged, Some(true));
+    assert_eq!(held[1].concluded.as_deref(), Some("the key is red7"));
+}
+#[test]
 fn real_run_retains_observation_and_reopen_retry_is_exact() {
     let f = Fixture::new();
     SessionMemory::initialize(&f.request).unwrap();

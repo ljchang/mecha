@@ -44,6 +44,38 @@ pub struct Args {
     )]
     pub episodic_memory: Option<std::path::PathBuf>,
 
+    /// Have the harness search memory for this task before the first request
+    /// and hand the model what it found, beside the prompt.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires = "episodic_memory", conflicts_with_all = ["transcripts_deliver", "episodes_deliver"])]
+    pub memory_deliver: bool,
+
+    /// After a turn in which a call failed, have the harness search memory
+    /// for that failure and hand the model what it found, with the results.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires = "episodic_memory", conflicts_with_all = ["transcripts_deliver", "episodes_deliver"])]
+    pub memory_on_error: bool,
+
+    /// Offer the model its memory as `memory_search`, withhold the same
+    /// tool's older name, and tell it in the system prompt that it has a
+    /// memory and when to search it. Hands it nothing.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires = "episodic_memory", conflicts_with_all = ["memory_deliver", "memory_on_error", "episodes_deliver", "transcripts_deliver"])]
+    pub memory_invite: bool,
+
+    /// Have the harness search this home's earlier session transcripts for
+    /// this task before the first request and hand the model what it found,
+    /// beside the prompt. Arms private data and outside content.
+    #[arg(long, conflicts_with_all = ["resume", "no_session", "images"])]
+    pub transcripts_deliver: bool,
+
+    /// Keep what this run finds out the hard way (a refused call, and what
+    /// then worked) in the home's episode file, and before the first request
+    /// hand the model the episodes earlier runs kept about the tools it has.
+    /// Arms private data, and outside content when an episode quotes any.
+    #[arg(long, conflicts_with_all = ["resume", "no_session", "images", "transcripts_deliver"])]
+    pub episodes_deliver: bool,
+
     /// Read-only synthetic memory for goal_context (experimental, unencrypted).
     #[cfg(feature = "memory-prototype")]
     #[arg(long, requires_all = ["memory_synthetic", "memory_domain", "memory_account", "memory_scope", "goal"], conflicts_with = "mismatch_case")]
@@ -215,6 +247,16 @@ pub async fn execute(
     #[cfg(not(feature = "memory-prototype"))]
     let prompt = read_prompt(args.prompt.as_deref())?;
     anyhow::ensure!(!prompt.trim().is_empty(), "no prompt given");
+    // With `--episodes-deliver`, the store named by `--episodic-memory` is
+    // where episodes are kept and read, and the recorder that captures every
+    // passage of the run does not start: the two are different memories of
+    // one run, and this arm is the episodes alone.
+    #[cfg(feature = "memory-prototype")]
+    let (ordinary_memory, episode_store) = if args.episodes_deliver {
+        (None, ordinary_memory.map(std::sync::Arc::new))
+    } else {
+        (ordinary_memory, None)
+    };
 
     // Validate the owner-supplied path/scope before provider/setup work. No
     // database path, scope or snapshot is exposed in the tool's input schema.
@@ -272,7 +314,19 @@ pub async fn execute(
     // Nothing can answer an approval prompt when output is being piped or
     // parsed, so those runs use the configured permission mode instead.
     let interactive = std::io::stdin().is_terminal() && !args.json;
+    #[cfg(feature = "memory-prototype")]
+    let invitation = args
+        .memory_invite
+        .then(|| mecha_core::memory_session::INVITATION.to_string());
+    #[cfg(not(feature = "memory-prototype"))]
+    let invitation: Option<String> = None;
     let mut opts = GlobalOpts {
+        // After whatever a front end already appends, never in place of
+        // it: the arm differs by this line and nothing else.
+        system_extra: match (global.system_extra.clone(), invitation) {
+            (Some(extra), Some(line)) => Some(format!("{extra}\n\n{line}")),
+            (extra, line) => extra.or(line),
+        },
         surface: Some(mecha_core::session::SessionKind::Run),
         // The owner's `--goal`, the one this run is matched toward. A
         // resume without it keeps the saved anchor (below) but declares no
@@ -393,13 +447,163 @@ pub async fn execute(
                     .as_ref()
                     .context("ordinary memory requires a confirmed goal")?,
             )?;
-            prepared
-                .agent
-                .registry_mut()
-                .insert(memory.goal_memory(&run)?);
+            // One tool under one name. Invited, it is the plain name and
+            // the older one leaves the registry: a withheld tool is still
+            // listed, and two names for one memory is not the test.
+            let tool = memory.goal_memory(&run)?;
+            if args.memory_invite {
+                prepared.agent.registry_mut().remove("goal_context");
+                prepared.agent.registry_mut().insert(std::sync::Arc::new(
+                    mecha_core::memory_session::SearchTool { inner: tool },
+                ));
+            } else {
+                prepared.agent.registry_mut().insert(tool);
+            }
             Ok::<_, anyhow::Error>((memory, run))
         })
         .transpose()?;
+    // The harness's own recall, made for the task before the model is asked
+    // anything (`--memory-deliver`). Through `dispatch_one`, so it meets the
+    // gates a model's call meets and arms the conversation with what it
+    // returned; through the run's tracked tool, so the recorder holds the
+    // attempt and finds it again in the owner's message. Delivered whatever
+    // it returned: an empty packet or a refusal is what memory had.
+    #[cfg(feature = "memory-prototype")]
+    let delivered = match (&ordinary_run, args.memory_deliver) {
+        (Some(_), true) => match mecha_core::memory_session::delivery_input(&prompt) {
+            Some(input) => {
+                let cx = mecha_core::agent::RunContext::clone(prepared.agent.context());
+                let dispatched = prepared
+                    .agent
+                    .dispatch_one(&cx, &mut convo, "goal_context", input, &None)
+                    .await;
+                eprintln!(
+                    "mecha: memory delivered {} bytes{}",
+                    dispatched.content.len(),
+                    if dispatched.is_error {
+                        " (an error)"
+                    } else {
+                        ""
+                    }
+                );
+                Some(mecha_core::memory_session::delivery_text(
+                    &dispatched.content,
+                ))
+            }
+            None => None,
+        },
+        _ => None,
+    };
+    #[cfg(not(feature = "memory-prototype"))]
+    let delivered: Option<String> = None;
+    // The same, over the transcripts this home already holds and no store
+    // (`--transcripts-deliver`): the plain-retrieval baseline. The tool is
+    // inserted before the config record, so the recorded surface has it.
+    let delivered = match (&session, args.transcripts_deliver) {
+        (Some(recorded), true) => {
+            use mecha_core::tool::transcripts;
+            anyhow::ensure!(
+                delivered.is_none(),
+                "--transcripts-deliver and --memory-deliver are two arms; choose one"
+            );
+            prepared.agent.registry_mut().insert(std::sync::Arc::new(
+                transcripts::Transcripts::new(session_dir.clone(), recorded.path.clone()),
+            ));
+            let cx = mecha_core::agent::RunContext::clone(prepared.agent.context());
+            let dispatched = prepared
+                .agent
+                .dispatch_one(
+                    &cx,
+                    &mut convo,
+                    transcripts::NAME,
+                    transcripts::delivery_input(&prompt),
+                    &None,
+                )
+                .await;
+            eprintln!(
+                "mecha: transcripts delivered {} bytes{}",
+                dispatched.content.len(),
+                if dispatched.is_error {
+                    " (an error)"
+                } else {
+                    ""
+                }
+            );
+            Some(format!(
+                "{}{}",
+                transcripts::DELIVERY_STEM,
+                dispatched.content
+            ))
+        }
+        _ => delivered,
+    };
+    // And over the home's episodes (`--episodes-deliver`): the few lines
+    // earlier runs kept about the tools this one has. What this run finds
+    // out is kept after it ends, below.
+    let mut learnable = std::collections::BTreeSet::<String>::new();
+    let delivered = match (&session, args.episodes_deliver) {
+        (Some(_), true) => {
+            use mecha_core::tool::episodes;
+            anyhow::ensure!(
+                delivered.is_none(),
+                "--episodes-deliver is its own arm; it does not combine with another delivery"
+            );
+            let available: Vec<String> = prepared
+                .agent
+                .registry()
+                .iter()
+                .map(|tool| tool.name().to_string())
+                .collect();
+            // A server's tools: only use reveals how they work.
+            learnable = prepared
+                .agent
+                .registry()
+                .iter()
+                .filter(|tool| tool.provided_by_a_server())
+                .map(|tool| tool.name().to_string())
+                .collect();
+            #[cfg(feature = "memory-prototype")]
+            let stored = episode_store.clone().map(|store| {
+                let loader: episodes::Loader = std::sync::Arc::new(move || store.episodes());
+                episodes::Episodes::from_loader(loader, available.clone())
+            });
+            #[cfg(not(feature = "memory-prototype"))]
+            let stored: Option<episodes::Episodes> = None;
+            let tool = match stored {
+                Some(tool) => tool,
+                None => episodes::Episodes::new(
+                    episodes::file_in(&mecha_core::work::mecha_home()?),
+                    available,
+                ),
+            };
+            prepared
+                .agent
+                .registry_mut()
+                .insert(std::sync::Arc::new(tool));
+            let cx = mecha_core::agent::RunContext::clone(prepared.agent.context());
+            let dispatched = prepared
+                .agent
+                .dispatch_one(
+                    &cx,
+                    &mut convo,
+                    episodes::NAME,
+                    episodes::delivery_input(&prompt),
+                    &None,
+                )
+                .await;
+            eprintln!(
+                "mecha: episodes delivered {} bytes{}",
+                dispatched.content.len(),
+                if dispatched.is_error {
+                    " (an error)"
+                } else {
+                    ""
+                }
+            );
+            Some(format!("{}{}", episodes::DELIVERY_STEM, dispatched.content))
+        }
+        _ => delivered,
+    };
     // Armed before the first turn: the charter rides in the system prompt,
     // where no taint sees it, and it is private data. With the leak guard
     // forced on, every send is then refused for the whole run (D1b).
@@ -477,10 +681,11 @@ pub async fn execute(
     }
 
     // Text first, images after — the order both provider families document.
-    let user = if images.is_empty() {
+    let user = if images.is_empty() && delivered.is_none() {
         Message::user(&prompt)
     } else {
         let mut content = vec![mecha_core::message::Block::text(&prompt)];
+        content.extend(delivered.map(mecha_core::message::Block::text));
         content.extend(images);
         Message {
             harness: false,
@@ -523,6 +728,18 @@ pub async fn execute(
     // record nobody keeps. A person may be at the terminal, so there the
     // board gets the interactive deadline.
     let mut cx = mecha_core::agent::RunContext::clone(prepared.agent.context());
+    #[cfg(feature = "memory-prototype")]
+    if ordinary_run.is_some() {
+        use mecha_core::memory_session as ms;
+        if args.memory_on_error {
+            cx.recall_on_error = Some(mecha_core::agent::ErrorRecall {
+                tool: "goal_context".into(),
+                input: std::sync::Arc::new(ms::error_input),
+                stem: ms::ERROR_STEM.into(),
+                limit: 3,
+            });
+        }
+    }
     if session.is_some() || prepared.agent.config().situation_brief {
         setup::brief_run(
             &prepared.agent,
@@ -597,6 +814,36 @@ pub async fn execute(
             turns: outcome.turns,
         })?;
         s.record_outcome(&outcome)?;
+        // Retention, after the outcome and from the record: what the run
+        // found out, if anything was refused. No model is asked. A failure
+        // here costs the episode, never the run.
+        if args.episodes_deliver {
+            use mecha_core::tool::episodes;
+            // What the harness refused, from the run's own trace.
+            let refused = episodes::refused_by_harness(&outcome.tool_calls);
+            let kept = std::fs::read_to_string(&s.path)
+                .map_err(anyhow::Error::from)
+                .and_then(|text| {
+                    #[cfg(feature = "memory-prototype")]
+                    if let Some(store) = &episode_store {
+                        let (held, _) = store.episodes()?;
+                        return store.retain_episodes(&episodes::found(
+                            &held, &s.meta.id, &text, &learnable, &refused,
+                        ));
+                    }
+                    episodes::retain(
+                        &episodes::file_in(&mecha_core::work::mecha_home()?),
+                        &s.meta.id,
+                        &text,
+                        &learnable,
+                        &refused,
+                    )
+                });
+            match kept {
+                Ok(n) => eprintln!("mecha: episodes kept {n}"),
+                Err(e) => eprintln!("mecha: episodes not kept: {e:#}"),
+            }
+        }
         if let Some(mb) = &prepared.mailbox {
             mb.detach(&s.meta.id);
         }

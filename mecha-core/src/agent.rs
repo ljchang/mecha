@@ -446,6 +446,37 @@ pub struct RunContext {
     /// as any closing reply is. The edit panel's reply after the harness drew
     /// the owner's change (`persona::edit::DONE`, IMAGE-DESIGN.md §5.3).
     pub close_with: Option<Closing>,
+    /// After a turn in which a call failed, make one read-only call for the
+    /// run and fold its result into the message carrying the results
+    /// ([`ErrorRecall`]). `None` everywhere but a run that asked for it, and
+    /// never inherited by a subagent.
+    pub recall_on_error: Option<ErrorRecall>,
+}
+
+/// A failed call's tool name and error text, to the input of the harness's
+/// own call; `None` makes none.
+pub type ErrorRecallInput = Arc<dyn Fn(&str, &str) -> Option<Value> + Send + Sync>;
+
+/// A call the harness makes for the run when one of the model's calls
+/// failed: a search of what the run's host remembers, keyed by the failure.
+/// The loop knows only this shape — a tool's name, how to build its input
+/// from the failed call, and the line its result is delivered under — and
+/// never which store answers.
+#[derive(Clone)]
+pub struct ErrorRecall {
+    /// The registered tool to call. A failure of this tool itself is never
+    /// a trigger.
+    pub tool: String,
+    /// The failed call's tool name and its error text, to an input; `None`
+    /// makes no call.
+    pub input: ErrorRecallInput,
+    /// What the result is delivered under, in a text block after the turn's
+    /// results. **A second place to edit:** the line is the harness speaking
+    /// in a user message, so it must also be one `is_recall_delivery`
+    /// knows, or its delivery is mined as the owner's steer.
+    pub stem: String,
+    /// The most calls in one run.
+    pub limit: u32,
 }
 
 /// A closing request's last note, and what the owner sees in place of a
@@ -974,6 +1005,7 @@ impl RunContext {
             jobs: None,
             end_after_deferral: false,
             close_with: None,
+            recall_on_error: None,
         }
     }
 
@@ -2068,6 +2100,13 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         // A persona's memory, folded into a chat's first turn (§9.7): the
         // harness's notes, never the owner's words.
         || crate::persona::recall::stem_of(text).is_some()
+        // What a harness search of earlier work handed over, beside the
+        // owner's first words or beside a failed call's results
+        // (`tool::transcripts`, `tool::episodes`, `memory_session`). Records
+        // of other runs under the harness's line: unregistered, the first
+        // read as part of the owner's request and the last mined as the
+        // owner's steer (review of #875).
+        || is_recall_delivery(text)
         // A persona's scene (IMAGE-SCENE-DESIGN.md §5.5): the harness's note
         // of what her last picture showed, never the owner's words.
         || crate::scene::stem_of(text).is_some()
@@ -2103,6 +2142,26 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
             "worth checking whether the remaining steps in the plan need to be broken \
              down differently",
         )
+}
+
+/// Whether `text` opens with one of the lines a recall is delivered under.
+fn is_recall_delivery(text: &str) -> bool {
+    #[cfg(feature = "memory-prototype")]
+    if [
+        crate::memory_session::DELIVERY_STEM,
+        crate::memory_session::ERROR_STEM,
+    ]
+    .iter()
+    .any(|stem| text.starts_with(stem.trim_end()))
+    {
+        return true;
+    }
+    [
+        crate::tool::transcripts::DELIVERY_STEM,
+        crate::tool::episodes::DELIVERY_STEM,
+    ]
+    .iter()
+    .any(|stem| text.starts_with(stem.trim_end()))
 }
 
 /// How the loop answers a call to a name no registered tool has. Every
@@ -3528,6 +3587,8 @@ impl Agent {
         // The closing request's line, when the next request closes the run;
         // from the start, for a run the caller opens closing.
         let mut closing: Option<Closing> = cx.close_with;
+        // Harness recalls made after a failed call, against `ErrorRecall::limit`.
+        let mut error_recalls = 0u32;
 
         // Carried in from the transcript, not started fresh. Everything the
         // conversation has already seen still applies — this is the whole
@@ -4668,7 +4729,79 @@ impl Agent {
                         },
                     ));
 
+                    // A failed call, and a host that asked to be searched
+                    // when one fails: the harness's own call, through the one
+                    // dispatch a model's call takes, its result folded in
+                    // after the results as a steer is. The first failure of
+                    // the turn is the key; a failure of the search itself
+                    // never is, and a harness refusal is not the model's
+                    // failure.
+                    let recalled = match &cx.recall_on_error {
+                        Some(cue) if error_recalls < cue.limit && closing.is_none() => {
+                            let refused: std::collections::HashSet<&str> = trace
+                                [traced.min(trace.len())..]
+                                .iter()
+                                .filter(|t| t.denied)
+                                .map(|t| t.name.as_str())
+                                .collect();
+                            let uses = response.message.tool_uses();
+                            let input = results.iter().find_map(|block| {
+                                let Block::ToolResult {
+                                    tool_use_id,
+                                    content,
+                                    is_error: true,
+                                } = block
+                                else {
+                                    return None;
+                                };
+                                let (_, name, _) =
+                                    uses.iter().find(|(id, _, _)| *id == tool_use_id.as_str())?;
+                                (*name != cue.tool && !refused.contains(name))
+                                    .then(|| (cue.input)(name, content))
+                                    .flatten()
+                            });
+                            match input {
+                                Some(input) => {
+                                    error_recalls += 1;
+                                    let call_id =
+                                        format!("{HARNESS_CALL}{}", uuid::Uuid::new_v4().simple());
+                                    let (blocks, _, reads, _) = self
+                                        .dispatch(
+                                            cx,
+                                            vec![(call_id.clone(), cue.tool.clone(), input)],
+                                            &events,
+                                            &mut Vec::new(),
+                                            &mut taint,
+                                            &mut blocked_sends,
+                                            &mut RunPictures::default(),
+                                            cx.tools.output_budget_bytes,
+                                            None,
+                                            false,
+                                        )
+                                        .await;
+                                    convo.taint = taint;
+                                    crate::tool::code::record::extend_bounded(
+                                        &mut convo.program_calls,
+                                        reads,
+                                    );
+                                    blocks.into_iter().find_map(|b| match b {
+                                        Block::ToolResult {
+                                            tool_use_id,
+                                            content,
+                                            ..
+                                        } if tool_use_id == call_id => {
+                                            Some(Block::text(format!("{}{content}", cue.stem)))
+                                        }
+                                        _ => None,
+                                    })
+                                }
+                                None => None,
+                            }
+                        }
+                        _ => None,
+                    };
                     let mut result_message = Message::tool_results(results);
+                    result_message.content.extend(recalled);
                     result_message.tool_provenance = provenance;
                     plan_batch.attach(&mut result_message);
                     messages.push(result_message);
@@ -11644,6 +11777,34 @@ mod tests {
         }
     }
 
+    /// A recall the harness hands over is the harness speaking: never part
+    /// of the owner's request, and never the owner's steer.
+    #[test]
+    fn a_delivered_recall_is_the_harness_s_voice_wherever_it_lands() {
+        let stems = [
+            crate::tool::transcripts::DELIVERY_STEM,
+            crate::tool::episodes::DELIVERY_STEM,
+            #[cfg(feature = "memory-prototype")]
+            crate::memory_session::DELIVERY_STEM,
+            #[cfg(feature = "memory-prototype")]
+            crate::memory_session::ERROR_STEM,
+        ];
+        for stem in stems {
+            assert!(is_harness_voice(&format!("{stem}what was found")), "{stem}");
+            assert!(is_harness_voice(stem), "{stem}");
+            // Beside the owner's words, only the owner's words are theirs.
+            let first = Message {
+                content: vec![
+                    Block::text("do the task"),
+                    Block::text(format!("{stem}what was found")),
+                ],
+                ..Message::user("")
+            };
+            assert_eq!(owner_text(&first), "do the task", "{stem}");
+        }
+        assert!(!is_harness_voice("The harness is slow today."));
+    }
+
     /// A job that is not a picture closes its run on its own lines: two
     /// calls of a background tool in one batch, in the assistant's chat,
     /// never tell the model or the owner a picture is coming (review of
@@ -18464,6 +18625,210 @@ justification = "echo is off on this box"
             "the carry is off, so no carried block: {head}"
         );
         assert!(!head.contains("fix the port"), "{head}");
+    }
+
+    /// The tool an `ErrorRecall` names: counts its calls, answers from
+    /// outside, or fails when told to.
+    struct Remembers {
+        calls: Arc<std::sync::atomic::AtomicU32>,
+        fails: bool,
+    }
+
+    #[async_trait]
+    impl Tool for Remembers {
+        fn name(&self) -> &str {
+            "remembers"
+        }
+        fn description(&self) -> &str {
+            "Search what earlier runs found."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        fn capabilities(&self) -> crate::tool::Capabilities {
+            crate::tool::Capabilities::default().private().untrusted()
+        }
+        async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.fails {
+                return Ok(ToolOutput::err("the store is down"));
+            }
+            Ok(ToolOutput::ok(format!("found for {input}")).from_outside())
+        }
+    }
+
+    const RECALLED: &str = "The harness searched for that failure.\n";
+
+    fn recall_on_error(limit: u32) -> ErrorRecall {
+        ErrorRecall {
+            tool: "remembers".into(),
+            input: Arc::new(|tool, error| Some(json!({"tool": tool, "error": error}))),
+            stem: RECALLED.into(),
+            limit,
+        }
+    }
+
+    fn failing_call(id: &str, name: &str) -> CompletionResponse {
+        assistant(
+            vec![Block::ToolUse {
+                id: id.into(),
+                name: name.into(),
+                // A different input each time, so the loop guard sees no
+                // repeat.
+                input: json!({"path": id}),
+            }],
+            StopReason::ToolUse,
+        )
+    }
+
+    /// The recalls a run's result messages carry: for each message holding a
+    /// tool result, whether a recall block follows the results.
+    fn recalls_after_results(convo: &Conversation) -> Vec<bool> {
+        convo
+            .messages
+            .iter()
+            .filter(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, Block::ToolResult { .. }))
+            })
+            .map(|m| {
+                let first_text = m
+                    .content
+                    .iter()
+                    .position(|b| matches!(b, Block::Text { text } if text.starts_with(RECALLED)));
+                let last_result = m
+                    .content
+                    .iter()
+                    .rposition(|b| matches!(b, Block::ToolResult { .. }))
+                    .unwrap();
+                // Never before a result: the API wants results first, and
+                // plan results are indexed by position.
+                assert!(
+                    first_text.is_none_or(|at| at > last_result),
+                    "{:?}",
+                    m.content
+                );
+                first_text.is_some()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_failed_call_is_followed_by_one_harness_recall_up_to_the_limit() {
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let turns = vec![
+            failing_call("t0", "fs_edit"),
+            failing_call("t1", "fs_edit"),
+            failing_call("t2", "fs_edit"),
+            assistant(
+                vec![Block::text("I could not fix it.")],
+                StopReason::EndTurn,
+            ),
+        ];
+        let (mut agent, provider) = agent_with_tools(
+            turns,
+            vec![
+                Arc::new(FailingTool),
+                Arc::new(Remembers {
+                    calls: calls.clone(),
+                    fails: false,
+                }),
+            ],
+            PermissionMode::Allow,
+        );
+        agent.cfg.force_final_answer = false;
+        let mut cx = RunContext::clone(agent.context());
+        cx.recall_on_error = Some(recall_on_error(2));
+        let mut convo = Conversation::user("fix the call site");
+        assert!(!convo.taint.untrusted);
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        // Two recalls for three failed turns: the limit holds.
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(recalls_after_results(&convo), vec![true, true, false]);
+        // Keyed by the failed call: its tool and the error's own words.
+        let delivered = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                Block::Text { text } if text.starts_with(RECALLED) => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            delivered.contains("fs_edit") && delivered.contains("does not appear"),
+            "{delivered}"
+        );
+        // What it returned came from outside, and the conversation knows.
+        assert!(convo.taint.untrusted && convo.taint.private);
+        // No call was forged: the model was never shown a `remembers` call of
+        // its own, and every request stayed well formed to the end.
+        assert_eq!(provider.seen.lock().unwrap().len(), 4);
+        assert!(!convo.messages.iter().any(|m| m
+            .tool_uses()
+            .iter()
+            .any(|(_, name, _)| *name == "remembers")));
+    }
+
+    #[tokio::test]
+    async fn the_recall_s_own_failure_and_a_refused_call_are_not_triggers() {
+        // The model calls the recall tool itself and it fails: no harness
+        // call follows, or a store that is down would be asked every turn.
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let turns = vec![
+            failing_call("t0", "remembers"),
+            assistant(vec![Block::text("Nothing found.")], StopReason::EndTurn),
+        ];
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![Arc::new(Remembers {
+                calls: calls.clone(),
+                fails: true,
+            })],
+            PermissionMode::Allow,
+        );
+        agent.cfg.force_final_answer = false;
+        let mut cx = RunContext::clone(agent.context());
+        cx.recall_on_error = Some(recall_on_error(3));
+        let mut convo = Conversation::user("look it up");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(recalls_after_results(&convo), vec![false]);
+
+        // A write the harness refused is the harness working, not the model
+        // finding something out.
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let turns = vec![
+            failing_call("t0", "fs_write"),
+            assistant(
+                vec![Block::text("I cannot write here.")],
+                StopReason::EndTurn,
+            ),
+        ];
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![
+                Arc::new(WriteTool),
+                Arc::new(Remembers {
+                    calls: calls.clone(),
+                    fails: false,
+                }),
+            ],
+            PermissionMode::ReadOnly,
+        );
+        agent.cfg.force_final_answer = false;
+        let mut cx = RunContext::clone(agent.context());
+        cx.recall_on_error = Some(recall_on_error(3));
+        let mut convo = Conversation::user("write the file");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(recalls_after_results(&convo), vec![false]);
+        assert!(!convo.taint.untrusted);
     }
 
     #[tokio::test]

@@ -11,9 +11,11 @@ use std::collections::BTreeMap;
 /// recorder stores what each returned beside where it came from.
 pub(super) fn surface(names: &[String]) -> Result<()> {
     ensure!(
-        names.iter().any(|n| n == "goal_context")
+        names
+            .iter()
+            .any(|n| n == "goal_context" || n == recall::SEARCH_NAME)
             && names.iter().collect::<BTreeSet<_>>().len() == names.len(),
-        "ordinary memory requires goal_context among uniquely named tools"
+        "ordinary memory requires its recall tool among uniquely named tools"
     );
     Ok(())
 }
@@ -29,6 +31,25 @@ pub(super) fn closed_surface(names: &[String]) -> Result<()> {
         "chat memory requires an explicit supported tool surface"
     );
     Ok(())
+}
+/// A one-shot run's header: an ordinary run, or one an experiment started
+/// in a trial home. The experiment's mark hides the session from every
+/// corpus reader; the store it is remembered in is the trial home's own,
+/// which no real session shares.
+///
+/// The mark is not proof of a trial: it is environment, and can be set by
+/// hand. An experiment's header is admitted only where the store is a
+/// trial's own, which is a fact about the home this process runs in: it
+/// carries the runner's marker (`experiment::in_experiment_home`).
+fn run_kind(kind: Option<SessionKind>) -> bool {
+    run_kind_in(kind, crate::experiment::in_experiment_home())
+}
+fn run_kind_in(kind: Option<SessionKind>, experiment_home: bool) -> bool {
+    match kind {
+        Some(SessionKind::Run) => true,
+        Some(SessionKind::Experiment) => experiment_home,
+        _ => false,
+    }
 }
 /// The head of the owner's prompt that a criterion's text fields admit.
 pub(super) fn criterion_text(prompt: &str) -> String {
@@ -194,7 +215,7 @@ pub(super) fn initial(
             Record::Meta(m) => {
                 ensure!(
                     i == 0
-                        && m.kind == Some(SessionKind::Run)
+                        && run_kind(m.kind)
                         && serde_json::to_value(m)? == serde_json::to_value(&session.meta)?
                         && m.workspace.canonicalize()? == workspace,
                     "ordinary run header unavailable"
@@ -260,6 +281,8 @@ pub(super) struct Walk<'a> {
     receipts: Vec<ToolReceipt>,
     calls: BTreeMap<String, (String, serde_json::Value, bool)>,
     matched: BTreeSet<usize>,
+    /// Of those, the ones the harness delivered.
+    delivered: BTreeSet<usize>,
     pub(super) consulted: Vec<crate::memory::RevisionRef>,
     pub(super) configured: BTreeSet<String>,
     /// Where the owner's request was found: its line and pointer.
@@ -309,6 +332,7 @@ impl<'a> Walk<'a> {
             receipts: vec![],
             calls: BTreeMap::new(),
             matched: BTreeSet::new(),
+            delivered: BTreeSet::new(),
             consulted,
             configured: BTreeSet::new(),
             owner: None,
@@ -527,6 +551,8 @@ impl<'a> Walk<'a> {
                         external = self.intake.owner();
                         call = None;
                         (PassageKind::UserRequest, "text", text)
+                    } else if self.delivery(&text)? {
+                        continue;
                     } else {
                         // Any other user-role text is the harness's or
                         // another agent's, and never owner evidence. A
@@ -610,13 +636,33 @@ impl<'a> Walk<'a> {
                             ReceiptStatus::Succeeded
                         },
                     });
-                    if name == "goal_context" {
+                    // The same tool under its plain name: the tracked
+                    // attempt holds what it forwarded.
+                    let searched =
+                        (name == recall::SEARCH_NAME).then(|| recall::search_as_recall(input));
+                    let input: &serde_json::Value = searched.as_ref().unwrap_or(&*input);
+                    if name == "goal_context" || searched.is_some() {
+                        // An outside result is wrapped under the name of the
+                        // tool that was called; the packet's readers know
+                        // the tracked tool's.
+                        let content = match content
+                            .strip_prefix("<untrusted-content source=\"memory_search\">")
+                            .filter(|_| searched.is_some())
+                        {
+                            Some(rest) => {
+                                format!("<untrusted-content source=\"goal_context\">{rest}")
+                            }
+                            None => content.clone(),
+                        };
                         let candidates: Vec<_> = self
                             .attempts
                             .iter()
                             .enumerate()
-                            .filter(|(_, a)| {
-                                a.input == *input
+                            .filter(|(at, a)| {
+                                // A recall the harness delivered is spent;
+                                // a model's identical call is its own.
+                                !self.delivered.contains(at)
+                                    && a.input == *input
                                     && a.is_error == is_error
                                     && recall::exact_output(&a.output, &content, a.external)
                             })
@@ -690,6 +736,47 @@ impl<'a> Walk<'a> {
             ));
         }
         Ok(())
+    }
+    /// A recall the harness made before the run, delivered as text beside
+    /// the owner's words (`recall::DELIVERY_STEM`). It is reconciled with its
+    /// tracked attempt as a model's call is with its result, counted as a
+    /// result that entered the conversation, and never read as a passage.
+    /// Text under the stem that matches no attempt is not a delivery.
+    fn delivery(&mut self, text: &str) -> Result<bool> {
+        let Some(content) = text
+            .strip_prefix(recall::DELIVERY_STEM)
+            .or_else(|| text.strip_prefix(recall::ERROR_STEM))
+        else {
+            return Ok(false);
+        };
+        let Some((at, a)) = self.attempts.iter().enumerate().find(|(at, a)| {
+            !self.matched.contains(at)
+                && recall::delivery_shaped(&a.input)
+                && recall::exact_output(&a.output, content, a.external)
+        }) else {
+            return Ok(false);
+        };
+        self.matched.insert(at);
+        self.delivered.insert(at);
+        self.intake.result(Some(a.external));
+        let refs = if a.is_error {
+            ensure!(!a.external, "ordinary failed recall delivery unknown");
+            vec![]
+        } else {
+            crate::memory_experience_bridge::memory_packet_references_checked(
+                content,
+                Some((self.memory, self.access)),
+            )?
+        };
+        ensure!(refs == a.references, "ordinary recall dependencies changed");
+        self.memory
+            .validate_delivered_context(&refs, &[], self.access)?;
+        for r in refs {
+            if !self.consulted.contains(&r) {
+                self.consulted.push(r);
+            }
+        }
+        Ok(true)
     }
     /// Every recall the tool served must have been found in the transcript.
     pub(super) fn reconciled(&self) -> bool {
@@ -766,7 +853,7 @@ pub(super) fn capture(
             Record::Meta(m) => {
                 ensure!(
                     line == 0
-                        && m.kind == Some(SessionKind::Run)
+                        && run_kind(m.kind)
                         && m.id == f.session_id
                         && m.workspace.canonicalize()? == f.workspace,
                     "ordinary run header unavailable"
@@ -918,4 +1005,17 @@ fn supported_note(
         .collect();
     let completed = calls.values().filter(|(_, _, complete)| *complete).count();
     super::inline_notes::supported(text, &observed, completed)
+}
+#[cfg(test)]
+mod run_kind_tests {
+    use super::*;
+    #[test]
+    fn an_experiment_s_run_is_remembered_only_in_a_trial_home() {
+        assert!(run_kind_in(Some(SessionKind::Run), false));
+        assert!(run_kind_in(Some(SessionKind::Experiment), true));
+        assert!(!run_kind_in(Some(SessionKind::Experiment), false));
+        for kind in [Some(SessionKind::Test), Some(SessionKind::Chat), None] {
+            assert!(!run_kind_in(kind, true), "{kind:?}");
+        }
+    }
 }

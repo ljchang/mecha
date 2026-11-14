@@ -337,6 +337,7 @@ impl Tool for Subagent {
             // (`docs/BACKGROUND-JOBS-DESIGN.md` §2.1).
             end_after_deferral: false,
             close_with: None,
+            recall_on_error: None,
             jobs: None,
             // Never sampled per child: a subagent is work inside the
             // parent's run, and the parent's snapshot already spans it.

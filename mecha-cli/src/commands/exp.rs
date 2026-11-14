@@ -2038,6 +2038,56 @@ fn experiment_judge(
     ))
 }
 
+/// The request file naming a trial home's memory store, creating the store
+/// on the arm's first task. Outside the trial's workspace, as a request
+/// must be, and private.
+///
+/// The store is made by a child whose `MECHA_HOME` is the trial home, never
+/// by this process: a store under a mecha home is admitted only to the
+/// process whose own home it is (`memory_session::authority::admit_home`),
+/// and the driver's home is the operator's. Made here, the first real run
+/// was refused with "live Mecha directories are not memory roots", because a
+/// trial home sits under the operator's.
+#[cfg(feature = "memory-prototype")]
+fn memory_request(mecha: &Path, home: &Path) -> Result<PathBuf> {
+    use mecha_core::memory_home;
+    use std::os::unix::fs::OpenOptionsExt;
+    if !memory_home::initialized(home) {
+        let mut init = std::process::Command::new(mecha);
+        init.args(["memory-session", "init"]).env_clear();
+        for (k, v) in mecha_core::sandbox::Sandbox::child_env(&[]) {
+            init.env(k, v);
+        }
+        let made = init
+            .env("MECHA_HOME", home)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .context("starting `mecha memory-session init` for the trial home")?;
+        anyhow::ensure!(
+            made.status.success() && memory_home::initialized(home),
+            "the trial home's memory store could not be made: {}",
+            String::from_utf8_lossy(&made.stderr).trim()
+        );
+    }
+    let request = memory_home::request(home)?;
+    let path = memory_home::dir(home).join("request.json");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&path)
+        .with_context(|| format!("writing {}", path.display()))?;
+    std::io::Write::write_all(&mut file, &serde_json::to_vec(&request)?)?;
+    Ok(path)
+}
+#[cfg(not(feature = "memory-prototype"))]
+fn memory_request(_mecha: &Path, _home: &Path) -> Result<PathBuf> {
+    anyhow::bail!(
+        "this build has no agent memory; a memory arm needs the `memory-prototype` feature"
+    )
+}
+
 /// One trial: the arm's home and config, a fresh workspace, the child, the
 /// grade, the stats. Everything the trial learned is on its row when this
 /// returns; a failure anywhere is the row's `error`, never a missing row.
@@ -2157,6 +2207,60 @@ async fn run_one(
     }
     if let Some(goal) = manifest.tasks.confirmed_goals.get(&case.id) {
         cmd.arg("--goal").arg(goal.to_string());
+    }
+    // A memory arm: the trial home's own store, made once and carried with
+    // the home. The goal is the manifest's to confirm for every arm alike,
+    // so the arms differ in memory and in nothing else.
+    if arm.memory == Some(mecha_core::experiment::ArmMemory::EpisodesStore) {
+        anyhow::ensure!(
+            manifest.tasks.confirmed_goals.contains_key(&case.id),
+            "arm `{}` keeps episodes in the agent store, which a run opens against a \
+             confirmed goal: add `{}` to [tasks] confirmed_goals",
+            trial.arm,
+            case.id
+        );
+        cmd.arg("--episodes-deliver")
+            .arg("--episodic-memory")
+            .arg(memory_request(mecha, &home)?);
+    } else if matches!(
+        arm.memory,
+        Some(
+            mecha_core::experiment::ArmMemory::Episodes
+                | mecha_core::experiment::ArmMemory::EpisodesAppraised
+        )
+    ) {
+        // Its own file under the home, made on the first episode kept.
+        cmd.arg("--episodes-deliver");
+    } else if arm.memory == Some(mecha_core::experiment::ArmMemory::Transcripts) {
+        // No store to make: the home's own session files are the corpus.
+        cmd.arg("--transcripts-deliver");
+    } else if let Some(memory) = arm.memory {
+        anyhow::ensure!(
+            manifest.tasks.confirmed_goals.contains_key(&case.id),
+            "arm `{}` runs with memory, which records a run against a confirmed goal: \
+             add `{}` to [tasks] confirmed_goals (it is passed to every arm)",
+            trial.arm,
+            case.id
+        );
+        cmd.arg("--episodic-memory")
+            .arg(memory_request(mecha, &home)?);
+        use mecha_core::experiment::ArmMemory;
+        match memory {
+            ArmMemory::Delivered => {
+                cmd.arg("--memory-deliver");
+            }
+            ArmMemory::DeliveredOnError => {
+                cmd.arg("--memory-deliver").arg("--memory-on-error");
+            }
+            ArmMemory::Invited => {
+                cmd.arg("--memory-invite");
+            }
+            ArmMemory::Everything
+            | ArmMemory::Transcripts
+            | ArmMemory::Episodes
+            | ArmMemory::EpisodesAppraised
+            | ArmMemory::EpisodesStore => {}
+        }
     }
 
     // A case's own turn ceiling and compaction threshold are part of the
@@ -2332,6 +2436,61 @@ async fn run_one(
         }
     }
     trial.passed = Some(graded.passed);
+    // The grade is an appraisal that arrives after the run: recorded against
+    // the session, where the arm asked for it, so what the run concluded is
+    // kept or retired by how the task came out.
+    if arm.memory == Some(mecha_core::experiment::ArmMemory::EpisodesAppraised) {
+        if let Some(id) = &trial.session_id {
+            mecha_core::tool::episodes::appraise(
+                &mecha_core::tool::episodes::file_in(&home),
+                id,
+                graded.passed,
+            )?;
+        }
+    }
+    // The same grade for a home whose episodes are in the agent store. The
+    // store admits only the process whose home it is, so a child records it.
+    if arm.memory == Some(mecha_core::experiment::ArmMemory::EpisodesStore) {
+        if let Some(id) = &trial.session_id {
+            let mut appraise = std::process::Command::new(mecha);
+            appraise
+                .args(["memory-session", "appraise-episode", id])
+                .env_clear();
+            if !graded.passed {
+                appraise.arg("--failed");
+            }
+            for (k, v) in mecha_core::sandbox::Sandbox::child_env(&[]) {
+                appraise.env(k, v);
+            }
+            let out = appraise
+                .env("MECHA_HOME", &home)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .context("starting `mecha memory-session appraise-episode`")?;
+            anyhow::ensure!(
+                out.status.success(),
+                "the task's grade could not be recorded in the trial home's store: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            // No outcome kept is an answer (a run cut off concluded
+            // nothing); it is said, so a gate that had nothing to act on is
+            // told apart from one that acted.
+            let found = serde_json::from_slice::<serde_json::Value>(&out.stdout)
+                .ok()
+                .and_then(|v| v.get("outcome_found").and_then(|f| f.as_bool()));
+            anyhow::ensure!(
+                found.is_some(),
+                "`mecha memory-session appraise-episode` did not say whether it found the \
+                 task's outcome"
+            );
+            if found == Some(false) {
+                eprintln!(
+                    "  {}: no outcome was kept for this task, so its grade retired nothing",
+                    trial.id
+                );
+            }
+        }
+    }
     trial.checks = graded.checks;
     trial.stats = match &trial.session_id {
         Some(id) => mecha_core::session::Session::episode_stats(

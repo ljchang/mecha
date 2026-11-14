@@ -1,0 +1,122 @@
+# Memory benchmark, Tier B: a service whose calling rule and units are learned
+# only by using it (docs/MEMORY-BENCHMARK-DESIGN.md §4; the "ledger" surface).
+# Two experience tasks with turns to spare, then two probes on another
+# ledger target with too few turns to find either rule again.
+#
+#   mecha exp new eval/memory-opaque-ledger.toml
+#   mecha exp run memory-opaque-ledger
+#   mecha exp report memory-opaque-ledger
+
+name = "memory-opaque-ledger"
+kind = "lifetime"
+description = "Does what two tasks showed about an opaque service carry to two later tasks that cannot rediscover it."
+control = "none"
+split_seed = 17
+seeds = [1, 2, 3]
+repetitions = 1
+
+[schedule]
+reflect = 0
+validate = 0
+learn = 0
+retire = 0
+ruminate = 0
+
+[tasks]
+source = ["python3", "eval/fixtures/opaque_source.py", "ledger"]
+fixture = "eval/fixtures/opaque-workspace"
+ids = ["ledger-learn-rule", "ledger-learn-units", "ledger-probe-rule", "ledger-probe-both"]
+
+# One confirmed goal per task, passed to every arm: a memory arm records a
+# run against a goal, and the arms must differ in memory and nothing else.
+[tasks.confirmed_goals]
+ledger-learn-rule = "task:ledger-learn-rule"
+ledger-learn-units = "task:ledger-learn-units"
+ledger-probe-rule = "task:ledger-probe-rule"
+ledger-probe-both = "task:ledger-probe-both"
+
+[fixtures]
+# Nothing in this world is sent anywhere, so nothing is staged.
+outbox_tools = []
+
+[[fixtures.mcp]]
+name = "ledger"
+command = "python3"
+args = ["eval/fixtures/opaque_server.py", "--world", "ledger"]
+prefix_tools = false
+
+[arms.none]
+preset = "bare"
+levers_on = ["mcp"]
+
+[arms.everything]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "everything"
+
+[arms.everything.prediction]
+metric = "failure"
+rationale = "The probes cannot find the token rule or the unit rule again in their turns; an arm that recalls the earlier tasks' tool results passes probes the control fails."
+
+[arms.delivered]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "delivered"
+
+[arms.delivered.prediction]
+metric = "failure"
+rationale = "The model does not ask its memory; with the same store searched by the harness for the task and handed over beside the prompt, the probes have the earlier tasks' tool results in front of them and pass where the control fails."
+
+[arms.transcripts]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "transcripts"
+
+[arms.transcripts.prediction]
+metric = "failure"
+rationale = "The rules the probes need are in the earlier tasks' transcripts as tool results; a keyword search of those transcripts for the task's words, handed over beside the prompt, passes probes the control fails, with no store built."
+
+[arms.invited]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "invited"
+
+[arms.invited.prediction]
+metric = "failure"
+rationale = "The model never searched a memory offered as goal_context and never mentioned to it; offered as memory_search, with one system-prompt line saying it has a memory and when to search it, it searches on the probes and passes some the control fails."
+
+[arms.delivered_on_error]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "delivered_on_error"
+
+[arms.delivered_on_error.prediction]
+metric = "failure"
+rationale = "A search by the task's words never returned the unit rule; a second search by the harness after a failed call, keyed by the failure's own words, returns it, and the harder probe passes more often than with delivery at the start alone."
+
+[arms.episodes]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "episodes"
+
+[arms.episodes.prediction]
+metric = "failure"
+rationale = "Keyword recall of everything returned the unit rule on at most half the harder probes and cost 5 to 20 KB a task. An episode kept only where a call was refused holds the refusal's words and the call that worked, and is delivered to a run that has that tool: the unit rule reaches every harder probe whose lifetime met it, at under 2 KB."
+
+[arms.episodes_appraised]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "episodes_appraised"
+
+[arms.episodes_appraised.prediction]
+metric = "failure"
+rationale = "A run's conclusion is kept as its outcome, and retired when the task was graded a failure. Where an experience task fails, its wrong conclusion is not handed to the probes; where it passes, this arm equals episodes."
+
+[arms.episodes_store]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "episodes_store"
+
+[arms.episodes_store.prediction]
+metric = "failure"
+rationale = "The same episodes and the same verdict as episodes_appraised, kept in the agent memory store: the probes pass as often, since only where the records live has changed."
