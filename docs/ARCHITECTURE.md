@@ -12946,9 +12946,13 @@ steer beside tool results — is now copied word for word into a block in the
 head (`compact::OWNER_LINES_HEADER`, a JSON `OwnerLines` after it), between
 the summary and the carried state, and each later compaction reads that
 block back and carries it on with its own. It is bounded: a line past
-`OWNER_LINE_BYTES` is its head with a mark, and past `OWNER_LINES_BYTES` in
-all the earliest lines stay, the latest stay, and the middle is *counted*
-(`left_out`), never the first ones dropped. The words are the owner's and
+`OWNER_LINE_BYTES` is its head with a mark, and past the run's bound in all
+the earliest lines stay, the latest stay, and the middle is *counted*
+(`left_out`), never the first ones dropped. The bound is sized off the
+context window like the other compaction bounds (`owner_lines_budget`:
+about a sixteenth of it, 4 KB on a 16k-token slot, `OWNER_LINES_BYTES` from
+64k up), because this is the one part of a compacted head no later
+compaction makes smaller. The words are the owner's and
 the block is the harness's: it is registered in `agent::is_harness_voice`,
 so `owner_text` of the head is still what the owner typed in that turn, and
 a carried line is not mined as a fresh steer at every compaction. Not

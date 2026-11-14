@@ -16,7 +16,7 @@ Your own messages are not left to the summary. Whatever you typed in the
 turns being replaced, including a line you added while the assistant was
 working, is kept word for word at the top of the conversation, and kept again
 by every later compaction. If a very long conversation holds more of them
-than fit (about 16,000 bytes), the earliest and the most recent are kept and
+than fit (about a sixteenth of the context window, and at most 16,000 bytes), the earliest and the most recent are kept and
 the ones between are counted, so the first thing you asked for is never what
 gets dropped.
 

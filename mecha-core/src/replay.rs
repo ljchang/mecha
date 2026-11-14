@@ -132,7 +132,9 @@ pub fn extract_transcript(transcript: &crate::session::Transcript) -> anyhow::Re
     );
     let mut trajectory = extract(&transcript.convo.messages);
     // Collect original tool batches once by their recorded ids. A rewrite may
-    // remove them from the loaded messages, but cannot erase a frozen request.
+    // remove them from the loaded messages, but cannot erase a full
+    // binding's frozen request. A compact binding froze none: its calls are
+    // the loaded messages' alone.
     let mut seen_uses = std::collections::HashSet::new();
     let mut seen_results = std::collections::HashSet::new();
     // History predating activation is already in the first frozen seed, not

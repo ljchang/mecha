@@ -5323,7 +5323,13 @@ impl Agent {
             .iter()
             .map(|state| (state.label.as_str(), state.body.as_str()))
             .collect();
-        let rebuilt = crate::compact::rebuild(messages, cut, &summary, &carried);
+        let rebuilt = crate::compact::rebuild_within(
+            messages,
+            cut,
+            &summary,
+            &carried,
+            crate::compact::owner_lines_budget(self.context_window),
+        );
 
         // Checked before it is installed, not after. The rebuild is unit
         // tested, but this is the real transcript, and a guard that fires only

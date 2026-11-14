@@ -339,10 +339,30 @@ pub const OWNER_LINES_HEADER: &str =
 
 /// The most of one owner line carried past a compaction.
 pub const OWNER_LINE_BYTES: usize = 2_000;
-/// The most of all of them. Past it the earliest and the latest are kept
-/// and the middle is counted, never the first ones dropped: the first is
-/// where a conversation's standing instruction usually is.
+/// The most of all of them, where the window is large or not known. Past
+/// the bound the earliest and the latest are kept and the middle is
+/// counted, never the first ones dropped: the first is where a
+/// conversation's standing instruction usually is.
 pub const OWNER_LINES_BYTES: usize = 16_000;
+/// The least the bound may be: room for the first line and the newest,
+/// each as long as a carried line may be.
+pub const OWNER_LINES_FLOOR: usize = 4_096;
+
+/// The bound for a run with this context window, in tokens. The block is
+/// the one part of a compacted head that no later compaction makes smaller,
+/// so it is sized off the window like every other compaction bound: about
+/// a sixteenth of it (a quarter of a byte a token, at four bytes a token),
+/// which is 4 KB on a 16k-token slot and the full [`OWNER_LINES_BYTES`]
+/// from 64k up. A flat 16 KB would be a quarter of that small slot, held
+/// for the rest of the conversation.
+pub fn owner_lines_budget(context_window: Option<u64>) -> usize {
+    match context_window {
+        Some(tokens) => usize::try_from(tokens / 4)
+            .unwrap_or(OWNER_LINES_BYTES)
+            .clamp(OWNER_LINES_FLOOR, OWNER_LINES_BYTES),
+        None => OWNER_LINES_BYTES,
+    }
+}
 
 /// The owner's earlier lines as a compaction carries them: the earliest,
 /// how many between were left out for room, and the latest.
@@ -368,9 +388,10 @@ impl OwnerLines {
         self.first.is_empty() && self.last.is_empty() && self.left_out == 0
     }
 
-    /// With `lines` after everything held, inside the bound: the earliest
-    /// stay, the latest stay, and what is between them is counted.
-    fn with(mut self, lines: impl IntoIterator<Item = String>) -> Self {
+    /// With `lines` after everything held, inside `budget` bytes: the
+    /// earliest stay, the latest stay, and what is between them is counted.
+    fn with(mut self, lines: impl IntoIterator<Item = String>, budget: usize) -> Self {
+        let budget = budget.max(OWNER_LINES_FLOOR);
         let size = |lines: &[String]| lines.iter().map(String::len).sum::<usize>();
         let mut later = std::mem::take(&mut self.last);
         later.extend(lines);
@@ -378,7 +399,7 @@ impl OwnerLines {
             // Nothing has been left out yet: it is one run of lines.
             let mut all = std::mem::take(&mut self.first);
             all.append(&mut later);
-            if size(&all) <= OWNER_LINES_BYTES {
+            if size(&all) <= budget {
                 self.first = all;
                 return self;
             }
@@ -387,7 +408,7 @@ impl OwnerLines {
             let mut kept = 0;
             let mut bytes = 0;
             for line in &all {
-                if kept > 0 && bytes + line.len() > OWNER_LINES_BYTES / 2 {
+                if kept > 0 && bytes + line.len() > budget / 2 {
                     break;
                 }
                 bytes += line.len();
@@ -396,7 +417,7 @@ impl OwnerLines {
             later = all.split_off(kept);
             self.first = all;
         }
-        let room = OWNER_LINES_BYTES.saturating_sub(size(&self.first));
+        let room = budget.saturating_sub(size(&self.first));
         let mut keep = later.len();
         let mut bytes = 0;
         while keep > 0 && bytes + later[keep - 1].len() <= room {
@@ -451,6 +472,18 @@ pub fn rebuild(
     summary: &str,
     carried: &[(&str, &str)],
 ) -> Vec<Message> {
+    rebuild_within(messages, cut, summary, carried, OWNER_LINES_BYTES)
+}
+
+/// [`rebuild`], with the owner's carried lines held to `owner_bytes`
+/// ([`owner_lines_budget`] of the run's window).
+pub fn rebuild_within(
+    messages: &[Message],
+    cut: usize,
+    summary: &str,
+    carried: &[(&str, &str)],
+    owner_bytes: usize,
+) -> Vec<Message> {
     let mut out = Vec::with_capacity(messages.len() - cut + 1);
 
     let mut head = messages[0].clone();
@@ -471,6 +504,7 @@ pub fn rebuild(
             .map(crate::agent::owner_text)
             .filter(|text| !text.trim().is_empty())
             .map(|text| carried_line(&text)),
+        owner_bytes,
     );
     // Drop what a previous compaction left: the carried block, because there
     // is only ever one *current* state and the old copy is a wrong one; and
@@ -1668,7 +1702,7 @@ mod tests {
         let line = |n: usize| format!("line {n:03} {}", "x".repeat(900));
         let mut kept = OwnerLines::default();
         for n in 0..60 {
-            kept = kept.with([line(n)]);
+            kept = kept.with([line(n)], OWNER_LINES_BYTES);
             let bytes: usize = kept.first.iter().chain(&kept.last).map(String::len).sum();
             assert!(bytes <= OWNER_LINES_BYTES, "after {n}: {bytes}");
             assert_eq!(kept.first.len() + kept.left_out + kept.last.len(), n + 1);
@@ -1680,6 +1714,22 @@ mod tests {
         let long = carried_line(&"y".repeat(OWNER_LINE_BYTES * 3));
         assert!(long.len() <= OWNER_LINE_BYTES + '…'.len_utf8() && long.ends_with('…'));
         assert_eq!(OwnerLines::parse(&kept.block()), Some(kept));
+        // The bound follows the window: a sixteenth of it, never less
+        // than room for the first line and the newest at their longest.
+        assert_eq!(owner_lines_budget(None), OWNER_LINES_BYTES);
+        assert_eq!(owner_lines_budget(Some(16_384)), 4_096);
+        assert_eq!(owner_lines_budget(Some(32_768)), 8_192);
+        assert_eq!(owner_lines_budget(Some(262_144)), OWNER_LINES_BYTES);
+        assert_eq!(owner_lines_budget(Some(2_048)), OWNER_LINES_FLOOR);
+        let longest = |n: usize| carried_line(&format!("{n} {}", "z".repeat(OWNER_LINE_BYTES)));
+        let mut small = OwnerLines::default();
+        for n in 0..12 {
+            small = small.with([longest(n)], OWNER_LINES_FLOOR);
+            let bytes: usize = small.first.iter().chain(&small.last).map(String::len).sum();
+            assert!(bytes <= OWNER_LINES_FLOOR, "after {n}: {bytes}");
+            assert_eq!(small.first[0], longest(0));
+            assert_eq!(small.last.last().or(small.first.last()), Some(&longest(n)));
+        }
     }
 
     #[test]
