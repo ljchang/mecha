@@ -812,8 +812,8 @@ The routes, in the result's own words and the manifest's `route`:
   has a camera LoRA** (`picture::Plan::reshot`, route `reshot`; owner,
   2026-11-12: a continued picture keeps its room and clothes). The registry
   entry the owner marks `role = "camera"` (`loras::Role::Camera`) carries a
-  `trigger` and a `[lora.camera]` table of its own words for eight places
-  round the subject, four heights and three distances
+  `trigger` and a `[lora.camera]` table of its own words for eight turns
+  round the subject from where the picture's camera stands, four heights and three distances
   (`loras::CameraWords`); code holds positions only (`scene::Shot`,
   `picture::Move`), never a LoRA's name or vocabulary. The picture is the
   one image sent, at its own shape, and the prompt is the trigger and the
@@ -830,7 +830,9 @@ The routes, in the result's own words and the manifest's `route`:
   them, a picture already seen from behind was turned half-way round again
   (replay, 2026-11-12). A read that fails restages and says so, and so does a
   surface with no reader (the assistant's own chat, a replay with readers
-  off): the record's words are never the start. A move said
+  off): the record's words are never the start. An ask that names no place
+  and no move is no re-shoot from any start (`camera::moved_to`), so no read
+  is asked for it and none is blamed. A move said
   against the picture ("the other side", "closer") has a place only against
   that start (`camera::relative`, `camera::target`), and of a camera a panel
   joined to the recorded one only the tail is the ask (`camera::asked`). The

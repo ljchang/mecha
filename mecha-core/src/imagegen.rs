@@ -15810,6 +15810,20 @@ mod tests {
             "{}",
             look.content
         );
+        // With a reader that works, the read is not asked for either: the
+        // manifest holds no start, where a read would have left one.
+        cx.shot_reader = Some(Arc::new(StoodAt(Ok(behind))));
+        let look = t
+            .call(
+                json!({"picture": p1, "scene": {"camera": "a dreamier feel"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!look.is_error, "{}", look.content);
+        let m = manifest_of(&dir, &look.content);
+        assert!(m["shot_was"].is_null(), "{m}");
+        assert_ne!(m["route"], crate::picture::RESHOT);
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(store).ok();
         std::fs::remove_dir_all(lib).ok();

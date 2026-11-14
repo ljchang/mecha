@@ -226,6 +226,36 @@ mod tests {
         }
     }
 
+    /// Whether an ask moves the camera is the same from any start: the
+    /// image tool asks it against a default start before it reads the
+    /// picture's own (`imagegen`'s re-shoot), and an ask that moved from
+    /// one start only would go unread and be restaged.
+    #[test]
+    fn whether_an_ask_moves_the_camera_does_not_depend_on_the_start() {
+        let starts = [
+            Shot::default(),
+            at(0, Height::Low, Distance::CloseUp),
+            at(4, Height::High, Distance::Wide),
+            at(7, Height::Eye, Distance::Medium),
+        ];
+        for words in [
+            "from the other side",
+            "closer",
+            "further back",
+            "higher",
+            "lower",
+            "a close up from behind",
+            "a dreamier feel",
+            "",
+        ] {
+            let moved: Vec<bool> = starts
+                .iter()
+                .map(|s| moved_to(None, words, None, *s).is_some())
+                .collect();
+            assert!(moved.iter().all(|m| *m == moved[0]), "{words}: {moved:?}");
+        }
+    }
+
     /// A view typed beside words that restate the recorded camera is the
     /// restatement's, and never beats the move the words go on to ask.
     #[test]
