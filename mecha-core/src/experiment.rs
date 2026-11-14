@@ -1136,6 +1136,7 @@ fn with_memory_hash(memory: Option<ArmMemory>, original: String) -> String {
             fnv64(format!("{original}|memory=episodes_store").as_bytes())
         }
         Some(ArmMemory::Concepts) => fnv64(format!("{original}|memory=concepts").as_bytes()),
+        Some(ArmMemory::Reappraised) => fnv64(format!("{original}|memory=reappraised").as_bytes()),
         Some(ArmMemory::ConceptsCued) => {
             fnv64(format!("{original}|memory=concepts_cued").as_bytes())
         }
@@ -1183,6 +1184,10 @@ pub enum ArmMemory {
     /// `concepts`, and the harness says once, when a handed arrangement's
     /// change has worked, that the step after it is still owed.
     ConceptsCued,
+    /// `concepts_cued`, and the outcome of a task judged to have failed is
+    /// handed to a later run with the same tools as a failure: what that
+    /// run did, and which tools here it never called.
+    Reappraised,
     /// No store: the harness searches the home's earlier session
     /// transcripts for the task and hands the model what it found. The
     /// plain-retrieval baseline.

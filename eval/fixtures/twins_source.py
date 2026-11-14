@@ -4,7 +4,7 @@
 
     twins_source.py list | setup <task> | grade <task>
 
-Two pairs (`twins_world.py`); a manifest names the four tasks of one. Every
+Three pairs (`twins_world.py`); a manifest names the four tasks of one. Every
 task is graded on the service's own state: the change was made on the thing
 **and** on its twin.
 """
@@ -43,6 +43,14 @@ TASKS = [
          "The lamp labelled 'Quay steps' is to be set to level 5. Use the lamp tools.", True),
     task("lamps-ferry", "lamps", "Ferry gate", 1,
          "With the lamp tools, set the lamp labelled 'Ferry gate' to level 1.", True),
+    task("berths-coal", "berths", "Coal wharf", "coaster",
+         "Set the berth named 'Coal wharf' to take vessels of class 'coaster'. Use the berth tools.", False),
+    task("berths-fish", "berths", "Fish dock", "trawler",
+         "With the berth tools, make the berth named 'Fish dock' take class 'trawler'.", False),
+    task("pumps-bilge", "pumps", "Bilge east", "run",
+         "The pump tagged 'Bilge east' is to be put on duty 'run'. Use the pump tools.", True),
+    task("pumps-ballast", "pumps", "Ballast aft", "standby",
+         "With the pump tools, put the pump tagged 'Ballast aft' on duty 'standby'.", True),
 ]
 
 

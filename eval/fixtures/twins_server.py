@@ -59,7 +59,13 @@ def build(store, name):
         if title not in face["things"]:
             raise ToolError(f"nothing found for {title!r}")
         code = face["things"][title][0]
-        return json.dumps({face["id"]: code, **load()[name][code]})
+        things = load()[name]
+        record = {face["id"]: code, **things[code]}
+        if face.get("status"):
+            field, same, differs = face["status"]
+            twin = things[things[code][face["twin"]]]
+            record[field] = same if twin[face["value"]] == things[code][face["value"]] else differs
+        return json.dumps(record)
 
     def set_value(args):
         state = load()

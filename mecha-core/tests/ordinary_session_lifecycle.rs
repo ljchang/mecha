@@ -156,6 +156,7 @@ fn episodes_are_kept_in_the_store_and_a_grade_revises_the_outcome() {
             .map(|_| vec!["gate_open".to_string()])
             .unwrap_or_default(),
         judged: None,
+        did: vec![],
         seen: 1,
     };
     let kept = [episode("a", None), episode("", Some("the key is red7"))];

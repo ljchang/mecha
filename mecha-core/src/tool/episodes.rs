@@ -68,6 +68,10 @@ const OUTCOME_BYTES: usize = 600;
 const ERRORS: usize = 3;
 const READS: usize = 3;
 const PER_TOOL: usize = 2;
+/// The most of an outcome's own calls kept, and the most of each one's
+/// input and result.
+const DID: usize = 6;
+const DID_BYTES: usize = 160;
 /// Tools whose calls are the harness's memory, never an episode's subject.
 pub(crate) const MEMORY_TOOLS: [&str; 6] = [
     NAME,
@@ -122,6 +126,11 @@ pub struct Episode {
     /// record where the store keeps revisions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judged: Option<bool>,
+    /// An outcome's own calls to a server's tools that worked, oldest
+    /// first and the last few only: what the run did, for a later run that
+    /// is told how the task was judged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub did: Vec<String>,
     /// Runs this was seen in. A line that repeats an earlier one's key adds
     /// to it when the file is read.
     #[serde(default = "one")]
@@ -171,6 +180,42 @@ impl Episode {
     /// Whether this is about something a run with `available` has.
     fn concerns(&self, available: &BTreeSet<String>) -> bool {
         available.contains(&self.tool) || self.relied_on.iter().any(|t| available.contains(t))
+    }
+
+    /// A task's outcome that was then judged to have failed, for a run
+    /// that has `tools` from a server: what was asked, what the run did,
+    /// what it concluded, that this was judged a failure, and which of the
+    /// tools here it never called. The reappraisal: the conclusion is not
+    /// knowledge, and that this approach failed is.
+    fn render_failed(&self, tools: &BTreeSet<String>) -> String {
+        let mut out = format!(
+            "- An earlier task asked: {}",
+            self.asked.as_deref().unwrap_or("(not recorded)")
+        );
+        if self.did.is_empty() {
+            out.push_str(&format!("\n  The run used {}.", self.relied_on.join(", ")));
+        } else {
+            out.push_str("\n  The run made these calls, which all worked:");
+            for call in &self.did {
+                out.push_str(&format!("\n    {call}"));
+            }
+        }
+        out.push_str(&format!(
+            "\n  It concluded: {}\n  That task was then JUDGED TO HAVE FAILED. Whatever the run concluded, doing only this was not enough or not right; nothing recorded says what was missing.",
+            self.concluded.as_deref().unwrap_or_default()
+        ));
+        let unused: Vec<String> = tools
+            .iter()
+            .filter(|t| !self.relied_on.contains(t))
+            .map(|t| format!("`{t}`"))
+            .collect();
+        if !unused.is_empty() {
+            out.push_str(&format!(
+                "\n  Tools you have that it never called: {}.",
+                unused.join(", ")
+            ));
+        }
+        out
     }
 
     fn render(&self) -> String {
@@ -355,6 +400,7 @@ pub fn extract(
             concluded: None,
             relied_on: vec![],
             judged: None,
+            did: vec![],
         });
     }
     let mut per_tool: BTreeMap<&str, usize> = BTreeMap::new();
@@ -407,6 +453,7 @@ pub fn extract(
                 concluded: None,
                 relied_on: vec![],
                 judged: None,
+                did: vec![],
             });
         }
         at += 1;
@@ -473,6 +520,23 @@ pub fn outcome(
         concluded: Some(cut(&concluded, OUTCOME_BYTES)),
         relied_on,
         judged: None,
+        did: {
+            let worked: Vec<&Call> = calls
+                .iter()
+                .filter(|c| !c.is_error && learnable.contains(&c.name))
+                .collect();
+            worked[worked.len().saturating_sub(DID)..]
+                .iter()
+                .map(|c| {
+                    format!(
+                        "{} {} → {}",
+                        c.name,
+                        cut(&c.input, DID_BYTES),
+                        cut(c.result.trim(), DID_BYTES)
+                    )
+                })
+                .collect()
+        },
     })
 }
 
@@ -542,6 +606,14 @@ pub fn load(file: &Path) -> (Vec<Episode>, usize) {
 /// is dropped: it is not knowledge. What a call did is a fact about the
 /// tool whatever became of the task.
 pub fn fold(episodes: Vec<Episode>) -> Vec<Episode> {
+    let mut folded = fold_all(episodes);
+    folded.retain(|e| !(e.outcome() && e.judged == Some(false)));
+    folded
+}
+
+/// [`fold`], and the outcomes of tasks judged to have failed are kept: for
+/// a reader that hands them over as failures ([`Episodes::reappraising`]).
+pub fn fold_all(episodes: Vec<Episode>) -> Vec<Episode> {
     let mut folded: Vec<Episode> = Vec::new();
     for episode in episodes {
         match folded.iter_mut().find(|e| e.key() == episode.key()) {
@@ -555,7 +627,6 @@ pub fn fold(episodes: Vec<Episode>) -> Vec<Episode> {
             None => folded.push(episode),
         }
     }
-    folded.retain(|e| !(e.outcome() && e.judged == Some(false)));
     folded
 }
 
@@ -690,6 +761,9 @@ pub struct Episodes {
     loader: Loader,
     /// The tools this run has, by name, when the tool was made.
     available: BTreeSet<String>,
+    /// The server tools this run has, when failed outcomes are handed over
+    /// as failures.
+    reappraising: Option<BTreeSet<String>>,
 }
 
 impl Episodes {
@@ -701,7 +775,18 @@ impl Episodes {
         Episodes {
             loader,
             available: available.into_iter().collect(),
+            reappraising: None,
         }
+    }
+
+    /// Hand over the outcome of a task judged to have failed as a failure,
+    /// not leave it out: what the run did, that it was judged a failure,
+    /// and which of `tools` (the server tools this run has) it never
+    /// called. The loader must keep such outcomes ([`fold_all`]); one that
+    /// drops them leaves this with nothing to say.
+    pub fn reappraising(mut self, tools: impl IntoIterator<Item = String>) -> Self {
+        self.reappraising = Some(tools.into_iter().collect());
+        self
     }
 }
 
@@ -756,11 +841,24 @@ impl Tool for Episodes {
             // A store that cannot be read is a finding, never an empty one.
             Err(error) => return Ok(ToolOutput::err(format!("episodes unavailable: {error:#}"))),
         };
-        let hits = select(&episodes, &self.available, &query);
+        let failed = |e: &Episode| e.outcome() && e.judged == Some(false);
+        // A failed outcome reaches a reader that did not ask for failures
+        // only through a loader that kept it: left out here too.
+        let episodes: Vec<Episode> = episodes
+            .into_iter()
+            .filter(|e| self.reappraising.is_some() || !failed(e))
+            .collect();
+        let mut hits = select(&episodes, &self.available, &query);
+        // What was judged a failure first: it is what a run is least
+        // likely to find out for itself.
+        hits.sort_by_key(|e| !failed(e));
         let mut out = String::new();
         let mut shown = 0;
         for hit in &hits {
-            let rendered = hit.render();
+            let rendered = match &self.reappraising {
+                Some(tools) if failed(hit) => hit.render_failed(tools),
+                _ => hit.render(),
+            };
             if !out.is_empty() && out.len() + rendered.len() > DELIVERY_BYTES {
                 break;
             }
@@ -1096,6 +1194,53 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[tokio::test]
+    async fn a_task_judged_failed_is_handed_over_as_a_failure_to_a_reader_that_asks() {
+        let mut messages = run(vec![
+            call("a", "gate_find", json!({"name": "North"}), "G-1", false),
+            call(
+                "b",
+                "gate_set",
+                json!({"gate": "G-1", "state": "shut"}),
+                "set (W4)",
+                false,
+            ),
+        ]);
+        messages.push(Message::assistant(vec![Block::text("The gate is shut.")]));
+        let learnable: BTreeSet<String> = ["gate_find", "gate_set", "gate_manual"]
+            .map(str::to_string)
+            .into();
+        let mut kept = outcome("s1", &messages, &learnable, &Refused::new()).unwrap();
+        // What the run did is kept with what it concluded.
+        assert_eq!(kept.did.len(), 2);
+        assert!(kept.did[1].contains("gate_set") && kept.did[1].contains("set (W4)"));
+        kept.judged = Some(false);
+
+        // Folded as ever, the failed conclusion is gone; kept, it is there.
+        assert!(fold(vec![kept.clone()]).is_empty());
+        let all = fold_all(vec![kept.clone()]);
+        assert_eq!(all.len(), 1);
+        let loader: Loader = std::sync::Arc::new(move || Ok((all.clone(), 0)));
+        let tools = || learnable.clone();
+
+        // A reader that did not ask for failures is not shown one, even by
+        // a loader that kept it.
+        let plain = Episodes::from_loader(loader.clone(), tools());
+        let out = plain.call(json!({}), &ctx()).await.unwrap().content;
+        assert!(out.starts_with("Nothing recorded"), "{out}");
+
+        let reader = Episodes::from_loader(loader, tools()).reappraising(tools());
+        let out = reader.call(json!({}), &ctx()).await.unwrap().content;
+        let said = |needle: &str| assert!(out.contains(needle), "{needle}: {out}");
+        said("gate_set {\"gate\":\"G-1\",\"state\":\"shut\"} → set (W4)");
+        said("It concluded: The gate is shut.");
+        said("JUDGED TO HAVE FAILED");
+        // Which of the tools here it never called, and not the ones it did.
+        said("Tools you have that it never called: `gate_manual`.");
+        // Never as what a run concluded, which reads as knowledge.
+        assert!(!out.contains("The run concluded:"), "{out}");
+    }
+
     #[test]
     fn what_the_run_had_read_decides_whether_its_episodes_are_outside_content() {
         let record =
@@ -1156,6 +1301,7 @@ mod tests {
             concluded: None,
             relied_on: vec![],
             judged: None,
+            did: vec![],
         }
     }
 

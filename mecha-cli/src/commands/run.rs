@@ -84,6 +84,13 @@ pub struct Args {
     #[arg(long, requires_all = ["episodes_deliver", "episodic_memory"])]
     pub concepts_deliver: bool,
 
+    /// With `--episodes-deliver` and a store: hand over the outcome of an
+    /// earlier task that was judged to have failed as a failure (what the
+    /// run did, and which tools here it never called), not leave it out.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires_all = ["episodes_deliver", "episodic_memory"])]
+    pub episodes_failures: bool,
+
     /// With `--concepts-deliver`: when a call works that a delivered
     /// arrangement places before another step, say once, after that call's
     /// result, that the later step is still owed.
@@ -579,6 +586,12 @@ pub async fn execute(
                 .collect();
             #[cfg(feature = "memory-prototype")]
             let stored = episode_store.clone().map(|store| {
+                if args.episodes_failures {
+                    let loader: episodes::Loader =
+                        std::sync::Arc::new(move || store.episodes_with_failures());
+                    return episodes::Episodes::from_loader(loader, available.clone())
+                        .reappraising(learnable.iter().cloned());
+                }
                 let loader: episodes::Loader = std::sync::Arc::new(move || store.episodes());
                 episodes::Episodes::from_loader(loader, available.clone())
             });

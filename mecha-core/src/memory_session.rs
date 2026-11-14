@@ -288,6 +288,13 @@ impl SessionMemory {
         }
         Ok((episodes, unreadable))
     }
+    /// The store's episodes with the outcomes of failed tasks kept
+    /// (`tool::episodes::fold_all`), for a reader that hands them over as
+    /// failures.
+    pub fn episodes_with_failures(&self) -> Result<(Vec<crate::tool::episodes::Episode>, usize)> {
+        let (episodes, unreadable) = self.episode_records()?;
+        Ok((crate::tool::episodes::fold_all(episodes), unreadable))
+    }
     /// The store's episodes, one per finding (`tool::episodes::fold`).
     pub fn episodes(&self) -> Result<(Vec<crate::tool::episodes::Episode>, usize)> {
         let (episodes, unreadable) = self.episode_records()?;
