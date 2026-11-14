@@ -7966,6 +7966,17 @@ their recorders read the copies. *And the limit that remains* is
 left: a revision repeats what its window carries, so a long pasted line is
 written again in each of the next sixteen revisions.
 
+**A known limit: a steer that fills the window costs its turn its memory.**
+The window slides on bytes as well as on count, so one steer as long as an
+owner line may be (64 KiB) leaves the window holding the steer alone. The
+open recorder reads a turn's own lines out of its revisions' windows
+(`ChatContextVersion::from_version_tail`) and cannot capture a turn whose
+first line has left them: `finish_turn` reports the turn `Unavailable`,
+its records stay in the transcript, and the next turn is remembered as
+usual. Carrying the turn's line some other way means a change to the
+stored capture, which has not been made
+(`a_steer_that_fills_the_window_leaves_its_turn_unremembered_and_says_so`).
+
 **Replay of a compactly recorded session recovers what was not copied.**
 The history a request sent is the session's messages as they ended, cut at
 the recorded length and checked against the recorded chain head and tail

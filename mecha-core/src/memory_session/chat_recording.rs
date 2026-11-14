@@ -784,12 +784,19 @@ fn capture_open(
                     // No copy to compare: the history is a prefix of the
                     // conversation as it ended when the chain over all but
                     // its last message is the conversation's at that
-                    // length. The turn's first request sent exactly the
-                    // opening history's length; a later one no fewer.
+                    // length, and its last message is the conversation's
+                    // there by the digest recorded for it. The turn's first
+                    // request sent exactly the opening history's length; a
+                    // later one no fewer.
                     let grew = count >= 1
                         && count >= sent_count
                         && (!decisions.is_empty() || count == history.len())
-                        && heads.get(count - 1).is_some_and(|known| known == head);
+                        && heads.get(count - 1).is_some_and(|known| known == head)
+                        && transcript
+                            .convo
+                            .messages
+                            .get(count - 1)
+                            .is_some_and(|tail| binding.sent_tail_is(tail));
                     sent_count = count;
                     grew
                 });

@@ -8915,6 +8915,106 @@ mod tests {
             .contains("<owner_context"));
     }
 
+    /// A session with history before its first goal decision, recorded
+    /// compactly: the calls made before activation are in the seed the
+    /// replay starts from, not on its cursor.
+    #[tokio::test]
+    async fn a_compactly_recorded_run_keeps_earlier_calls_off_the_replay_cursor() {
+        use crate::goal_context::{OwnerInput, OwnerSource};
+        use crate::session::{Record, Session, SessionKind, SessionMeta};
+
+        for compact in [false, true] {
+            let id = Session::new_id();
+            let dir = std::env::temp_dir().join(&id);
+            let session = Arc::new(
+                Session::create(
+                    &dir,
+                    SessionMeta {
+                        id,
+                        created_at: chrono::Utc::now(),
+                        provider: "scripted".into(),
+                        model: "scripted-1".into(),
+                        workspace: dir.clone(),
+                        title: None,
+                        kind: Some(SessionKind::Test),
+                    },
+                )
+                .unwrap(),
+            );
+            let charter = dir.join("charter.toml");
+            std::fs::write(
+                &charter,
+                "[[line]]\nid = 'trays'\ntext = 'Keep the trays organized.'\n",
+            )
+            .unwrap();
+            let (agent, _provider) = agent_with_tools(
+                vec![
+                    assistant(
+                        vec![Block::ToolUse {
+                            id: "echo-later".into(),
+                            name: "echo".into(),
+                            input: json!({"value":"later"}),
+                        }],
+                        StopReason::ToolUse,
+                    ),
+                    assistant(vec![Block::text("done")], StopReason::EndTurn),
+                ],
+                vec![Arc::new(EchoTool)],
+                PermissionMode::Allow,
+            );
+            let agent = agent.with_goal_charter(charter, None).unwrap();
+            // What an earlier run without dynamic goals left behind.
+            let mut convo = Conversation::user("Count the trays.");
+            convo.messages.push(Message::assistant(vec![Block::ToolUse {
+                id: "echo-earlier".into(),
+                name: "echo".into(),
+                input: json!({"value":"earlier"}),
+            }]));
+            convo
+                .messages
+                .push(Message::tool_results(vec![Block::ToolResult {
+                    tool_use_id: "echo-earlier".into(),
+                    content: "earlier".into(),
+                    is_error: false,
+                }]));
+            convo
+                .messages
+                .push(Message::assistant(vec![Block::text("Four.")]));
+            for message in &convo.messages {
+                session.append(&Record::Message(message.clone())).unwrap();
+            }
+            let text = "Sort the trays by label.";
+            let mut cx = agent.context().as_ref().clone().with_goal_ingress(
+                vec![OwnerInput::new(OwnerSource::CliChat, text.to_string()).unwrap()],
+                Some(Arc::clone(&session)),
+            );
+            if compact {
+                cx = cx.with_compact_goal_records();
+            }
+            convo.messages.push(Message::user(text));
+            let before = convo.messages.clone();
+            session
+                .append(&Record::Message(before.last().unwrap().clone()))
+                .unwrap();
+            agent.run_in(&cx, &mut convo, None).await.unwrap();
+            session.record_run(&before, &convo).unwrap();
+
+            let transcript = Session::read(&session.path).unwrap();
+            assert_eq!(
+                transcript.convo.goal_context.decisions()[0].is_compact(),
+                compact
+            );
+            let trajectory = crate::replay::extract_transcript(&transcript).unwrap();
+            let inputs: Vec<_> = trajectory.calls.iter().map(|c| c.input.clone()).collect();
+            assert_eq!(
+                inputs,
+                vec![json!({"value":"later"})],
+                "compact = {compact}: only the call made after activation is replayed"
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn forced_final_answer_preserves_charter_revision_with_todo_available() {
         use crate::goal_context::{OwnerInput, OwnerSource};
