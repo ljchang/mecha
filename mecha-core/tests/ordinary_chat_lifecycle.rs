@@ -4021,6 +4021,181 @@ fn a_long_chat_is_remembered_turn_by_turn_and_its_transcript_grows_linearly() {
         1
     );
 }
+/// One turn of an ordinary chat recorded compactly, its first request
+/// having sent `sent` as its last message. Returns the turn's report.
+fn compact_turn(
+    f: &Fixture,
+    s: &Session,
+    chat: &mut ChatMemory,
+    prompt: &str,
+    sent: Option<Message>,
+    untrusted: bool,
+) -> mecha_core::memory_session::chat::ChatMemoryReport {
+    let _ = f;
+    let owner = OwnerInput::new(OwnerSource::CliChat, prompt.to_string()).unwrap();
+    let turn = chat.begin_turn(s, &owner).unwrap();
+    let mut history = Session::read(&s.path).unwrap().convo.messages;
+    history.push(sent.unwrap_or_else(|| Message::user(prompt)));
+    s.append(&Record::Message(Message::user(prompt))).unwrap();
+    decide_compact(s, owner, &history);
+    s.append(&Record::Message(Message::assistant(vec![Block::text(
+        format!("Reply to {prompt}"),
+    )])))
+    .unwrap();
+    s.append(&Record::Taint(Taint {
+        private: true,
+        untrusted,
+    }))
+    .unwrap();
+    chat.finish_turn(&turn)
+}
+
+/// A compact record keeps no copy of what a request sent, only a chain
+/// over all but its last message and that message's digest. A request
+/// whose last message is not the conversation's at that place did not send
+/// this history, and the walk does not say what was in front of the model:
+/// the recorded taint classifies the turn, as it does for any history the
+/// walk cannot derive.
+#[test]
+fn a_compact_record_whose_last_message_is_not_the_conversation_s_is_not_placed() {
+    for forged in [false, true] {
+        let f = Fixture::new();
+        let s = f.session();
+        let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+        open_config(&f, &s);
+        let sent = forged.then(|| Message::user("Some other line"));
+        let report = compact_turn(&f, &s, &mut chat, "Sort the trays", sent, true);
+        assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+        let stored = sealed(&f, &report.run_id);
+        let reply = stored
+            .iter()
+            .find(|(kind, _, _)| kind == "AssistantText")
+            .unwrap();
+        // The recorded taint says something from outside came in. A walk
+        // that placed the turn saw nothing of the kind and does not call
+        // the reply outside; one that could not place it takes the
+        // recorded taint's word.
+        assert_eq!(
+            reply.1 == serde_json::json!(true),
+            forged,
+            "forged = {forged}: {stored:?}"
+        );
+    }
+}
+
+/// An ordinary chat's turns are numbered without a gap. Turns that began
+/// and whose numbers are gone are a gap however many they are, and the
+/// chat is refused, not continued from the turn before them.
+#[test]
+fn a_gap_of_two_turns_refuses_the_chat_as_a_gap_of_one_does() {
+    for missing in [vec![2u64], vec![2, 3]] {
+        let f = Fixture::new();
+        let s = f.session();
+        let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+        open_config(&f, &s);
+        for n in 0..5 {
+            let report = compact_turn(&f, &s, &mut chat, &format!("Owner line {n}"), None, false);
+            assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+        }
+        drop(chat);
+        assert!(f.memory().attach_chat(&s, ChatAttachMode::Resume).is_ok());
+        let mut removed = 0;
+        for entry in fs::read_dir(&f.request.authority).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_str().unwrap().to_string();
+            if missing
+                .iter()
+                .any(|n| name.ends_with(&format!(".chat-turn-{n}")))
+            {
+                fs::remove_file(&path).unwrap();
+                removed += 1;
+            }
+        }
+        assert_eq!(removed, missing.len());
+        let refused = f
+            .memory()
+            .attach_chat(&s, ChatAttachMode::Resume)
+            .and_then(|mut chat| {
+                let owner = OwnerInput::new(OwnerSource::CliChat, "Next".into())?;
+                chat.begin_turn(&s, &owner).map(|_| ())
+            });
+        let error = format!("{:#}", refused.expect_err("a chat with turns missing"));
+        assert!(error.contains("gap"), "{missing:?}: {error}");
+    }
+}
+
+/// A known limit, pinned so that it stays a reported one. A context
+/// revision's window slides on bytes as well as on count, so one steer as
+/// long as an owner line may be leaves the window holding the steer alone,
+/// and the turn's own line with the earlier lines. The recorder reads a
+/// turn's lines out of its revisions' windows and cannot capture this one:
+/// the turn is reported as not remembered, its records stay in the
+/// transcript, and the chat goes on from the next turn.
+#[test]
+fn a_steer_that_fills_the_window_leaves_its_turn_unremembered_and_says_so() {
+    let f = Fixture::new();
+    let s = f.session();
+    let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+    open_config(&f, &s);
+    let line = |text: &str| OwnerInput::new(OwnerSource::CliChat, text.into()).unwrap();
+    let steer = "s".repeat(64 * 1024);
+    let turn = chat.begin_turn(&s, &line("Start")).unwrap();
+    s.append(&Record::Message(Message::user("Start"))).unwrap();
+    let mut first = Message::user("Start");
+    first.content.push(Block::text(steer.clone()));
+    let mut state = recorded_context(&s);
+    state
+        .transition(CharterSnapshot::disabled(), Some(line("Start")))
+        .unwrap()
+        .unwrap();
+    let version = state
+        .transition(CharterSnapshot::disabled(), Some(line(&steer)))
+        .unwrap()
+        .unwrap();
+    assert!(
+        version.input_at(0).is_none(),
+        "the window still holds the turn's own line"
+    );
+    let history = vec![first];
+    let binding = DecisionBinding::new(
+        state.next_decision(),
+        version.revision(),
+        &history,
+        Some(version.prompt_block()),
+        true,
+        0,
+    )
+    .unwrap()
+    .with_conversation_messages(&history)
+    .unwrap();
+    let versions = state.versions().to_vec();
+    s.append(&Record::GoalContextDecision { binding, versions })
+        .unwrap();
+    s.append(&Record::Extend {
+        index: 0,
+        blocks: vec![Block::text(steer)],
+    })
+    .unwrap();
+    s.append(&Record::Message(Message::assistant(vec![Block::text(
+        "Done.",
+    )])))
+    .unwrap();
+    s.append(&Record::Taint(Taint {
+        private: true,
+        untrusted: false,
+    }))
+    .unwrap();
+    let report = chat.finish_turn(&turn);
+    assert_eq!(
+        report.status,
+        SessionMemoryStatus::Unavailable,
+        "{report:?}"
+    );
+    assert!(report.reason.is_some(), "{report:?}");
+    let next = compact_turn(&f, &s, &mut chat, "And the next line", None, false);
+    assert_eq!(next.status, SessionMemoryStatus::Retained, "{next:?}");
+}
+
 /// The run id of the conversation's most recent sealed turn.
 fn chat_last_run(f: &Fixture, s: &Session) -> String {
     let conversation = &s.meta.id;

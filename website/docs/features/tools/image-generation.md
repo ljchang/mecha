@@ -142,6 +142,15 @@ It also picks a size: `square` (1024×1024), `landscape` (1344×768) or
   after the server has restarted to give its memory back takes two to three
   minutes. Anything else using the GPU at the same time — reading a
   reply aloud, say — slows it down.
+- **A new picture is counted before you see it.** Image models sometimes
+  draw a person twice. After a new picture is drawn, mecha counts the
+  people in it, and when there are more than the scene has it draws the
+  picture again at another seed, up to twice more, and keeps the best. A
+  redraw adds a render's time; the count itself takes a second or two. A
+  picture that continues an earlier one keeps that one's seed so its room
+  stays the same, so it is counted but not drawn again: the result says
+  how many people it seems to show. `[image] people_check = false` turns
+  the count off.
 
 `mecha run`, `mecha batch` and evals can also pass a `seed` to reproduce a
 new picture. A chat's schema has no seed, since models mostly copied an
@@ -215,6 +224,13 @@ sends decides how the picture changes:
 If an edit was meant to move things and the new picture's composition
 barely differs from the old one, the model is told plainly; a retouch of a
 colour or a detail is expected to keep the composition.
+
+A painted edit is checked against the picture it changed. If a painted
+area comes back as it was, the result says the change does not show there
+rather than that the area was redrawn, and with several regions it names
+the ones that did not take. Words that ask for something to be taken out
+("remove the cup") hide that area from the image model first, so it has
+nothing there to draw again.
 
 **In a persona chat, mecha draws the panel's edit itself and the persona
 only answers.** A quick one-shot pass reads your words and what the picture
@@ -290,6 +306,10 @@ fit one picture, and a scene holds at most ten people.
   Otherwise a library name elsewhere in the words, for someone not in the
   picture, is read as "the viewer" rather than drawn as a stranger, and the
   result says so.
+- **"Me" is you when the library says which character you are.** Run
+  `mecha imagelib set-owner <name>` once, and "me", "my" and "we" in what
+  you ask of a picture name that character (and "we", you and the persona).
+  Without it, you are the viewer: never drawn.
 - **An edit carries the faces of the people it changes.** Each library
   character an edit places or changes comes in as a head crop of their
   portrait beside their description, so a chain of edits does not drift into

@@ -245,6 +245,58 @@ impl Client {
         }
     }
 
+    /// Whether nothing is listening at the server's address: every connect
+    /// refused for the whole of `wait`. Only that. A server that answers, one
+    /// that accepts and is slow (an on-demand proxy mid-start, a busy queue),
+    /// and any other failure all read as `false`, since each is a server
+    /// that is there, and [`Self::await_server`] is what waits for those.
+    /// Refused is retried until `wait` is up, so a restart in flight (4-10 s
+    /// measured) is not taken for a stopped service.
+    ///
+    /// **Never true of a server this process has had an answer from**
+    /// ([`Self::answered`]): one that answered and now refuses is restarting
+    /// (the idle reset and every deploy close the port for the whole
+    /// window, 40 s once), and [`Self::await_server`] waits that out in
+    /// full. So only a server never seen is called stopped, which is the
+    /// case after a reboot (review of #868, pass 2).
+    pub(crate) async fn refuses(
+        &self,
+        cancel: Option<&CancellationToken>,
+        wait: Duration,
+    ) -> std::result::Result<bool, Failure> {
+        if self.answered.load(Ordering::Relaxed) {
+            return Ok(false);
+        }
+        let deadline = Instant::now() + wait;
+        loop {
+            let attempt = self
+                .http
+                .get(self.endpoint("queue")?)
+                .timeout(wait.min(Duration::from_secs(5)))
+                .send();
+            match attempt.await {
+                Ok(_) => {
+                    self.answered.store(true, Ordering::Relaxed);
+                    return Ok(false);
+                }
+                Err(e) if e.is_connect() && !e.is_timeout() => {
+                    if Instant::now() >= deadline {
+                        return Ok(true);
+                    }
+                }
+                Err(_) => return Ok(false),
+            }
+            let pause = tokio::time::sleep(SERVER_WAIT_STEP.min(wait));
+            match cancel {
+                Some(token) => tokio::select! {
+                    _ = token.cancelled() => return Err(Failure::Cancelled),
+                    _ = pause => {}
+                },
+                None => pause.await,
+            }
+        }
+    }
+
     /// Put `bytes` in the server's temp directory as `filename` (a name the
     /// caller has already written down wherever it keeps them), and return
     /// the name the server filed it under; `label` names it in a refusal.
@@ -537,6 +589,21 @@ mod tests {
             started.elapsed() >= Duration::from_millis(250),
             "answered before the server existed"
         );
+    }
+
+    /// `refuses` is true only of a server never seen with nothing listening:
+    /// one this process has had an answer from is restarting, and is the
+    /// wait's to outlast, not a stopped service (review of #868, pass 2).
+    #[tokio::test]
+    async fn only_a_server_never_seen_is_called_stopped() {
+        let wait = Duration::from_millis(300);
+        let unseen = client_at(closed_port());
+        assert!(matches!(unseen.refuses(None, wait).await, Ok(true)));
+        let seen = client_at(closed_port());
+        seen.answered.store(true, Ordering::Relaxed);
+        let started = Instant::now();
+        assert!(matches!(seen.refuses(None, wait).await, Ok(false)));
+        assert!(started.elapsed() < Duration::from_millis(200), "it waited");
     }
 
     /// The wait is bounded: a server that never comes is reported, with the

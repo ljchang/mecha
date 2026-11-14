@@ -1686,6 +1686,71 @@ fn check_autolock(minutes: u32) -> Result<()> {
     Ok(())
 }
 
+/// Which library character is the owner: whom "me", "my" and "we" name in
+/// the owner's words about a picture (owner, 2026-10-29). The owner's own
+/// file, written only by `mecha imagelib set-owner`, never by a model, and
+/// never a name in code: with none set, the owner is the viewer, as before.
+const OWNER_FILE: &str = "owner.toml";
+
+#[derive(Serialize, Deserialize)]
+struct OwnerFile {
+    character: String,
+}
+
+impl Library {
+    /// The owner's character, when one is set and is an approved character
+    /// here. One that is gone or not approved is said in the log and read
+    /// as none: the owner is then the viewer, never a stranger drawn under
+    /// a name the library cannot back.
+    pub fn owner(&self) -> Option<String> {
+        let path = self.dir.join(OWNER_FILE);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => {
+                tracing::warn!("imagelib: the owner setting could not be read: {e}");
+                return None;
+            }
+        };
+        let key = match toml::from_str::<OwnerFile>(&text) {
+            Ok(f) => f.character.trim().to_lowercase(),
+            Err(e) => {
+                tracing::warn!("imagelib: the owner setting is not readable: {e}");
+                return None;
+            }
+        };
+        let held = self
+            .get(Kind::Character, &key)
+            .is_some_and(|e| e.status == Status::Approved);
+        if !held {
+            tracing::warn!("imagelib: the owner setting names `{key}`, no approved character");
+        }
+        held.then_some(key)
+    }
+}
+
+/// Set (or, with `None`, clear) which approved character is the owner.
+pub fn set_owner(dir: &Path, character: Option<&str>) -> Result<()> {
+    let path = dir.join(OWNER_FILE);
+    let Some(name) = character else {
+        return match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e).context("clearing the owner setting"),
+        };
+    };
+    let key = name.trim().to_lowercase();
+    let lib = Library::load(dir).0;
+    let entry = lib
+        .get(Kind::Character, &key)
+        .with_context(|| format!("no character named `{key}` in the library"))?;
+    if entry.status != Status::Approved {
+        bail!("`{key}` waits on approval: approve it first");
+    }
+    let text = toml::to_string_pretty(&OwnerFile { character: key })?;
+    write_atomic_mode(&path, text.as_bytes(), Some(0o600)).context("writing the owner setting")
+}
+
 /// Which library voices are locked (owner, 2026-10-15: "lock voices just
 /// like images and personas"). A voice is a clip in the TTS's own directory
 /// with no record of ours to carry a flag, so the flags live here, beside
@@ -1810,6 +1875,14 @@ pub struct CastMember {
     /// the figure in both slots, with the expression and the style's eye
     /// clauses gone, turned away 5 of 5 (owner, 2026-10-28; §9.4).
     pub face_away: bool,
+    /// Their face crop, sent in the portrait's slot (`face::FaceAnchors`).
+    /// A whole portrait carries its outfit: on the replay rig on 2026-10-29
+    /// a solo picture drew the portrait's top beside lower garments alone
+    /// at 3 of 3 seeds, and a nude outfit clothed at 3 of 3; with the crop,
+    /// 0 of 6, and ArcFace likeness to the portrait rose (.58 to .64, .60 to
+    /// .71). Video measured the same leak and moved to the crop on
+    /// 2026-10-13. `None` sends the whole portrait.
+    pub face: Option<Vec<u8>>,
 }
 
 /// What an entry contributed to a generation — for the result text and the
@@ -2099,9 +2172,12 @@ pub fn compile_with(
                 "`wearing` and `doing` are capped at {MAX_CAST_FIELD} characters each."
             ));
         }
-        let portrait = lib
-            .read_portrait(entry)
-            .map_err(|e| format!("`{name}`'s portrait cannot be read: {e:#}."))?;
+        let portrait = match &member.face {
+            Some(crop) => (crop.clone(), "png"),
+            None => lib
+                .read_portrait(entry)
+                .map_err(|e| format!("`{name}`'s portrait cannot be read: {e:#}."))?,
+        };
         members.push(Member {
             name,
             entry,
@@ -2165,10 +2241,17 @@ pub fn compile_with(
     // after a same-seed pair on two pictures put a ribcage tattoo on one
     // side only, where its words alone drew a different design on both).
     // Said in counts, never labels, as the bodies are.
-    let identity_images = n * if both { 2 } else { 1 };
+    // Someone seen from behind is drawn from one image, their full figure
+    // (below), where anyone else with a figure has two.
+    let seen_from_behind = members
+        .iter()
+        .zip(&bound)
+        .filter(|(m, body)| m.face_away && body.is_some())
+        .count();
+    let identity_images = n * if both { 2 } else { 1 } - seen_from_behind;
     let mut room = MAX_PICTURE_IMAGES.saturating_sub(identity_images);
     let mut details: Vec<Vec<CloseUp>> = (0..n).map(|_| Vec::new()).collect();
-    let (mut no_room, mut unread, mut unlabelled) = (0, 0, 0);
+    let (mut no_room, mut unread, mut unlabelled, mut grouped) = (0, 0, 0, 0);
     for (i, m) in members.iter().enumerate() {
         for r in m
             .entry
@@ -2187,6 +2270,14 @@ pub fn compile_with(
                 unlabelled += 1;
                 continue;
             };
+            // A cast of one only: beside two people the close-ups drew an
+            // extra person in 5 of 6 renders on the replay rig on
+            // 2026-10-29, and in 0 of 6 without them, at no likeness cost
+            // (owner, 2026-10-29).
+            if n >= 2 {
+                grouped += 1;
+                continue;
+            }
             if !bodies {
                 no_room += 1;
                 continue;
@@ -2233,6 +2324,19 @@ pub fn compile_with(
             } else {
                 "references were"
             }
+        ));
+    }
+    if grouped > 0 {
+        notes.push(format!(
+            "{} close-up {} not sent: they go only to a picture of one person, and this one \
+             has {}.",
+            capitalize(number(grouped)),
+            if grouped == 1 {
+                "reference was"
+            } else {
+                "references were"
+            },
+            number(n)
         ));
     }
     if unread > 0 {
@@ -2282,22 +2386,24 @@ pub fn compile_with(
         names.push(shown.clone());
         let away = m.face_away && body.is_some();
         let who = match &body {
-            // Both slots hold the full figure: alone in one slot it drew a
-            // second head 2 of 5, in both 0 of 5 (owner, 2026-10-28).
+            // The full figure, once. It went in both slots from 2026-10-28
+            // (one slot had drawn a second head 2 of 5 while the expression
+            // and the style's eye clause were still sent), and two pictures
+            // of one standing figure drew the person twice: 17 of 31
+            // recorded pictures, and 6 of 21 on the replay rig against 3 of
+            // 21 with one, seed for seed, with no second head in any
+            // (2026-11-12).
             Some(_) if away => {
-                let (a, b) = (refs.len() + 1, refs.len() + 2);
+                let a = refs.len() + 1;
                 bindings.push(format!(
-                    "<image{a}> and <image{b}> show one person, {shown}: <image{a}> and \
-                     <image{b}> are both {shown}'s full figure. {shown} is seen from behind: \
-                     {shown}'s face is turned away from the viewer and out of sight, the back of \
-                     {shown}'s head toward the camera."
+                    "<image{a}> shows one person, {shown}: {shown}'s full figure. {shown} is \
+                     seen from behind: {shown}'s face is turned away from the viewer and out of \
+                     sight, the back of {shown}'s head toward the camera."
                 ));
-                // Both copies are the figure, so neither's outfit is worn
-                // (review of #757, pass 3).
+                // The figure's own outfit is not worn (review of #757, pass 3).
                 figures.push(format!("<image{a}>"));
-                figures.push(format!("<image{b}>"));
                 any_away = true;
-                format!("the person shown in <image{a}> and <image{b}>")
+                format!("the person shown in <image{a}>")
             }
             Some(_) => {
                 let (face, figure) = (refs.len() + 1, refs.len() + 2);
@@ -2327,9 +2433,6 @@ pub fn compile_with(
             refs.push((m.name.clone(), bytes, ext));
         }
         if let Some((bytes, ext)) = body {
-            if away {
-                refs.push((format!("full_body:{}", m.name), bytes.clone(), ext));
-            }
             refs.push((format!("full_body:{}", m.name), bytes, ext));
         }
         // V-D's binding for video, in this compiler's pointers: the mark is
@@ -2352,7 +2455,10 @@ pub fn compile_with(
         }
         let mut line = format!("{who} ({text})");
         if !m.clothes_in_act {
-            line.push_str(&format!(", wearing {}", m.wearing));
+            line.push_str(&format!(
+                ", wearing {}",
+                crate::picture::outfit_words(m.wearing)
+            ));
         }
         if !m.doing.is_empty() {
             line.push_str(&format!(", {}", m.doing));
@@ -2820,6 +2926,7 @@ mod tests {
             clothes_in_act: false,
             expression: String::new(),
             face_away: false,
+            face: None,
         }
     }
 
@@ -3441,6 +3548,7 @@ mod tests {
             clothes_in_act: false,
             expression: String::new(),
             face_away: false,
+            face: None,
         };
         let c = compile(
             &lib,
@@ -4097,16 +4205,16 @@ mod tests {
         let c = compile(&lib, "a studio", &[away], &[], Some("lens")).unwrap();
         assert!(!c.prompt.contains("smiling"), "{}", c.prompt);
         let names: Vec<&str> = c.references.iter().map(|r| r.0.as_str()).collect();
-        assert_eq!(names, ["full_body:maya", "full_body:maya", "detail:maya"]);
-        assert_eq!(c.references[0].1, c.references[1].1);
+        // The figure once: twice drew the person twice (2026-11-12).
+        assert_eq!(names, ["full_body:maya", "detail:maya"]);
         assert!(
             c.prompt.contains(
-                "The person shown in <image1> and <image2> (maya, a person with a memorable \
-                 face. Maya's anchor tattoo, left shoulder is shown close up in <image3>), \
-                 wearing a yellow raincoat, laughing. <image1> and <image2> show one person, \
-                 Maya: <image1> and <image2> are both Maya's full figure. Maya is seen from \
+                "The person shown in <image1> (maya, a person with a memorable \
+                 face. Maya's anchor tattoo, left shoulder is shown close up in <image2>), \
+                 wearing a yellow raincoat, laughing. <image1> shows one person, \
+                 Maya: Maya's full figure. Maya is seen from \
                  behind: Maya's face is turned away from the viewer and out of sight, the back \
-                 of Maya's head toward the camera. The clothing in <image1> and <image2> is not \
+                 of Maya's head toward the camera. The clothing in <image1> is not \
                  worn here."
             ),
             "{}",
@@ -4297,6 +4405,23 @@ mod tests {
             .contains("shorten the scene"));
     }
 
+    /// The owner's character is set from an approved character only, read
+    /// back while it stays one, and cleared to none.
+    #[test]
+    fn the_owner_is_an_approved_character_or_none() {
+        let dir = scratch();
+        create(dir.path(), character("john", Origin::Owner)).unwrap();
+        assert_eq!(Library::load(dir.path()).0.owner(), None);
+        assert!(set_owner(dir.path(), Some("nobody")).is_err());
+        set_owner(dir.path(), Some(" John ")).unwrap();
+        assert_eq!(Library::load(dir.path()).0.owner().as_deref(), Some("john"));
+        // Gone from the library: none, never a stranger under the name.
+        std::fs::remove_dir_all(dir.path().join("characters/john")).unwrap();
+        assert_eq!(Library::load(dir.path()).0.owner(), None);
+        set_owner(dir.path(), None).unwrap();
+        assert!(!dir.path().join(OWNER_FILE).exists());
+    }
+
     /// A body whose bytes no longer match their hash is not sent; the
     /// picture still draws, from the portrait.
     #[test]
@@ -4318,11 +4443,12 @@ mod tests {
         add_reference(dir, name, RefKind::Detail, &png_of(rgb), Some(label.into())).unwrap();
     }
 
-    /// The same-seed pair's shape (§9.4, 2026-10-26): a close-up goes after
-    /// every face, is named inside its person's description, and the closing
-    /// sentence names the identity images so the mark is no one.
+    /// A close-up goes to a cast of one only: beside two people it drew an
+    /// extra person in 5 of 6 renders, and 0 of 6 without (owner,
+    /// 2026-10-29). Not sent, said in a count, and the manifest holds none.
+    /// Fails on the old compiler, which sent it after every face.
     #[test]
-    fn a_close_up_is_sent_after_every_face_and_bound_to_its_person() {
+    fn a_close_up_stays_home_beside_two_people() {
         let dir = scratch();
         create(dir.path(), character("maya", Origin::Owner)).unwrap();
         with_detail(dir.path(), "maya", [7, 1, 1], "left-forearm tattoo.");
@@ -4330,22 +4456,22 @@ mod tests {
         let lib = Library::load(dir.path()).0;
         let c = compile(&lib, "a studio", &[member("maya"), member("jo")], &[], None).unwrap();
         let names: Vec<&str> = c.references.iter().map(|r| r.0.as_str()).collect();
-        assert_eq!(names, ["maya", "jo", "detail:maya"]);
-        assert_eq!(
-            c.prompt,
-            "a studio. From left to right: the person from <image1> (maya, a person with a \
-             memorable face. Maya's left-forearm tattoo is shown close up in <image3>), wearing \
-             a yellow raincoat, laughing; the person from <image2> (jo, a person with a \
-             memorable face), wearing a yellow raincoat, laughing. Exactly two people are in \
-             the foreground, Maya and Jo, each exactly once; anyone in the background is a \
-             stranger, not from any image. <image1> and <image2> serve as identity sources \
-             only. <image3> shows only Maya's left-forearm tattoo, not a person: it is kept \
-             exactly where it is, and nowhere else."
+        assert_eq!(names, ["maya", "jo"]);
+        assert!(!c.prompt.contains("close up"), "{}", c.prompt);
+        assert!(
+            c.prompt
+                .contains("All images serve as identity sources only."),
+            "{}",
+            c.prompt
         );
-        assert!(c.notes.is_empty(), "{:?}", c.notes);
-        let maya = lib.get(Kind::Character, "maya").unwrap();
-        assert_eq!(c.used[0].details, [maya.references[0].blob.clone()]);
-        assert!(c.used[1].details.is_empty());
+        assert_eq!(
+            c.notes,
+            [
+                "One close-up reference was not sent: they go only to a picture of one person, \
+              and this one has two."
+            ]
+        );
+        assert!(c.used.iter().all(|u| u.details.is_empty()));
     }
 
     /// One person with a close-up is no longer "the image": the portrait is
@@ -4471,13 +4597,15 @@ mod tests {
         let scene = "a".repeat(MAX_COMPILED_PROMPT - 10 - (base - 1));
         let c = compile(&lib, &scene, &two, &[], None).unwrap();
         assert_eq!(c.references.len(), 2);
+        // Beside two people the close-up stays home on its own rule, so the
+        // cap's fallback has nothing to take off; both notes still say why.
         assert_eq!(
             c.notes,
             [
                 "Full-figure references were not sent: they go only to a picture of one person, \
                  and this one has two.",
-                "Close-up references were not sent: the prompt would run over its limit with \
-                 them."
+                "One close-up reference was not sent: they go only to a picture of one person, \
+                 and this one has two."
             ]
         );
     }
@@ -4536,10 +4664,10 @@ mod tests {
         );
     }
 
-    /// Two people and an extra: the head count binds the cast to their
-    /// numbered portraits too, so the mark is no one (review of #748, pass 3).
+    /// Two people and an extra: the close-up stays home, so the head count
+    /// is the measured one with no mark among the images.
     #[test]
-    fn a_close_up_beside_two_people_and_an_extra_binds_by_number() {
+    fn a_close_up_beside_two_people_and_an_extra_stays_home() {
         let dir = scratch();
         create(dir.path(), character("maya", Origin::Owner)).unwrap();
         with_detail(dir.path(), "maya", [7, 11, 1], "tattoo");
@@ -4556,13 +4684,13 @@ mod tests {
         .unwrap();
         assert!(
             c.prompt.contains(
-                "Exactly three people in the image: the two from <image1> and <image2>, each \
-                 exactly once, and one new person not from any image."
+                "Exactly three people in the image: the two from the images, each exactly \
+                 once, and one new person not from any image."
             ),
             "{}",
             c.prompt
         );
-        assert!(!c.prompt.contains("from the images"), "{}", c.prompt);
+        assert_eq!(c.references.len(), 2);
     }
 
     /// A hand-edited close-up with no label has nothing to bind it by: not

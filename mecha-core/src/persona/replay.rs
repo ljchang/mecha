@@ -68,6 +68,10 @@ pub struct Branch {
     /// A branch inside the turn's run, after the batch holding its `n`th
     /// tool call (1-based): [`branch_at_call`].
     pub call: Option<usize>,
+    /// The turn was sent from the picture edit panel: the harness drew its
+    /// change and no scene reader was stamped for it, so a replay of it
+    /// stamps none either (`persona::turn::Turn::panel`).
+    pub panel: bool,
 }
 
 /// The calendar reference recorded for the run that a turn at `index` began:
@@ -299,6 +303,36 @@ pub fn owner_turns(path: &Path, text: &str) -> Result<Vec<OwnerTurn>> {
 /// The transcript at the owner turn on record line `line` (1-based, blank
 /// lines not counted), as the turn's run started from it.
 pub fn branch_at(path: &Path, text: &str, line: usize) -> Result<Branch> {
+    branch(path, text, line, false)
+}
+
+/// [`branch_at`], also for a picture-panel turn: for a replay that runs the
+/// change the harness drew there again through the tool (`--run-call`),
+/// which is the one thing about such a turn a replay can redo. The
+/// persona's reply to it is still not sampled.
+pub fn branch_at_panel(path: &Path, text: &str, line: usize) -> Result<Branch> {
+    branch(path, text, line, true)
+}
+
+/// The call a picture-panel turn's harness drew, from the fact it recorded:
+/// a scene change (`edit::fact_call`) or a painted edit that drew
+/// (`edit::fact_painted_call`). `None` where `line` is not such a turn or
+/// its change was neither.
+pub fn panel_call(text: &str, line: usize) -> Option<Value> {
+    let lines = non_empty(text);
+    let index = line.checked_sub(1)?;
+    if !is_panel_turn(&lines, index) {
+        return None;
+    }
+    let v: Value = serde_json::from_str(lines.get(index + 1)?).ok()?;
+    v.get("blocks")?
+        .as_array()?
+        .iter()
+        .filter_map(|b| b.get("text").and_then(Value::as_str))
+        .find_map(|t| super::edit::fact_call(t).or_else(|| super::edit::fact_painted_call(t)))
+}
+
+fn branch(path: &Path, text: &str, line: usize, panel: bool) -> Result<Branch> {
     let lines = non_empty(text);
     if line == 0 || line > lines.len() {
         bail!(
@@ -326,10 +360,11 @@ pub fn branch_at(path: &Path, text: &str, line: usize) -> Result<Branch> {
             path.display()
         ),
     }
-    if is_panel_turn(&lines, index) {
+    if is_panel_turn(&lines, index) && !panel {
         bail!(
             "record line {line} is a picture-panel turn: the harness drew its change \
-             before the persona replied, and replay does not redraw it yet"
+             before the persona replied. `--run-call 1` draws that change again; the \
+             reply is not sampled"
         );
     }
     let prefix = lines[..=index].join("\n");
@@ -347,6 +382,7 @@ pub fn branch_at(path: &Path, text: &str, line: usize) -> Result<Branch> {
     taint.arm_for_notes(&notes);
     Ok(Branch {
         call: None,
+        panel: is_panel_turn(&lines, index),
         calendar: calendar_after(&lines, index),
         line,
         spoken: notes.iter().any(|n| super::call::is_note(n)),
@@ -365,6 +401,22 @@ pub fn branch_at(path: &Path, text: &str, line: usize) -> Result<Branch> {
 /// [`branch_at_call`] is, where the run rewrote its history: the call found
 /// past the turn's opening messages would be another call's (review of #626).
 pub fn recorded_call(path: &Path, text: &str, line: usize, call: usize) -> Result<(String, Value)> {
+    // A panel turn's one call is the change the harness drew, which no
+    // model wrote and no `ToolUse` holds.
+    let lines = non_empty(text);
+    if line >= 1 && is_panel_turn(&lines, line - 1) {
+        if call != 1 {
+            bail!("a picture-panel turn drew one change: --run-call 1");
+        }
+        let input = panel_call(text, line).with_context(|| {
+            format!(
+                "the panel turn at line {line} drew no scene change and no painted edit (a \
+                 redraw, a retouch in words, or one not understood or not drawn), so there is \
+                 no call to run again"
+            )
+        })?;
+        return Ok(("image_generate".to_string(), input));
+    }
     let (_, run, start) = run_at_call(path, text, line, call)?;
     let mut seen = 0;
     for m in &run.convo.messages[start..] {
@@ -1509,6 +1561,80 @@ mod tests {
         }
         let err = branch_at(path, &text, 10).unwrap_err();
         assert!(format!("{err:#}").contains("no run followed"), "{err:#}");
+    }
+
+    /// A picture-panel turn has one thing a replay can redo: the change the
+    /// harness drew, read back from the fact it recorded. `--run-call 1`
+    /// runs it; without it the turn is still refused, since its reply is not
+    /// sampled; and a panel turn that drew no scene change has no call.
+    #[test]
+    fn a_panel_turns_drawn_change_is_the_call_a_replay_runs() {
+        use crate::session::{Record, SessionMeta};
+        let meta: SessionMeta = serde_json::from_value(json!({
+            "id": "t1", "created_at": "2026-10-09T00:00:00Z", "provider": "local",
+            "model": "m", "workspace": "/tmp"
+        }))
+        .unwrap();
+        let panel = |change: &str| {
+            [
+                Record::Meta(meta.clone()),
+                Record::Message(Message::user("draw the shed")),
+                Record::Message(Message::assistant(vec![Block::text("Drawn.")])),
+                Record::Message(Message::user("closer, from the side")),
+                Record::Extend {
+                    index: 2,
+                    blocks: vec![Block::text(crate::persona::edit::fact(
+                        "images/a.png",
+                        change,
+                        "image: images/b.png",
+                    ))],
+                },
+                Record::Message(Message::assistant(vec![Block::text("There.")])),
+            ]
+            .iter()
+            .map(|r| serde_json::to_string(r).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+        };
+        let path = Path::new("t1.jsonl");
+        let text = panel(r#"{"camera":"closer, from the side"}"#);
+        let turns = owner_turns(path, &text).unwrap();
+        assert!(turns.iter().any(|t| t.line == 4 && t.panel));
+
+        let why = format!("{:#}", branch_at(path, &text, 4).unwrap_err());
+        assert!(
+            why.contains("`--run-call 1` draws that change again"),
+            "{why}"
+        );
+        let b = branch_at_panel(path, &text, 4).unwrap();
+        assert!(b.panel, "a replay of it stamps no scene reader");
+        assert!(!branch_at_panel(path, &text, 2).unwrap().panel);
+        assert_eq!(b.owner, "closer, from the side");
+        assert_eq!(
+            b.messages.len(),
+            3,
+            "the panel's own message, nothing after"
+        );
+        assert_eq!(
+            recorded_call(path, &text, 4, 1).unwrap(),
+            (
+                "image_generate".to_string(),
+                json!({"picture": "images/a.png", "scene": {"camera": "closer, from the side"}})
+            )
+        );
+        let why = format!("{:#}", recorded_call(path, &text, 4, 2).unwrap_err());
+        assert!(why.contains("drew one change"), "{why}");
+        // An ordinary turn is the same under either door.
+        assert_eq!(
+            branch_at_panel(path, &text, 2).unwrap().owner,
+            "draw the shed"
+        );
+        assert_eq!(panel_call(&text, 2), None);
+
+        // A retouch, a redraw, a change not understood: no scene change.
+        let text = panel("retouch: a tidier shelf");
+        let why = format!("{:#}", recorded_call(path, &text, 4, 1).unwrap_err());
+        assert!(why.contains("drew no scene change"), "{why}");
     }
 
     #[test]
