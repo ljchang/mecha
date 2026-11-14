@@ -747,10 +747,19 @@ impl Store {
     }
 }
 
+/// The words an ask is known by: long enough, and not one of the words
+/// any two asks share (`persona::memory::STOPWORDS`, the list the persona
+/// recall uses for the same reason). Without the list "write to the office
+/// about the berth" and "write a note about dinner" were alike on `write`
+/// and `about`, and a hand-over on a likeness that is not one costs the
+/// chat a `private` mark for nothing.
 fn words(text: &str) -> BTreeSet<String> {
     text.split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.chars().count() >= WORD_CHARS)
         .map(str::to_lowercase)
+        .filter(|w| {
+            w.chars().count() >= WORD_CHARS
+                && !crate::persona::memory::STOPWORDS.contains(&w.as_str())
+        })
         .collect()
 }
 
@@ -1479,6 +1488,23 @@ mod tests {
             None
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Two asks are alike on words that say what they are about, never on
+    /// the words any two asks share.
+    #[test]
+    fn asks_that_share_only_common_words_are_not_alike() {
+        let judged = || {
+            vec![failure(
+                "write to the harbour office about the berth",
+                Source::Reject,
+                &[],
+                Some("too formal"),
+            )]
+        };
+        assert!(Watch::new(judged(), "write a note to Mum about dinner").is_empty());
+        assert!(Watch::new(judged(), "please could you write about what they said").is_empty());
+        assert!(!Watch::new(judged(), "write to the harbour pilots about the berth").is_empty());
     }
 
     #[test]

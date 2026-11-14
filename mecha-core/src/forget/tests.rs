@@ -184,6 +184,18 @@ fn seeded(home: &Path) -> Roots {
     write(&l.join("validation-attempts.jsonl"), &format!(
         "{{\"reflexion_id\":\"refl-gone\",\"arms\":[{{\"text\":\"{CANARY}\"}}]}}\n{{\"reflexion_id\":\"refl-kept\",\"arms\":[]}}\n"
     ));
+    // Corrections (`attempts`): an attempt and the owner's verdict on it in
+    // the conversation being forgotten, an attempt in the one that is not,
+    // and the record of the first having been handed to the second.
+    write(
+        &home.join("attempts/attempts.jsonl"),
+        &format!(
+            "{{\"attempt\":{{\"key\":\"k-gone\",\"session\":\"{GONE}\",\"turn\":0,\"when\":\"t\",\"asked\":\"{CANARY}\",\"calls\":[]}}}}\n\
+             {{\"verdict\":{{\"key\":\"k-gone\",\"session\":\"{GONE}\",\"turn\":0,\"good\":false,\"source\":\"steer\",\"why\":\"{CANARY}\",\"about\":\"message:2\",\"when\":\"t\"}}}}\n\
+             {{\"attempt\":{{\"key\":\"k-kept\",\"session\":\"{KEPT}\",\"turn\":0,\"when\":\"t\",\"asked\":\"an ordinary ask\",\"calls\":[]}}}}\n\
+             {{\"handed\":{{\"to_session\":\"{KEPT}\",\"key\":\"k-gone\",\"session\":\"{GONE}\",\"turn\":0,\"about\":\"message:2\",\"at\":\"retraced\",\"when\":\"t\"}}}}\n"
+        ),
+    );
     // Artifact-task probe receipts (`probe.rs`): one per repeat, naming the
     // session replayed and the reflection measured.
     write(
@@ -374,6 +386,7 @@ fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
         ("learning/mined_outbox.jsonl", "item-kept"),
         ("learning/validations.jsonl", "refl-kept"),
         ("learning/validation-attempts.jsonl", "refl-kept"),
+        ("attempts/attempts.jsonl", "an ordinary ask"),
         ("learning/reflector_replies.jsonl", "refl-kept"),
         ("learning/artifact-probes/a-kept.json", "refl-kept"),
         (

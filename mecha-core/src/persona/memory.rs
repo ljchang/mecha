@@ -774,7 +774,7 @@ pub struct Recollection {
 /// whole chat untrusted for good (review of #481). A short list on purpose:
 /// what matters is that no common word can be the only thing two texts
 /// share.
-const STOPWORDS: &[&str] = &[
+pub(crate) const STOPWORDS: &[&str] = &[
     "the", "and", "for", "are", "but", "not", "you", "your", "yours", "all", "any", "can", "had",
     "has", "have", "her", "hers", "him", "his", "how", "its", "may", "our", "ours", "out", "she",
     "they", "them", "their", "theirs", "this", "that", "these", "those", "was", "were", "what",
