@@ -476,6 +476,7 @@ setup` asks about it. `mecha features enable <id>` writes `true` in place; a
 # system = false     # the assistant reads this machine's state (system_read)
 # code = false       # programs over tool results (code)
 # memory = false     # the assistant's own encrypted memory of its runs
+# corrections = false  # drafts you changed or rejected and steers, recalled on a like ask
 ```
 
 `mail_rules` requires `mail` and defaults off. With either switch off, the

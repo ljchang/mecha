@@ -50,6 +50,7 @@ pub mod anticipation;
 pub mod appraisal;
 pub mod appraisal_store;
 pub mod archive;
+pub mod attempts;
 pub mod attribution;
 pub mod backlog;
 pub mod batch;

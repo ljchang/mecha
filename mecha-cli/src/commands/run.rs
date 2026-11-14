@@ -832,6 +832,7 @@ pub async fn execute(
     if let Some(text) = concepts_cue {
         cx.cue_on_success.push(mecha_core::agent::SuccessCue {
             text,
+            private: false,
             stem: mecha_core::tool::concepts::CUE_STEM.into(),
         });
     }
@@ -839,6 +840,7 @@ pub async fn execute(
     if let Some(text) = failures_cue {
         cx.cue_on_success.push(mecha_core::agent::SuccessCue {
             text,
+            private: false,
             stem: mecha_core::tool::episodes::RETRACED_STEM.into(),
         });
     }

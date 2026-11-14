@@ -97,6 +97,36 @@ impl Finding {
     }
 }
 
+/// The corrections file (`attempts`): one that cannot be read hands nothing
+/// to any run and says so nowhere else, and a line that cannot be read is a
+/// verdict or an attempt silently missing. A file that is not there is the
+/// ordinary state of a home that never switched the feature on.
+pub fn check_corrections(home: &Path) -> Vec<Finding> {
+    let store = crate::attempts::Store::in_home(home);
+    match store.load() {
+        Err(e) => vec![Finding::unreadable(
+            "corrections",
+            "the corrections file",
+            format!("{e:#}"),
+        )],
+        Ok(kept) if kept.unreadable > 0 => vec![Finding {
+            component: "corrections".to_string(),
+            severity: Severity::Attention,
+            summary: format!(
+                "{} line(s) of the corrections file could not be read",
+                kept.unreadable
+            ),
+            detail: format!(
+                "{}: each is an attempt, a verdict or a hand-over that no run will be told \
+                 about. A line written by a newer build reads this way too.",
+                store.path().display()
+            ),
+            remedy: None,
+        }],
+        Ok(_) => Vec::new(),
+    }
+}
+
 /// A pending draft older than this with no error has most likely been
 /// forgotten rather than deliberately parked — unless the owner's charter
 /// says otherwise; see [`Patience`].
@@ -557,6 +587,7 @@ pub fn examine_with(home: &Path, mail: &MailStores, now: DateTime<Utc>) -> Vec<F
         now,
     ));
     findings.extend(check_charter(&home.join("charter.toml")));
+    findings.extend(check_corrections(home));
     findings.extend(check_runs(&home.join("sessions"), charter));
     findings.extend(check_unfinished_forgets(&home.join("sessions")));
     findings.extend(check_harness(&home.join("learning").join("harness"), now));
@@ -3327,6 +3358,35 @@ fn render_age(now: DateTime<Utc>, stamp: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A corrections file that is not there is a home that never used the
+    /// feature; one with a line that cannot be read is a finding, and so is
+    /// one that cannot be read at all.
+    #[test]
+    fn an_unreadable_corrections_line_or_file_is_a_finding_and_no_file_is_none() {
+        let home = std::env::temp_dir().join(format!("mecha-doctor-{}", uuid::Uuid::new_v4()));
+        assert!(check_corrections(&home).is_empty());
+        let store = crate::attempts::Store::in_home(&home);
+        std::fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        std::fs::write(store.path(), "not json\n").unwrap();
+        let found = check_corrections(&home);
+        assert_eq!(found.len(), 1);
+        assert!(
+            found[0].summary.starts_with("1 line(s)"),
+            "{}",
+            found[0].summary
+        );
+        // A directory where the file should be cannot be read at all.
+        std::fs::remove_file(store.path()).unwrap();
+        std::fs::create_dir_all(store.path()).unwrap();
+        let found = check_corrections(&home);
+        assert!(
+            found[0].summary.starts_with("store unreadable"),
+            "{}",
+            found[0].summary
+        );
+        std::fs::remove_dir_all(home).unwrap();
+    }
     use crate::agent::Taint;
 
     /// Every test's temporary home holds the mail crate's stores too, at the

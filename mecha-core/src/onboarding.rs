@@ -1079,6 +1079,11 @@ pub fn blurb(f: crate::feature::Feature) -> &'static str {
             "The assistant's own memory: what its runs did and observed, kept in an encrypted \
              store on this machine and recalled when a later task needs it."
         }
+        Feature::Corrections => {
+            "Learning from what you do with the assistant's work: a draft you changed or \
+             rejected, a time you stepped in. Kept on this machine, and brought up when a \
+             later ask in the web chat goes the same way. You are never asked for a reason."
+        }
         // Parts are summarised under their parent and never stepped alone.
         Feature::Incognito
         | Feature::Tasks
@@ -2267,6 +2272,7 @@ mod tests {
                 "system",
                 "code",
                 "memory",
+                "corrections",
                 "charter"
             ]
             .into_iter()
