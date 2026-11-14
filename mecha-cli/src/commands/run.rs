@@ -6,6 +6,9 @@ use mecha_core::message::{Message, StopReason};
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
 use std::io::{IsTerminal, Read};
 
+#[cfg(feature = "memory-prototype")]
+use mecha_core::memory_session::{SessionMemory, SessionMemoryReport};
+
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// The task. Omit it, or pass `-`, to read from stdin.
@@ -31,6 +34,40 @@ pub struct Args {
     /// Overrides the saved anchor when resuming; omission preserves it.
     #[arg(long, value_name = "KIND:ID")]
     pub goal: Option<mecha_core::goal::GoalRef>,
+
+    /// Capture and recall ordinary session observations using a private owner request.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(
+        long, value_name = "REQUEST_JSON",
+        requires = "goal",
+        conflicts_with_all = ["resume", "no_session", "images", "mismatch_case", "memory_context"]
+    )]
+    pub episodic_memory: Option<std::path::PathBuf>,
+
+    /// Read-only synthetic memory for goal_context (experimental, unencrypted).
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires_all = ["memory_synthetic", "memory_domain", "memory_account", "memory_scope", "goal"], conflicts_with = "mismatch_case")]
+    pub memory_context: Option<std::path::PathBuf>,
+
+    /// Acknowledge the selected memory database contains synthetic data only.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires = "memory_context")]
+    pub memory_synthetic: bool,
+
+    /// Explicit host-owned security domain for the prototype database.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires = "memory_context")]
+    pub memory_domain: Option<String>,
+
+    /// Retrieve only this source account.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires = "memory_context")]
+    pub memory_account: Option<String>,
+
+    /// Authorized synthetic source scope. Repeat for additional scopes.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires = "memory_context")]
+    pub memory_scope: Vec<String>,
 
     /// Owner-authored commitment/check evidence for this invocation's confirmed goal.
     /// Observation by default; agent.goal_guidance enables fixed advice.
@@ -102,9 +139,122 @@ pub(crate) fn seed_goal_anchor(
     Ok(())
 }
 
-pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
+#[cfg(feature = "memory-prototype")]
+pub(crate) struct OrdinaryMemory {
+    memory: SessionMemory,
+    prompt: String,
+}
+
+/// The manifest and owner profile are checked before router holds or observations.
+#[cfg(feature = "memory-prototype")]
+pub(crate) fn preflight_memory(
+    global: &mut GlobalOpts,
+    args: &Args,
+) -> Result<Option<OrdinaryMemory>> {
+    let Some(path) = &args.episodic_memory else {
+        return Ok(None);
+    };
+    let memory = super::memory_profile::open_run_profile(global, path)?;
+    let prompt = read_prompt(args.prompt.as_deref())?;
+    anyhow::ensure!(
+        !prompt.trim().is_empty() && prompt.len() <= 65_536,
+        "ordinary memory requires a nonempty prompt of at most 64 KiB"
+    );
+    Ok(Some(OrdinaryMemory { memory, prompt }))
+}
+
+#[cfg(feature = "memory-prototype")]
+fn print_memory_status(report: &SessionMemoryReport) {
+    use mecha_core::memory_session::SessionMemoryStatus;
+    let status = match report.status {
+        SessionMemoryStatus::Retained => "retained",
+        SessionMemoryStatus::Unavailable => "unavailable",
+        SessionMemoryStatus::Pending => "pending",
+        SessionMemoryStatus::Forgotten => "forgotten",
+    };
+    eprintln!("mecha: episodic memory {status} (run {})", report.run_id);
+}
+
+/// Pure flag checks precede transcript discovery, configuration and provider
+/// startup. Keep the execute call too, for callers that bypass main dispatch.
+pub(crate) fn preflight_start(global: &GlobalOpts, args: &Args) -> Result<bool> {
+    anyhow::ensure!(
+        !global.dynamic_goals,
+        "--dynamic-goals is supported by interactive chat, tui and assistant serve; one-shot run retains its fixed-goal contract"
+    );
+    // A driven run is a fresh one-shot, and recorded (`docs/DRIVER-DESIGN.md`
+    // §6, D1b). `--resume` would register `recall` straight into the
+    // registry with no narrowing consulted, and a second attempt at a task
+    // is a fresh run; `--no-session` would leave nowhere to record what the
+    // mark forced, and an unrecorded driven run is one D4 cannot attribute.
+    let driven = mecha_core::driven::marked();
+    if driven {
+        anyhow::ensure!(
+            args.resume.is_none(),
+            "a driven run is a fresh one-shot and never resumes; run the task again instead"
+        );
+        anyhow::ensure!(
+            !args.no_session,
+            "a driven run is recorded: what it forced lives on its session"
+        );
+    }
+    Ok(driven)
+}
+
+pub async fn execute(
+    global: &GlobalOpts,
+    args: Args,
+    #[cfg(feature = "memory-prototype")] ordinary_memory: Option<OrdinaryMemory>,
+) -> Result<()> {
+    let driven = preflight_start(global, &args)?;
+    #[cfg(feature = "memory-prototype")]
+    let (ordinary_memory, prompt) = match ordinary_memory {
+        Some(OrdinaryMemory { memory, prompt }) => (Some(memory), prompt),
+        None => (None, read_prompt(args.prompt.as_deref())?),
+    };
+    #[cfg(not(feature = "memory-prototype"))]
     let prompt = read_prompt(args.prompt.as_deref())?;
     anyhow::ensure!(!prompt.trim().is_empty(), "no prompt given");
+
+    // Validate the owner-supplied path/scope before provider/setup work. No
+    // database path, scope or snapshot is exposed in the tool's input schema.
+    #[cfg(feature = "memory-prototype")]
+    let memory_context = args
+        .memory_context
+        .as_ref()
+        .map(|path| {
+            use mecha_core::{
+                memory::{context::Situation, Access},
+                tool::goal_memory::GoalMemory,
+            };
+            anyhow::ensure!(
+                args.memory_synthetic,
+                "memory context requires synthetic-data acknowledgement"
+            );
+            GoalMemory::open(
+                path,
+                Access {
+                    domain: args
+                        .memory_domain
+                        .clone()
+                        .context("memory domain required")?,
+                    scopes: args.memory_scope.iter().cloned().collect(),
+                },
+                args.memory_account
+                    .clone()
+                    .context("memory account required")?,
+                Situation {
+                    event: prompt.clone(),
+                    goal: args
+                        .goal
+                        .as_ref()
+                        .context("memory context requires --goal")?
+                        .to_string(),
+                    needs: None,
+                },
+            )
+        })
+        .transpose()?;
 
     let appraisal_evidence: Option<mecha_core::anticipation::Evidence> = args
         .appraisal_evidence
@@ -122,22 +272,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Nothing can answer an approval prompt when output is being piped or
     // parsed, so those runs use the configured permission mode instead.
     let interactive = std::io::stdin().is_terminal() && !args.json;
-    // A driven run is a fresh one-shot, and recorded (`docs/DRIVER-DESIGN.md`
-    // §6, D1b). `--resume` would register `recall` straight into the
-    // registry with no narrowing consulted, and a second attempt at a task
-    // is a fresh run; `--no-session` would leave nowhere to record what the
-    // mark forced, and an unrecorded driven run is one D4 cannot attribute.
-    let driven = mecha_core::driven::marked();
-    if driven {
-        anyhow::ensure!(
-            args.resume.is_none(),
-            "a driven run is a fresh one-shot and never resumes; run the task again instead"
-        );
-        anyhow::ensure!(
-            !args.no_session,
-            "a driven run is recorded: what it forced lives on its session"
-        );
-    }
     let mut opts = GlobalOpts {
         surface: Some(mecha_core::session::SessionKind::Run),
         // The owner's `--goal`, the one this run is matched toward. A
@@ -151,6 +285,43 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         setup::force_driven(&mut opts)?;
     }
     let mut prepared = setup::prepare(&opts, interactive).await?;
+    #[cfg(feature = "memory-prototype")]
+    if let Some(memory) = &ordinary_memory {
+        let ctx = prepared.agent.context();
+        let registry = prepared.agent.registry();
+        let mut names: Vec<String> = registry.iter().map(|tool| tool.name().into()).collect();
+        // `begin` installs the recall tool under this name, over a built-in
+        // of the same name or beside the rest.
+        if !names.iter().any(|name| name == "goal_context") {
+            names.push("goal_context".into());
+        }
+        memory.validate_surface(&names, &prepared.workspace, &ctx.tools.grants.all())?;
+        if !ctx.tools.goal_lessons.is_empty()
+            || !ctx.tools.goal_examples.is_empty()
+            || ctx.tools.success_examples.is_some()
+            || ctx.tools.goal_appraisals.is_some()
+        {
+            eprintln!(
+                "mecha: episodic recall is unavailable with legacy goal evidence enabled. \
+                 Select --no-learned-rules --no-past-appraisals --no-success-examples \
+                 to run without those sources."
+            );
+        }
+    }
+    #[cfg(feature = "memory-prototype")]
+    if let Some(memory) = memory_context {
+        anyhow::ensure!(
+            prepared.agent.registry().get("goal_context").is_some(),
+            "memory context requires goal_context to be enabled in this run's tool profile"
+        );
+        // RegistryMut rebuilds code mode with the new private/external reach.
+        // Existing subagents keep their original tool; this opt-in is run-local.
+        prepared
+            .agent
+            .registry_mut()
+            .insert(std::sync::Arc::new(memory));
+    }
+
     if let Some(evidence) = appraisal_evidence {
         prepared.agent.set_appraisal_evidence(evidence)?;
     }
@@ -177,6 +348,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     if let Some(id) = &args.resume {
         let path = Session::find(&session_dir, id)?;
         let (meta, prior) = Session::load(&path)?;
+        anyhow::ensure!(
+            !prior.has_dynamic_goal_context(),
+            "resume versioned goal context with `mecha chat --dynamic-goals` or `mecha tui --dynamic-goals`; one-shot run cannot preserve its owner-input contract"
+        );
         // D15, as in the other three resume paths.
         if let Some(todo) = &prepared.todo {
             let plan = mecha_core::tool::todo::PlanKey::of(&prepared.agent.context().tools);
@@ -201,6 +376,30 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     seed_goal_anchor(&mut convo, args.goal, session.as_ref())?;
+    #[cfg(feature = "memory-prototype")]
+    let ordinary_run = ordinary_memory
+        .as_ref()
+        .map(|memory| {
+            let recorded = session
+                .as_ref()
+                .context("ordinary memory requires a recorded session")?;
+            memory
+                .validate_session_grants(recorded, &prepared.agent.context().tools.grants.all())?;
+            let run = memory.begin(
+                recorded,
+                &prompt,
+                convo
+                    .goal_anchor
+                    .as_ref()
+                    .context("ordinary memory requires a confirmed goal")?,
+            )?;
+            prepared
+                .agent
+                .registry_mut()
+                .insert(memory.goal_memory(&run)?);
+            Ok::<_, anyhow::Error>((memory, run))
+        })
+        .transpose()?;
     // Armed before the first turn: the charter rides in the system prompt,
     // where no taint sees it, and it is private data. With the leak guard
     // forced on, every send is then refused for the whole run (D1b).
@@ -243,10 +442,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             route.set_session_id(&s.meta.id);
         }
         // One-shots are their own producer, `run` — addressable, though
-        // rarely addressed. `run` does not set `global_config_only`, so its
-        // resolved inbound default is Hold whether stdin is a terminal or a
-        // pipe: a scripted `run --json` must not fold a stray message into a
-        // task it has nothing to do with. Only the trigger runner accepts.
+        // rarely addressed. A remembered run takes deliveries like any
+        // other: the recorder leaves a delivered message out of the capture
+        // and the recorded taint decides what that costs.
         if let Some(mb) = &prepared.mailbox {
             mb.attach("run", &s.meta.id);
         }
@@ -286,6 +484,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         content.extend(images);
         Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: mecha_core::message::Role::User,
@@ -372,6 +571,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         s.append(&Record::Taint(convo.taint))?;
     }
 
+    #[cfg(feature = "memory-prototype")]
+    if result.is_err() {
+        if let Some((memory, run)) = &ordinary_run {
+            // There is no native Outcome on a provider error. The ordinary
+            // recorder refuses the incomplete source and keeps its run identity.
+            print_memory_status(&memory.finish(run));
+        }
+    }
     let outcome = result?;
     if let Some(s) = &session {
         if let Some(case) = &mismatch_case {
@@ -395,6 +602,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
     }
 
+    #[cfg(feature = "memory-prototype")]
+    let memory_report = ordinary_run.map(|(memory, run)| memory.finish(&run));
+
     if args.json {
         let value = result_json(
             &outcome,
@@ -402,9 +612,24 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             &prepared.provider_name,
             session.as_ref().map(|s| s.meta.id.as_str()),
         );
+        #[cfg(feature = "memory-prototype")]
+        let value = if let Some(report) = &memory_report {
+            let mut value = value;
+            value["memory"] = serde_json::to_value(report)?;
+            value
+        } else {
+            value
+        };
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else if args.no_stream {
         println!("{}", outcome.text);
+    }
+
+    #[cfg(feature = "memory-prototype")]
+    if !args.json {
+        if let Some(report) = &memory_report {
+            print_memory_status(report);
+        }
     }
 
     if !quiet && !args.json {
@@ -545,6 +770,47 @@ mod tests {
     use mecha_core::agent::{RunOutcome, StopCause};
     use mecha_core::message::{Refusal, Usage};
     use mecha_core::StopReason;
+
+    #[cfg(feature = "memory-prototype")]
+    #[test]
+    fn memory_context_requires_explicit_synthetic_scope_and_goal() {
+        use clap::Parser;
+        let args = [
+            "mecha",
+            "run",
+            "launch",
+            "--memory-context",
+            "/tmp/x.memory-prototype.sqlite",
+            "--memory-synthetic",
+            "--memory-domain",
+            "test",
+            "--memory-account",
+            "synthetic",
+            "--memory-scope",
+            "chat",
+            "--goal",
+            "task:launch",
+        ];
+        assert!(crate::Cli::try_parse_from(args).is_ok());
+        for flag in [
+            "--memory-synthetic",
+            "--memory-domain",
+            "--memory-account",
+            "--memory-scope",
+            "--goal",
+        ] {
+            let mut missing = args.to_vec();
+            let at = missing.iter().position(|a| *a == flag).unwrap();
+            missing.remove(at);
+            if flag != "--memory-synthetic" {
+                missing.remove(at);
+            }
+            assert!(crate::Cli::try_parse_from(missing).is_err(), "{flag}");
+        }
+        assert!(
+            crate::Cli::try_parse_from(["mecha", "run", "launch", "--memory-synthetic"]).is_err()
+        );
+    }
 
     #[test]
     fn guidance_opt_out_is_global_like_other_execution_switches() {

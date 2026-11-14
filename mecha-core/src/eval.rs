@@ -2170,6 +2170,7 @@ mod grounding_tests {
                 Block::text("private-thinking"),
             ],
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
         }];
@@ -2203,6 +2204,7 @@ mod grounding_tests {
                 is_error: false,
             }],
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
         }];

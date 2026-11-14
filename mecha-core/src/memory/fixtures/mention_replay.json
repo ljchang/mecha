@@ -1,0 +1,164 @@
+{
+  "source_report_sha256": "8f3a2ba4594c661b44e4c51212136cbeeb655b0c9743ce6512a290e79f78f5fc",
+  "source_protocol": "evidence-hop-v1",
+  "fixture_sha256": "07b967eb940ce162b21ad83c3f68bdc0ff7496190636953a6c3feb0ac2df5c83",
+  "annotation": "Manual diagnostic bindings for named alternatives visible in initial evidence and saved query; other searches unchanged. Not automatic entity extraction.",
+  "plans": [
+    {
+      "case_id": "lumen-quiet",
+      "queries": [
+        {
+          "text": "Vireo room noise level",
+          "mention": "Vireo"
+        },
+        {
+          "text": "Rill room noise level",
+          "mention": "Rill"
+        }
+      ]
+    },
+    {
+      "case_id": "lumen-capacity",
+      "queries": [
+        {
+          "text": "Vireo room capacity",
+          "mention": "Vireo"
+        },
+        {
+          "text": "Rill room capacity",
+          "mention": "Rill"
+        }
+      ]
+    },
+    {
+      "case_id": "watershed-bacteria",
+      "queries": [
+        {
+          "text": "Noma cartridge bacteria removal",
+          "mention": "Noma"
+        },
+        {
+          "text": "Tavi cartridge bacteria removal",
+          "mention": "Tavi"
+        }
+      ]
+    },
+    {
+      "case_id": "watershed-salts",
+      "queries": [
+        {
+          "text": "Noma cartridge dissolved salts",
+          "mention": "Noma"
+        },
+        {
+          "text": "Tavi cartridge dissolved salts",
+          "mention": "Tavi"
+        }
+      ]
+    },
+    {
+      "case_id": "lyra-local",
+      "queries": [
+        {
+          "text": "Ilex pipeline specifications",
+          "mention": "Ilex"
+        },
+        {
+          "text": "Quill pipeline specifications",
+          "mention": "Quill"
+        }
+      ]
+    },
+    {
+      "case_id": "lyra-fast",
+      "queries": [
+        {
+          "text": "Ilex pipeline status",
+          "mention": "Ilex"
+        },
+        {
+          "text": "Quill pipeline status",
+          "mention": "Quill"
+        }
+      ]
+    },
+    {
+      "case_id": "cinder-prerequisite",
+      "queries": [
+        {
+          "text": "P4 calibration status",
+          "mention": null
+        },
+        {
+          "text": "P4 shipping checklist",
+          "mention": null
+        }
+      ]
+    },
+    {
+      "case_id": "cinder-owner",
+      "queries": [
+        {
+          "text": "Cinder P4 release owner",
+          "mention": null
+        },
+        {
+          "text": "Soren P4 release ownership",
+          "mention": null
+        }
+      ]
+    },
+    {
+      "case_id": "basalt-early",
+      "queries": [
+        {
+          "text": "basalt chamber counter reading",
+          "mention": null
+        },
+        {
+          "text": "basalt completed cycles",
+          "mention": null
+        }
+      ]
+    },
+    {
+      "case_id": "basalt-late",
+      "queries": [
+        {
+          "text": "basalt chamber counter reading",
+          "mention": null
+        },
+        {
+          "text": "basalt completed cycles",
+          "mention": null
+        }
+      ]
+    },
+    {
+      "case_id": "nacre-opening",
+      "queries": [
+        {
+          "text": "Nacre studio opening time",
+          "mention": null
+        },
+        {
+          "text": "Nacre studio business hours",
+          "mention": null
+        }
+      ]
+    },
+    {
+      "case_id": "nacre-technician",
+      "queries": [
+        {
+          "text": "Nacre maintenance visit technician",
+          "mention": null
+        },
+        {
+          "text": "Nacre scheduled technician",
+          "mention": null
+        }
+      ]
+    }
+  ]
+}

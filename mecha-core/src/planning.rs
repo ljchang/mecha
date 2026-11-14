@@ -1749,3 +1749,138 @@ mod success_example_tests {
         assert!(!seq.contains("path"), "never an argument: {seq}");
     }
 }
+
+/// The exact request decision and context version published by the host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoalDecisionStamp {
+    pub(crate) decision_digest: String,
+    pub(crate) version_digest: String,
+    pub(crate) version: u64,
+}
+impl GoalDecisionStamp {
+    pub(crate) fn capture(
+        binding: &crate::goal_context::DecisionBinding,
+        version: &crate::goal_context::ContextVersion,
+    ) -> anyhow::Result<Self> {
+        use sha2::{Digest, Sha256};
+        binding.validate()?;
+        version.validate()?;
+        anyhow::ensure!(
+            binding.version() == version.revision(),
+            "goal decision/version mismatch"
+        );
+        Ok(Self {
+            decision_digest: Sha256::digest(serde_json::to_string(binding)?.as_bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+            version_digest: Sha256::digest(serde_json::to_string(version)?.as_bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+            version: version.revision(),
+        })
+    }
+}
+
+/// Strict runtime crossing for durable feedback. Lenient historical readers do
+/// not establish this profile's evidence or permit executable checks.
+pub(crate) fn durable_feedback(text: &str, call_id: &str) -> anyhow::Result<Feedback> {
+    anyhow::ensure!(text.len() <= 65536, "plan feedback exceeds bound");
+    let feedback: Feedback = serde_json::from_str(text)?;
+    anyhow::ensure!(
+        serde_json::to_string(&feedback)? == text,
+        "noncanonical plan feedback"
+    );
+    anyhow::ensure!(
+        feedback.decisions.len() == 1 && feedback.steps.len() <= 32,
+        "plan feedback shape"
+    );
+    anyhow::ensure!(
+        feedback
+            .steps
+            .iter()
+            .all(|s| s.call_id.as_deref() == Some(call_id)
+                && s.criterion.is_none()
+                && matches!(
+                    s.verification,
+                    Verification::NotDeclared | Verification::Skipped
+                )),
+        "unsupported durable verification"
+    );
+    Ok(feedback)
+}
+
+/// Exact partitions keep every sensor-bearing contribution attached to its
+/// original successful result, including multiple writes in one batch.
+pub(crate) fn validate_plan_results(message: &crate::message::Message) -> anyhow::Result<()> {
+    use crate::message::Block;
+    anyhow::ensure!(message.plan_results.len() <= 256, "too many plan receipts");
+    if message.plan_results.is_empty() {
+        return Ok(());
+    }
+    let feedback = message
+        .planning
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing plan feedback"))?;
+    let (mut steps, mut decisions) = (0, 0);
+    let mut previous = None;
+    let mut occurrences = std::collections::HashSet::new();
+    let mut prior_occurrence: Option<(&str, u32)> = None;
+    for audit in &message.plan_results {
+        anyhow::ensure!(
+            !audit.turn_id.is_empty()
+                && audit.turn_id.len() <= 128
+                && audit.ordinal < 256
+                && !audit.revision_id.is_empty()
+                && audit.revision_id.len() <= 256
+                && !audit.receipt_id.is_empty()
+                && audit.receipt_id.len() <= 256,
+            "invalid plan locator"
+        );
+        anyhow::ensure!(
+            prior_occurrence
+                .is_none_or(|(turn, ordinal)| turn == audit.turn_id && ordinal < audit.ordinal),
+            "unordered or mixed-turn plan occurrences"
+        );
+        prior_occurrence = Some((&audit.turn_id, audit.ordinal));
+        anyhow::ensure!(
+            occurrences.insert((&audit.turn_id, audit.ordinal)),
+            "duplicate plan occurrence"
+        );
+        anyhow::ensure!(
+            previous.is_none_or(|p| p < audit.result_index),
+            "unordered plan results"
+        );
+        let Some(Block::ToolResult {
+            tool_use_id,
+            is_error: false,
+            ..
+        }) = message.content.get(audit.result_index)
+        else {
+            anyhow::bail!("plan receipt does not name successful result")
+        };
+        anyhow::ensure!(
+            audit.steps_start == steps
+                && audit.decisions_start == decisions
+                && audit.steps_end >= steps
+                && audit.steps_end <= feedback.steps.len()
+                && audit.decisions_end == decisions + 1
+                && audit.decisions_end <= feedback.decisions.len(),
+            "nonpartitioned plan contributions"
+        );
+        let contribution = Feedback {
+            steps: feedback.steps[steps..audit.steps_end].to_vec(),
+            decisions: feedback.decisions[decisions..audit.decisions_end].to_vec(),
+        };
+        durable_feedback(&serde_json::to_string(&contribution)?, tool_use_id)?;
+        steps = audit.steps_end;
+        decisions = audit.decisions_end;
+        previous = Some(audit.result_index);
+    }
+    anyhow::ensure!(
+        steps == feedback.steps.len() && decisions == feedback.decisions.len(),
+        "unassociated planning feedback"
+    );
+    Ok(())
+}

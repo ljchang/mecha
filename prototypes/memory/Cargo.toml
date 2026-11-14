@@ -1,0 +1,28 @@
+[package]
+name = "mecha-memory-prototype"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Independent qualification harness; not part of the release workspace.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.41.1", features = ["bundled-sqlcipher-vendored-openssl", "hooks", "limits"] }
+getrandom = "0.3"
+zeroize = "1"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.11"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+
+# Shared memory tests gate core-only GoalMemory coverage on this core feature.
+# The standalone harness deliberately has no tool/runtime feature of its own.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("memory-prototype"))'] }

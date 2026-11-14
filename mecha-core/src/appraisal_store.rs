@@ -391,9 +391,19 @@ impl SessionEvidence {
             .and_then(|m| m.modified())
             .ok()
             .map(DateTime::<Utc>::from);
-        let transcript = crate::session::Session::parse(path, &text)?;
-        let ever = crate::session::Session::messages_ever(&text);
-        let programs = crate::tool::code::record::ever(&text, &transcript.meta.id);
+        Self::from_transcript_text(path, &text, ended_at)
+    }
+
+    /// Host adapters must derive digest, provenance and appraisal from one read.
+    /// This seam deliberately stays crate-private: callers cannot claim taint.
+    pub(crate) fn from_transcript_text(
+        path: &Path,
+        text: &str,
+        ended_at: Option<DateTime<Utc>>,
+    ) -> Result<(crate::session::Transcript, SessionEvidence)> {
+        let transcript = crate::session::Session::parse(path, text)?;
+        let ever = crate::session::Session::messages_ever(text);
+        let programs = crate::tool::code::record::ever(text, &transcript.meta.id);
         let mut evidence = SessionEvidence::of(&transcript, &ever, &programs);
         evidence.ended_at = ended_at;
         Ok((transcript, evidence))
@@ -667,35 +677,22 @@ impl TextAppraisal {
             &mut clipped,
         )?;
 
-        let mut grounding = Grounding {
-            offered: draft.claims.len(),
-            ..Grounding::default()
-        };
-        let mut drop = |reason: String| {
-            grounding.dropped += 1;
-            *grounding.dropped_by.entry(reason).or_default() += 1;
-        };
-        // Old index → new index, for the claims kept.
-        let mut kept_at: BTreeMap<usize, usize> = BTreeMap::new();
-        let mut claims: Vec<Claim> = Vec::new();
-        for (i, claim) in draft.claims.into_iter().enumerate() {
-            match ground(&claim, &evidence.packet) {
-                // The cap is on what is kept, not on the offered position:
-                // ungrounded claims at the head of a draft must not crowd out
-                // grounded ones behind them and be reported as `over_cap`
-                // instead of the grounding failures they are (review of #308).
-                Ok(()) if claims.len() >= MAX_CLAIMS => drop("over_cap".into()),
-                Ok(()) => {
-                    kept_at.insert(i, claims.len());
-                    claims.push(Claim {
-                        statement: claim.statement.trim().to_string(),
-                        pointer: claim.pointer,
-                        quote: claim.quote.trim().trim_matches('"').to_string(),
-                    });
+        let admission =
+            crate::interpretation::admit_claim_indices(draft.claims.len(), MAX_CLAIMS, |i| {
+                ground(&draft.claims[i], &evidence.packet)
+            });
+        let claims = admission
+            .retained
+            .iter()
+            .map(|&i| {
+                let claim = &draft.claims[i];
+                Claim {
+                    statement: claim.statement.trim().to_string(),
+                    pointer: claim.pointer.clone(),
+                    quote: claim.quote.trim().trim_matches('"').to_string(),
                 }
-                Err(reason) => drop(reason),
-            }
-        }
+            })
+            .collect();
 
         if draft.judgments.len() > MAX_JUDGMENTS {
             clipped = true;
@@ -725,21 +722,12 @@ impl TextAppraisal {
                 // (review of #308). Then renumbered to the claims kept —
                 // an index to a dropped claim is grounding's loss, already
                 // counted there, not a cut.
-                let mut seen = std::collections::BTreeSet::new();
-                let mut because = Vec::new();
-                for i in j.because {
-                    if !seen.insert(i) {
-                        clipped = true;
-                        continue;
-                    }
-                    if let Some(k) = kept_at.get(&i).copied() {
-                        if because.len() >= MAX_CLAIMS {
-                            clipped = true;
-                            break;
-                        }
-                        because.push(k);
-                    }
-                }
+                let because = crate::interpretation::remap_support(
+                    j.because,
+                    &admission,
+                    MAX_CLAIMS,
+                    &mut clipped,
+                );
                 Judgment {
                     goal,
                     bearing: j.bearing,
@@ -775,7 +763,7 @@ impl TextAppraisal {
             interpretation,
             judgments,
             claims,
-            grounding,
+            grounding: admission.grounding,
             prediction,
             // The structural half is kept even when the prose prediction is
             // empty: an expected act is a prediction on its own.

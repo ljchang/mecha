@@ -2351,12 +2351,15 @@ fn answering(answers: Vec<PassAnswer>) -> (HostCalls, Arc<Mutex<Vec<CompletionRe
 
 /// A pass answered with `text` and no reasoning.
 fn says(text: &str) -> PassAnswer {
-    PassAnswer::Answered(assistant(vec![Block::text(text)], StopReason::EndTurn))
+    PassAnswer::Answered(Box::new(assistant(
+        vec![Block::text(text)],
+        StopReason::EndTurn,
+    )))
 }
 
 /// A pass answered with `text` after reasoning, whatever it asked for.
 fn thinks(text: &str) -> PassAnswer {
-    PassAnswer::Answered(assistant(
+    PassAnswer::Answered(Box::new(assistant(
         vec![
             Block::Thinking {
                 text: "let me think".into(),
@@ -2365,7 +2368,7 @@ fn thinks(text: &str) -> PassAnswer {
             Block::text(text),
         ],
         StopReason::EndTurn,
-    ))
+    )))
 }
 
 async fn query(
@@ -2718,13 +2721,13 @@ async fn a_bad_shape_or_source_raises_before_any_pass() {
 async fn an_empty_or_refused_pass_is_named_never_read_as_an_answer() {
     let (mut run, h) = run_over_all(&["a"], HostLimits::default());
     let empty = || {
-        PassAnswer::Answered(assistant(
+        PassAnswer::Answered(Box::new(assistant(
             vec![Block::Thinking {
                 text: "on and on".into(),
                 signature: None,
             }],
             StopReason::MaxTokens,
-        ))
+        )))
     };
     let (host, _) = answering(vec![empty(), empty()]);
     let err = query(
@@ -2740,7 +2743,7 @@ async fn an_empty_or_refused_pass_is_named_never_read_as_an_answer() {
         err.starts_with("QueryError:") && err.contains("empty content"),
         "{err}"
     );
-    let refused = || PassAnswer::Answered(assistant(vec![], StopReason::Refusal));
+    let refused = || PassAnswer::Answered(Box::new(assistant(vec![], StopReason::Refusal)));
     let (host, _) = answering(vec![refused(), refused()]);
     let err = query(
         &mut run,

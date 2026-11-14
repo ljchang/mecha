@@ -13,6 +13,38 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+/// Retain a fully decoded discriminator when later payload parsing fails.
+/// A torn discriminator itself is not recognized. No raw substring can
+/// mistake quoted content for authority or miss JSON Unicode escapes.
+fn malformed_dynamic_record(line: &str) -> bool {
+    use serde::de::{IgnoredAny, MapAccess, Visitor};
+    struct Scan<'a>(&'a mut bool);
+    impl<'de> Visitor<'de> for Scan<'_> {
+        type Value = ();
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a transcript record object")
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<(), A::Error> {
+            while let Some(key) = map.next_key::<String>()? {
+                if key == "record" {
+                    let tag = map.next_value::<serde_json::Value>()?;
+                    *self.0 |= matches!(
+                        tag.as_str(),
+                        Some("goal_context_decision" | "goal_context_clear" | "chat_memory")
+                    );
+                } else {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+            Ok(())
+        }
+    }
+    let mut found = false;
+    let mut deserializer = serde_json::Deserializer::from_str(line);
+    let _ = serde::Deserializer::deserialize_map(&mut deserializer, Scan(&mut found));
+    found
+}
+
 /// The index and new blocks when `after` differs from `before` only by
 /// blocks appended to the end of `before`'s last message (and possibly
 /// messages after it) — the shape of the loop's folds into the turn a door
@@ -34,6 +66,127 @@ fn extension_of(
     let kept = was.content.len();
     (bare(was) == bare(is) && is.content.len() > kept && is.content[..kept] == was.content[..])
         .then(|| (index, is.content[kept..].to_vec()))
+}
+
+/// Canonical native bytes, including the single record terminator.
+pub(crate) fn encode_record_line(record: &Record) -> Result<Vec<u8>> {
+    let mut line = serde_json::to_vec(record)?;
+    line.push(b'\n');
+    Ok(line)
+}
+
+/// Construct the outcome once, including its recording timestamp.
+pub(crate) fn outcome_record(outcome: &crate::agent::RunOutcome) -> Record {
+    let mut row = RunStats::from(outcome);
+    row.ended_at = Some(Utc::now());
+    Record::Outcome(row)
+}
+
+/// Shared native run order. The sink owns append durability and the proof that
+/// an Extend still addresses the exact currently recorded logical history.
+/// Legacy program/blob persistence remains with Session::record_run.
+pub(crate) fn record_run_messages_and_metadata<S>(
+    sink: &mut S,
+    before: &[Message],
+    convo: &Conversation,
+    mut append: impl FnMut(&mut S, &Record) -> Result<()>,
+    mut prove_before: impl FnMut(&mut S, &[Message]) -> Result<bool>,
+) -> Result<()> {
+    let mut prev: &[Message] = before;
+    for state in &convo.rewritten {
+        record_transition(sink, prev, state, &mut append, &mut prove_before)?;
+        prev = state;
+    }
+    record_transition(sink, prev, &convo.messages, &mut append, &mut prove_before)?;
+    // The harness's notes the run sent — the calendar reference
+    // (`Agent::now_notes`), which is no longer in the messages: what the
+    // run read, kept beside what it said. After the messages, which
+    // `Session::read` allows: a notes line pushes no taint checkpoint.
+    if !convo.harness_notes.is_empty() {
+        append(
+            sink,
+            &Record::Notes {
+                notes: convo.harness_notes.clone(),
+            },
+        )?;
+    }
+    // Unconditionally, like the anchor below: an empty set is how a
+    // `/clear` reaches the file.
+    append(
+        sink,
+        &Record::Grants {
+            grants: convo.grants.clone(),
+        },
+    )?;
+    append(
+        sink,
+        &Record::GoalAnchor {
+            goal: convo.goal_anchor.clone(),
+        },
+    )?;
+    Ok(())
+}
+
+/// One before→after step. When the run only appended, the new tail is
+/// appended here too. When it rewrote what was already recorded —
+/// compaction, eviction, thinning, all of which edit earlier messages in
+/// place — a [`Record::Rewrite`] carries the whole current list instead,
+/// because slicing a rewritten transcript records a lie: the old head
+/// stays in the file, the rebuilt one (summary included) never lands.
+///
+/// Comparison, not a flag from the loop: any mutation the loop grows
+/// later is caught by construction, and the clone this costs is one more
+/// beside the one the loop already pays per request.
+///
+/// **A fold into the last recorded message is an extension, not a
+/// rewrite** (3a-3): when everything but that message is unchanged and it
+/// only gained blocks at its end — the calendar reference or the
+/// situation brief folded into the owner's turn the door already wrote —
+/// a [`Record::Extend`] carries those blocks, followed by the new tail.
+/// Anything else that touched recorded messages is still a rewrite.
+///
+/// **An extension is written only when the file provably ends on
+/// `before`** (review of #316). A rewrite carries the whole list, so it
+/// repaired a caller whose `before` was not what the file held; an
+/// extension carries an index, and against a file that does not end
+/// where `before` does it would be skipped on load and the head lost —
+/// which is what the Slack door, whose per-run session held none of the
+/// thread, would have recorded. So the file is read back first (once per
+/// fold, which is rare) and anything short of `before` exactly falls
+/// back to the rewrite.
+fn record_transition<S>(
+    sink: &mut S,
+    before: &[Message],
+    after: &[Message],
+    append: &mut impl FnMut(&mut S, &Record) -> Result<()>,
+    prove_before: &mut impl FnMut(&mut S, &[Message]) -> Result<bool>,
+) -> Result<()> {
+    let appended_only = after.len() >= before.len() && after[..before.len()] == *before;
+    if !appended_only {
+        if let Some((index, blocks)) = extension_of(before, after) {
+            if prove_before(sink, before)? {
+                append(sink, &Record::Extend { index, blocks })?;
+            } else {
+                return append(
+                    sink,
+                    &Record::Rewrite {
+                        messages: after.to_vec(),
+                    },
+                );
+            }
+        } else {
+            return append(
+                sink,
+                &Record::Rewrite {
+                    messages: after.to_vec(),
+                },
+            );
+        }
+    }
+    for message in &after[before.len()..] {
+        append(sink, &Record::Message(message.clone()))?;
+    }
+    Ok(())
 }
 
 /// A `message` record whose blocks a newer build wrote, read as far as this
@@ -110,6 +263,7 @@ fn lenient_message(v: &serde_json::Value) -> Option<Message> {
         );
     }
     Some(Message {
+        plan_results: Vec::new(),
         harness: v.get("harness").and_then(|v| v.as_bool()).unwrap_or(false),
         planning: v
             .get("planning")
@@ -179,6 +333,41 @@ where
     }))
 }
 
+/// Feature-independent marker: only an authenticated memory attachment may resume.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatMemoryMarker {
+    pub protocol: String,
+    pub conversation_id: String,
+    pub authority: String,
+    pub attachment: String,
+}
+impl ChatMemoryMarker {
+    fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            matches!(
+                self.protocol.as_str(),
+                "ordinary-chat-memory-v1"
+                    | "ordinary-chat-memory-v2"
+                    | "ordinary-chat-memory-v3"
+                    | "ordinary-chat-memory-v4"
+                    | "ordinary-chat-memory-v5"
+                    | "ordinary-chat-task-start-v1"
+            ) && !self.conversation_id.is_empty()
+                && self.conversation_id.len() <= 256
+                && !self.authority.is_empty()
+                && self.authority.len() <= 256
+                && self.attachment.len() == 64
+                && self
+                    .attachment
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "invalid chat memory attachment marker"
+        );
+        Ok(())
+    }
+}
+
 // The two run-describing rows, `Outcome(RunStats)` and `Config(RunConfig)`,
 // are each a few hundred bytes larger than a message, and they trade places
 // as the largest whenever either grows a field: boxing one makes the other
@@ -191,6 +380,19 @@ where
 #[serde(tag = "record", rename_all = "snake_case")]
 pub enum Record {
     Meta(SessionMeta),
+    ChatMemory {
+        marker: ChatMemoryMarker,
+    },
+    /// Atomic pre-request record: evidence revisions and the exact decision
+    /// they shaped either land together or the provider must not be called.
+    GoalContextDecision {
+        binding: crate::goal_context::DecisionBinding,
+        versions: Vec<crate::goal_context::ContextVersion>,
+    },
+    /// Owner cleared the conversation. History remains auditable; subsequent
+    /// context starts a new evidence epoch and cannot inherit prior directives.
+    GoalContextClear,
+
     Message(Message),
     /// Written when a run finishes, so `sessions show` can report cost without
     /// replaying the whole transcript.
@@ -1731,6 +1933,7 @@ pub fn split_admitted<T>(sessions: Vec<(SessionMeta, T)>) -> (Vec<(SessionMeta, 
     (admitted, skipped)
 }
 
+#[derive(Clone)]
 pub struct Session {
     pub meta: SessionMeta,
     pub path: PathBuf,
@@ -1738,6 +1941,8 @@ pub struct Session {
 
 /// A transcript read once: see [`Session::read`].
 pub struct Transcript {
+    pub chat_memory: Option<ChatMemoryMarker>,
+    goal_context_initial_run: bool,
     pub meta: SessionMeta,
     pub convo: Conversation,
     /// Every note a run was sent, as recorded (`Record::Notes`), in order:
@@ -1825,6 +2030,15 @@ pub struct Transcript {
 }
 
 impl Transcript {
+    /// Conservative appraisal coverage: dynamic context preceded the very first
+    /// ordinary run and no clear has introduced another evidence epoch.
+    pub fn goal_context_covers_initial_run(&self) -> bool {
+        self.goal_context_initial_run && !self.convo.goal_context.has_cleared()
+    }
+    pub fn has_dynamic_goal_context(&self) -> bool {
+        !self.convo.goal_context.versions().is_empty()
+    }
+
     /// The run config in effect at message `message_index` of the loaded
     /// list, or `None` for a transcript recorded before configs were kept.
     ///
@@ -1952,9 +2166,8 @@ impl Session {
         // atomic, not the pair: two writers on one session (a turn and the
         // titler, or a spoken direction) could interleave `{A}{B}\n\n`, and
         // both records would be lost to the parser.
-        let mut line = serde_json::to_string(record)?;
-        line.push('\n');
-        file.write_all(line.as_bytes())
+        let line = encode_record_line(record)?;
+        file.write_all(&line)
             .with_context(|| format!("writing {}", self.path.display()))?;
         Ok(())
     }
@@ -1982,29 +2195,16 @@ impl Session {
     ///
     /// [`Conversation::rewritten`]: crate::agent::Conversation
     pub fn record_run(&self, before: &[Message], convo: &Conversation) -> Result<()> {
-        let mut prev: &[Message] = before;
-        for state in &convo.rewritten {
-            self.record_transition(prev, state)?;
-            prev = state;
-        }
-        self.record_transition(prev, &convo.messages)?;
-        // The harness's notes the run sent — the calendar reference
-        // (`Agent::now_notes`), which is no longer in the messages: what the
-        // run read, kept beside what it said. After the messages, which
-        // `Session::read` allows: a notes line pushes no taint checkpoint.
-        if !convo.harness_notes.is_empty() {
-            self.append(&Record::Notes {
-                notes: convo.harness_notes.clone(),
-            })?;
-        }
-        // Unconditionally, like the anchor below: an empty set is how a
-        // `/clear` reaches the file.
-        self.append(&Record::Grants {
-            grants: convo.grants.clone(),
-        })?;
-        self.append(&Record::GoalAnchor {
-            goal: convo.goal_anchor.clone(),
-        })?;
+        let mut sink = self;
+        record_run_messages_and_metadata(
+            &mut sink,
+            before,
+            convo,
+            |session, record| session.append(record),
+            |session, before| {
+                Ok(Session::read(&session.path).is_ok_and(|t| t.convo.messages == before))
+            },
+        )?;
         self.record_programs(convo)
     }
 
@@ -2086,9 +2286,7 @@ impl Session {
     ///
     /// [`record_run`]: Session::record_run
     pub fn record_outcome(&self, outcome: &crate::agent::RunOutcome) -> Result<()> {
-        let mut row = RunStats::from(outcome);
-        row.ended_at = Some(Utc::now());
-        self.append(&Record::Outcome(row))
+        self.append(&outcome_record(outcome))
     }
 
     /// Every outcome recorded in a transcript, in order, with the model and
@@ -2208,55 +2406,22 @@ impl Session {
             }))
     }
 
-    /// One before→after step. When the run only appended, the new tail is
-    /// appended here too. When it rewrote what was already recorded —
-    /// compaction, eviction, thinning, all of which edit earlier messages in
-    /// place — a [`Record::Rewrite`] carries the whole current list instead,
-    /// because slicing a rewritten transcript records a lie: the old head
-    /// stays in the file, the rebuilt one (summary included) never lands.
-    ///
-    /// Comparison, not a flag from the loop: any mutation the loop grows
-    /// later is caught by construction, and the clone this costs is one more
-    /// beside the one the loop already pays per request.
-    ///
-    /// **A fold into the last recorded message is an extension, not a
-    /// rewrite** (3a-3): when everything but that message is unchanged and it
-    /// only gained blocks at its end — the calendar reference or the
-    /// situation brief folded into the owner's turn the door already wrote —
-    /// a [`Record::Extend`] carries those blocks, followed by the new tail.
-    /// Anything else that touched recorded messages is still a rewrite.
-    ///
-    /// **An extension is written only when the file provably ends on
-    /// `before`** (review of #316). A rewrite carries the whole list, so it
-    /// repaired a caller whose `before` was not what the file held; an
-    /// extension carries an index, and against a file that does not end
-    /// where `before` does it would be skipped on load and the head lost —
-    /// which is what the Slack door, whose per-run session held none of the
-    /// thread, would have recorded. So the file is read back first (once per
-    /// fold, which is rare) and anything short of `before` exactly falls
-    /// back to the rewrite.
-    fn record_transition(&self, before: &[Message], after: &[Message]) -> Result<()> {
-        let appended_only = after.len() >= before.len() && after[..before.len()] == *before;
-        if appended_only {
-            self.append_messages(&after[before.len()..])
-        } else if let Some((index, blocks)) = extension_of(before, after)
-            .filter(|_| Session::read(&self.path).is_ok_and(|t| t.convo.messages == before))
-        {
-            self.append(&Record::Extend { index, blocks })?;
-            self.append_messages(&after[before.len()..])
-        } else {
-            self.append(&Record::Rewrite {
-                messages: after.to_vec(),
-            })
-        }
-    }
-
     /// Read a transcript back, taint included.
     ///
-    /// Unparseable lines are skipped rather than failing the load — a truncated
-    /// final line is the normal result of a killed process.
+    /// Legacy transcripts tolerate unparseable lines, including a truncated
+    /// final line after a killed process. Malformed dynamic authority records,
+    /// otherwise unparseable history after a dynamic decision, and malformed
+    /// memory-marked transcripts refuse loading: skipped state could lose taint
+    /// or make incomplete history appear safe to resume or replay.
+    /// A valid chat-memory marker additionally refuses ordinary continuation.
+    /// Historical non-executing replay uses `read` and recorded answers; it does
+    /// not authenticate current memory authority or permit live divergence.
     pub fn load(path: &Path) -> Result<(SessionMeta, Conversation)> {
         let t = Session::read(path)?;
+        anyhow::ensure!(
+            t.chat_memory.is_none(),
+            "memory-attached chat requires chat --dynamic-goals --episodic-memory REQUEST_JSON"
+        );
         Ok((t.meta, t.convo))
     }
 
@@ -2313,13 +2478,101 @@ impl Session {
         let mut taint_checkpoints: Vec<(usize, Taint)> = Vec::new();
         let mut late_failures = Vec::new();
         let mut pending_notes = Vec::new();
-        for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            match serde_json::from_str::<Record>(line).or_else(|e| lenient_record(line).ok_or(e)) {
+        let mut goal_context = crate::goal_context::GoalContextState::default();
+        let mut goal_context_initial_run = false;
+        let mut chat_memory: Option<ChatMemoryMarker> = None;
+        let mut prior_owner_messages = 0usize;
+        let mut prior_run_ambiguous = false;
+        for (record_index, line) in text.lines().filter(|l| !l.trim().is_empty()).enumerate() {
+            let record = match serde_json::from_str::<Record>(line) {
+                Err(error) if malformed_dynamic_record(line) || chat_memory.is_some() => {
+                    return Err(error).context("malformed dynamic goal context record");
+                }
+                Err(error) => lenient_record(line).ok_or(error),
+                Ok(record) => Ok(record),
+            };
+            if chat_memory
+                .as_ref()
+                .is_some_and(|m| m.protocol == "ordinary-chat-task-start-v1")
+            {
+                anyhow::ensure!(
+                    matches!(&record, Ok(Record::ChatMemory { marker }) if marker.protocol == "ordinary-chat-memory-v4"),
+                    "task startup reservation requires exact final marker next"
+                );
+            }
+            match record {
                 Ok(Record::Meta(m)) => meta = Some(m),
+                Ok(Record::ChatMemory { marker }) => {
+                    marker.validate()?;
+                    anyhow::ensure!(
+                        (chat_memory.is_none()
+                            || chat_memory.as_ref().is_some_and(|start| start.protocol
+                                == "ordinary-chat-task-start-v1"
+                                && marker.protocol == "ordinary-chat-memory-v4"
+                                && start.conversation_id == marker.conversation_id
+                                && start.authority == marker.authority
+                                && record_index == 2))
+                            && (marker.protocol != "ordinary-chat-task-start-v1"
+                                || record_index == 1)
+                            && messages.is_empty()
+                            && configs.is_empty()
+                            && meta
+                                .as_ref()
+                                .is_some_and(|m| m.id == marker.conversation_id),
+                        "duplicate or misplaced chat memory attachment"
+                    );
+                    chat_memory = Some(marker);
+                }
+                Ok(Record::GoalContextDecision { binding, versions }) => {
+                    if goal_context.decisions().is_empty() {
+                        goal_context_initial_run = !prior_run_ambiguous
+                            && prior_owner_messages == 1
+                            && binding.run_start();
+                    }
+                    for version in versions {
+                        goal_context.accept_version(version)?;
+                    }
+                    goal_context.bind(binding)?;
+                    taint.private = true;
+                }
+                Ok(Record::GoalContextClear) => {
+                    goal_context.clear();
+                    messages.clear();
+                    taint = Taint::default();
+                    grants.clear();
+                    goal_anchor = None;
+                    pending_notes.clear();
+                    taint_checkpoints.clear();
+                    config_positions.fill(0);
+                    outcome_positions.fill(None);
+                    for (position, _) in &mut anchors {
+                        *position = None;
+                    }
+                    anchor_floor = 0;
+                }
+
                 // Last one wins: a conversation is renamed as it grows, and
                 // the newest name is the one a person would recognise it by.
                 Ok(Record::Title { title: t }) => title = Some(t),
-                Ok(Record::Message(m)) => messages.push(m),
+                Ok(Record::Message(m)) => {
+                    if goal_context.decisions().is_empty() {
+                        if m.role == crate::message::Role::User
+                            && !m.harness
+                            && m.content.iter().all(|block| {
+                                matches!(
+                                    block,
+                                    crate::message::Block::Text { .. }
+                                        | crate::message::Block::Image { .. }
+                                )
+                            })
+                        {
+                            prior_owner_messages += 1;
+                        } else {
+                            prior_run_ambiguous = true;
+                        }
+                    }
+                    messages.push(m);
+                }
                 // The conversation state as of the rewrite, wholesale. Taint
                 // is deliberately not touched: summarising away the text of a
                 // hostile page does not un-read it.
@@ -2357,6 +2610,9 @@ impl Session {
                 // content to tell the two rewrites apart; provenance must
                 // not depend on which reader classified it.
                 Ok(Record::Rewrite { messages: m }) => {
+                    if goal_context.decisions().is_empty() {
+                        prior_run_ambiguous = true;
+                    }
                     // Positions survive any rewrite that leaves message `i`
                     // meaning message `i`. Three writer families produce
                     // rewrites, and only one shifts indices:
@@ -2444,6 +2700,9 @@ impl Session {
                     configs.push(c);
                 }
                 Ok(Record::Outcome(o)) => {
+                    if goal_context.decisions().is_empty() {
+                        prior_run_ambiguous = true;
+                    }
                     if !anchored_since_outcome {
                         anchor_floor = anchor_floor.max(messages.len());
                     }
@@ -2521,7 +2780,15 @@ impl Session {
                     taint.arm_for_notes(&sent);
                     notes.extend(sent);
                 }
-                Err(e) => tracing::warn!(error = %e, "skipping malformed transcript line"),
+                Err(e) => {
+                    // These records carry authority: losing one must never
+                    // silently downgrade a new trace to legacy semantics.
+                    if chat_memory.is_some() || !goal_context.decisions().is_empty() {
+                        return Err(e).context("malformed dynamic goal context record");
+                    }
+                    prior_run_ambiguous = true;
+                    tracing::warn!(error = %e, "skipping malformed transcript line");
+                }
             }
         }
 
@@ -2540,9 +2807,12 @@ impl Session {
             meta.title = Some(t);
         }
         Ok(Transcript {
+            chat_memory,
+            goal_context_initial_run,
             meta,
             notes,
             convo: Conversation {
+                goal_context,
                 goal_anchor,
                 grants: crate::grant::readmit(grants),
                 ..Conversation::resumed(messages, taint)
@@ -2595,8 +2865,9 @@ impl Session {
     /// point is what the replacement dropped, so its messages are unioned in
     /// rather than substituted: anything new (the summary, an edited result)
     /// joins the corpus, anything already seen is skipped. Malformed lines are
-    /// skipped exactly as [`crate::session::Session::load`] skips them — a
-    /// truncated final line is the normal residue of a killed process.
+    /// skipped for this search-only view, including a truncated final line after
+    /// a killed process. Unlike [`crate::session::Session::load`], this function
+    /// does not establish that the transcript is safe to resume or replay.
     pub fn messages_ever(transcript: &str) -> Vec<Message> {
         let mut seen = HashSet::new();
         let mut all = Vec::new();
@@ -2630,6 +2901,7 @@ impl Session {
                         admit(
                             Message {
                                 harness: false,
+                                plan_results: Vec::new(),
                                 planning: None,
                                 tool_provenance: Default::default(),
                                 role,
@@ -3149,8 +3421,8 @@ pub type Header = (SessionMeta, PathBuf, bool);
 #[derive(Debug, Clone, Default)]
 pub struct TaintTimeline {
     /// (messages recorded before this checkpoint, taint merged up to it).
-    /// Merged, not raw: taint only grows, so each entry is the union of every
-    /// checkpoint at or before it.
+    /// Merged, not raw: within a conversation taint only grows, so each entry
+    /// is the union of checkpoints since the last explicit history clear.
     checkpoints: Vec<(usize, Taint)>,
 }
 
@@ -3162,6 +3434,14 @@ impl TaintTimeline {
         for record in records {
             match record {
                 Record::Message(_) => messages += 1,
+                // Unlike a rewrite, an explicit clear discards the entire
+                // conversation. Match Session::parse: old positions and taint
+                // cannot cover the new history, whose indices restart at zero.
+                Record::GoalContextClear => {
+                    messages = 0;
+                    merged = Taint::default();
+                    checkpoints.clear();
+                }
                 // The list was replaced, so every position recorded before it
                 // is a claim about a list that no longer exists — drop them.
                 // Not clamp: clamping several stale checkpoints onto the new
@@ -3956,6 +4236,80 @@ mod tests {
             );
             assert!(covering.private, "the dropped checkpoint's taint was lost");
         }
+    }
+
+    fn assert_goal_context_clear_taint_readers(before: Taint, after: Option<Taint>) {
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-clear-taint")).unwrap();
+        let mut records: Vec<Record> = (0..3)
+            .map(|_| Record::Message(Message::user("Discarded conversation.")))
+            .collect();
+        records.push(Record::Taint(before));
+        records.push(Record::GoalContextClear);
+        let current = vec![
+            Message::user("Inspect the new page."),
+            Message::assistant(vec![Block::text("Synthetic page-derived reply.")]),
+        ];
+        records.extend(current.iter().cloned().map(Record::Message));
+        if let Some(taint) = after {
+            records.push(Record::Taint(taint));
+            // Within the new conversation a later clean checkpoint still
+            // cannot erase the untrusted provenance that already arrived.
+            records.push(Record::Taint(Taint::default()));
+        }
+        for record in &records {
+            session.append(record).unwrap();
+        }
+        let parsed = Session::read(&session.path).unwrap();
+        let public = Session::taint_timeline(&session.path).unwrap();
+        let direct = TaintTimeline::from_records(records);
+        assert_eq!(parsed.convo.messages, current);
+        assert_eq!(parsed.convo.taint, after.unwrap_or_default());
+        for index in 0..=current.len() {
+            let expected = if index < current.len() { after } else { None };
+            assert_eq!(parsed.taint_timeline.covering(index), expected);
+            assert_eq!(
+                public.covering(index),
+                expected,
+                "public timeline diverged after clear at message {index}"
+            );
+            assert_eq!(
+                direct.covering(index),
+                expected,
+                "record timeline diverged after clear at message {index}"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn goal_context_clear_taint_does_not_let_an_old_clean_checkpoint_cover_new_untrusted_data() {
+        assert_goal_context_clear_taint_readers(
+            Taint {
+                private: true,
+                untrusted: false,
+            },
+            Some(Taint {
+                private: false,
+                untrusted: true,
+            }),
+        );
+    }
+
+    #[test]
+    fn goal_context_clear_taint_torn_new_history_is_unknown() {
+        assert_goal_context_clear_taint_readers(Taint::default(), None);
+    }
+
+    #[test]
+    fn goal_context_clear_taint_discards_only_the_removed_conversations_taint() {
+        assert_goal_context_clear_taint_readers(
+            Taint {
+                private: true,
+                untrusted: true,
+            },
+            Some(Taint::default()),
+        );
     }
 
     #[test]
@@ -6462,5 +6816,403 @@ mod marks_tests {
         .unwrap();
         assert!(Marks::load(&dir).unwrap().withdrawn(&probe));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod dynamic_context_regression {
+    use super::*;
+    use crate::goal_context::{
+        CharterSnapshot, DecisionBinding, GoalContextState, OwnerInput, OwnerSource,
+    };
+
+    fn header() -> String {
+        serde_json::json!({"record":"meta", "id":"authored", "created_at":"2026-01-01T00:00:00Z", "provider":"test", "model":"test", "workspace":"/tmp"}).to_string()
+    }
+    fn append(text: &mut String, record: Record) {
+        text.push('\n');
+        text.push_str(&serde_json::to_string(&record).unwrap());
+    }
+    fn boundary(
+        state: &mut GoalContextState,
+        evidence: &str,
+        charter: &str,
+        messages: &[Message],
+        run_start: bool,
+    ) -> Record {
+        let snapshot = CharterSnapshot::from_source(
+            Some(format!("[[line]]\nid='priority'\ntext='{charter}'\n")),
+            false,
+        )
+        .unwrap();
+        let version = state
+            .transition(
+                snapshot,
+                Some(OwnerInput::new(OwnerSource::CliChat, evidence.into()).unwrap()),
+            )
+            .unwrap()
+            .unwrap();
+        let binding = DecisionBinding::new(
+            state.next_decision(),
+            version.revision(),
+            messages,
+            Some(version.prompt_block()),
+            run_start,
+            0,
+        )
+        .unwrap()
+        .with_conversation_messages(messages)
+        .unwrap();
+        state.bind(binding.clone()).unwrap();
+        Record::GoalContextDecision {
+            binding,
+            versions: vec![version],
+        }
+    }
+    #[test]
+    fn dynamic_history_survives_compaction_and_resume_without_relabeling() {
+        let mut state = GoalContextState::default();
+        let mut text = header();
+        let first = vec![Message::user("prepare report")];
+        append(&mut text, Record::Message(first[0].clone()));
+        append(
+            &mut text,
+            boundary(&mut state, "prepare report", "first priority", &first, true),
+        );
+        append(
+            &mut text,
+            Record::Rewrite {
+                messages: vec![Message::user("compacted history")],
+            },
+        );
+        let second = vec![
+            Message::user("compacted history"),
+            Message::user("focus on figure"),
+        ];
+        append(
+            &mut text,
+            boundary(
+                &mut state,
+                "focus on figure",
+                "second priority",
+                &second,
+                true,
+            ),
+        );
+        let loaded = Session::parse(Path::new("authored.jsonl"), &text).unwrap();
+        assert_eq!(loaded.convo.goal_context.next_decision(), 3);
+        assert_eq!(loaded.convo.goal_context.current().unwrap().revision(), 2);
+        let replay = crate::replay::extract_transcript(&loaded).unwrap();
+        assert_eq!(replay.goal_decisions.len(), 2);
+        assert_eq!(replay.goal_decisions[0].0.messages(), first);
+        assert!(replay.goal_decisions[0]
+            .0
+            .system()
+            .unwrap()
+            .contains("first priority"));
+        assert!(!replay.goal_decisions[0]
+            .0
+            .system()
+            .unwrap()
+            .contains("second priority"));
+        assert!(replay.goal_decisions[1]
+            .0
+            .system()
+            .unwrap()
+            .contains("second priority"));
+    }
+    #[test]
+    fn clear_preserves_audit_but_resumes_without_old_owner_evidence() {
+        let mut state = GoalContextState::default();
+        let mut text = header();
+        append(
+            &mut text,
+            boundary(
+                &mut state,
+                "old task",
+                "priority",
+                &[Message::user("old task")],
+                true,
+            ),
+        );
+        append(&mut text, Record::GoalContextClear);
+        state.clear();
+        append(
+            &mut text,
+            boundary(
+                &mut state,
+                "new task",
+                "priority",
+                &[Message::user("new task")],
+                true,
+            ),
+        );
+        let loaded = Session::parse(Path::new("authored.jsonl"), &text).unwrap();
+        let state = &loaded.convo.goal_context;
+        assert_eq!(state.decisions().len(), 2);
+        assert_eq!(state.current().unwrap().owner_inputs().len(), 1);
+        assert_eq!(
+            state.current().unwrap().owner_inputs()[0].text(),
+            "new task"
+        );
+        assert_eq!(state.current().unwrap().predecessor(), Some(1));
+    }
+    #[test]
+    fn missing_version_and_reordered_decision_refuse_hydration() {
+        let mut state = GoalContextState::default();
+        let row = boundary(
+            &mut state,
+            "task",
+            "priority",
+            &[Message::user("task")],
+            true,
+        );
+        let Record::GoalContextDecision { binding, .. } = row else {
+            unreachable!()
+        };
+        let mut text = header();
+        append(
+            &mut text,
+            Record::GoalContextDecision {
+                binding,
+                versions: vec![],
+            },
+        );
+        assert!(Session::parse(Path::new("authored.jsonl"), &text).is_err());
+    }
+    #[test]
+    fn dynamic_steering_refuses_but_legacy_remains_explicit() {
+        let mut text = header();
+        append(
+            &mut text,
+            Record::Message(Message::user("ordinary legacy input")),
+        );
+        let legacy = Session::parse(Path::new("legacy.jsonl"), &text).unwrap();
+        assert!(!legacy.has_dynamic_goal_context());
+        assert!(crate::replay::extract_transcript(&legacy)
+            .unwrap()
+            .goal_decisions
+            .is_empty());
+        let mut state = GoalContextState::default();
+        append(
+            &mut text,
+            boundary(
+                &mut state,
+                "task",
+                "priority",
+                &[Message::user("task")],
+                true,
+            ),
+        );
+        append(
+            &mut text,
+            boundary(
+                &mut state,
+                "owner steer",
+                "priority",
+                &[Message::user("owner steer")],
+                false,
+            ),
+        );
+        let steered = Session::parse(Path::new("steered.jsonl"), &text).unwrap();
+        assert!(crate::replay::extract_transcript(&steered)
+            .unwrap_err()
+            .to_string()
+            .contains("steering"));
+    }
+    #[test]
+    fn dynamic_replay_excludes_seeded_calls_and_refuses_ambiguous_ids() {
+        use crate::message::Block;
+        let call = Message::assistant(vec![Block::ToolUse {
+            id: "prior".into(),
+            name: "echo".into(),
+            input: serde_json::json!({}),
+        }]);
+        let result = Message::tool_results(vec![Block::ToolResult {
+            tool_use_id: "prior".into(),
+            content: "past result".into(),
+            is_error: false,
+        }]);
+        let mut messages = vec![
+            Message::user("legacy task"),
+            call.clone(),
+            result.clone(),
+            Message::user("new task"),
+        ];
+        let mut state = GoalContextState::default();
+        let mut text = header();
+        append(
+            &mut text,
+            boundary(&mut state, "new task", "priority", &messages, true),
+        );
+        let loaded = Session::parse(Path::new("authored.jsonl"), &text).unwrap();
+        assert!(crate::replay::extract_transcript(&loaded)
+            .unwrap()
+            .calls
+            .is_empty());
+        messages.extend([call, result]);
+        let mut state = GoalContextState::default();
+        let mut text = header();
+        append(
+            &mut text,
+            boundary(&mut state, "new task", "priority", &messages, true),
+        );
+        let loaded = Session::parse(Path::new("authored.jsonl"), &text).unwrap();
+        assert!(crate::replay::extract_transcript(&loaded)
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous"));
+    }
+    #[test]
+    fn post_decision_unparseable_history_refuses_even_when_legacy_can_skip_it() {
+        let mut state = GoalContextState::default();
+        let mut dynamic = header();
+        let messages = vec![Message::user("task")];
+        append(&mut dynamic, Record::Message(messages[0].clone()));
+        append(
+            &mut dynamic,
+            boundary(&mut state, "task", "priority", &messages, true),
+        );
+        assert!(Session::parse(Path::new("dynamic.jsonl"), &dynamic).is_ok());
+        for row in [
+            r#"{"record":"message","role":"assistant","content":["#,
+            r#"{"record":"future_state","payload":{}}"#,
+            r#"{"record":"taint","private":true,"untrusted":"#,
+            r#"{"record":"rewrite","messages":["#,
+            r#"{"record":"extend","index":0,"blocks":["#,
+            r#"{"record":"grants","grants":["#,
+            r#"{"record":"goal_context_deci"#,
+        ] {
+            assert!(
+                Session::parse(Path::new("legacy.jsonl"), &format!("{}\n{row}", header())).is_ok(),
+                "legacy compatibility changed for {row}"
+            );
+            assert!(
+                Session::parse(Path::new("dynamic.jsonl"), &format!("{dynamic}\n{row}")).is_err(),
+                "accepted incomplete dynamic history: {row}"
+            );
+        }
+    }
+
+    #[test]
+    fn escaped_and_duplicate_dynamic_tags_refuse_even_with_truncated_payloads() {
+        for row in [
+            r#"{"record":"goal_context_decisi\u006fn","binding":{},"versions":[]}"#,
+            r#"{"record":"goal_context_decisi\u006fn","record":"unknown","binding":{}}"#,
+            r#"{"record":"goal_context_decisi\u006fn","record":"message","role":"user","content":[{"type":"text","text":"rescued"}]}"#,
+            r#"{"record":"goal_context_decisi\u006fn","record":"rewrite","messages":[]}"#,
+            r#"{"record":null,"record":"goal_context_clear","record":"rewrite","messages":[]}"#,
+            r#"{"record":"unknown","record":"goal_context_cle\u0061r","unexpected":true}"#,
+            r#"{"record":"goal_context_decisi\u006fn","binding":{"ordinal":1"#,
+        ] {
+            assert!(
+                Session::parse(Path::new("authored.jsonl"), &format!("{}\n{row}", header()))
+                    .is_err(),
+                "accepted {row}"
+            );
+        }
+        // A malformed legacy row quoting the spelling is not itself a new
+        // authority record. Unknown legacy records retain their old behavior.
+        let legacy = r#"{"record":"unknown","text":"goal_context_decision"}"#;
+        assert!(Session::parse(
+            Path::new("legacy.jsonl"),
+            &format!("{}\n{legacy}", header())
+        )
+        .is_ok());
+    }
+    #[test]
+    fn corrupt_effective_request_refuses_session_before_replay() {
+        let mut state = GoalContextState::default();
+        let row = boundary(
+            &mut state,
+            "task",
+            "priority",
+            &[Message::user("task")],
+            true,
+        );
+        let original = serde_json::to_value(row).unwrap();
+        for missing in [true, false] {
+            let mut row = original.clone();
+            if missing {
+                row["binding"].as_object_mut().unwrap().remove("system");
+            } else {
+                row["binding"]["system"] = serde_json::json!("substituted charter");
+            }
+            let text = format!("{}\n{row}", header());
+            assert!(Session::parse(Path::new("authored.jsonl"), &text).is_err());
+        }
+    }
+    #[test]
+    fn initial_run_coverage_refuses_legacy_rollbacks_outcomes_and_clear() {
+        fn parse_after(prior: Vec<Record>, clear: bool) -> Transcript {
+            let mut text = header();
+            for record in prior {
+                append(&mut text, record);
+            }
+            let mut state = GoalContextState::default();
+            append(
+                &mut text,
+                boundary(
+                    &mut state,
+                    "task",
+                    "priority",
+                    &[Message::user("task")],
+                    true,
+                ),
+            );
+            if clear {
+                append(&mut text, Record::GoalContextClear);
+            }
+            Session::parse(Path::new("authored.jsonl"), &text).unwrap()
+        }
+        assert!(
+            parse_after(vec![Record::Message(Message::user("task"))], false)
+                .goal_context_covers_initial_run()
+        );
+        assert!(
+            !parse_after(vec![Record::Message(Message::user("task"))], true)
+                .goal_context_covers_initial_run()
+        );
+        assert!(!parse_after(vec![], false).goal_context_covers_initial_run());
+        assert!(!parse_after(
+            vec![
+                Record::Message(Message::user("old")),
+                Record::Message(Message::user("task"))
+            ],
+            false
+        )
+        .goal_context_covers_initial_run());
+        assert!(!parse_after(
+            vec![Record::Rewrite {
+                messages: vec![Message::user("task")]
+            }],
+            false
+        )
+        .goal_context_covers_initial_run());
+        assert!(!parse_after(
+            vec![
+                Record::Outcome(RunStats::default()),
+                Record::Message(Message::user("task"))
+            ],
+            false
+        )
+        .goal_context_covers_initial_run());
+        assert!(!parse_after(
+            vec![
+                Record::Message(Message::assistant(vec![])),
+                Record::Message(Message::user("task"))
+            ],
+            false
+        )
+        .goal_context_covers_initial_run());
+    }
+    #[test]
+    fn malformed_goal_context_cannot_silently_become_legacy() {
+        let header = serde_json::json!({"record":"meta", "id":"authored", "created_at":"2026-01-01T00:00:00Z", "provider":"test", "model":"test", "workspace":"/tmp"});
+        let text = format!(
+            "{}\n{}\n",
+            header, r#"{"record":"goal_context_decision","binding":{},"versions":[]}"#
+        );
+        assert!(super::Session::parse(std::path::Path::new("authored.jsonl"), &text).is_err());
     }
 }

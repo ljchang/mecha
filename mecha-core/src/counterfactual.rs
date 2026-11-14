@@ -808,6 +808,7 @@ mod tests {
             ]),
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -876,6 +877,7 @@ mod tests {
             Message::assistant(vec![tool_use("t1", "fs_read", json!({}))]),
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -902,6 +904,7 @@ mod tests {
             ]),
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -963,6 +966,7 @@ mod tests {
             ]),
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,

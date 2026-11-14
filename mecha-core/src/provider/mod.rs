@@ -354,6 +354,26 @@ pub struct HttpClients {
 }
 
 impl HttpClients {
+    /// Opt-in transport for local experiments: neither proxies nor redirects
+    /// may move a request away from the caller-validated loopback endpoint.
+    pub(crate) fn loopback_only() -> reqwest::Result<Self> {
+        Ok(Self {
+            whole: reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(CONNECT_TIMEOUT)
+                .timeout(REQUEST_TIMEOUT)
+                .build()?,
+            stream: reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(CONNECT_TIMEOUT)
+                .read_timeout(STALL_TIMEOUT)
+                .timeout(STREAM_TIMEOUT)
+                .build()?,
+        })
+    }
+
     pub fn build() -> reqwest::Result<Self> {
         Self::with(
             CONNECT_TIMEOUT,
@@ -1176,5 +1196,39 @@ mod halt_tests {
         assert!(err.to_string().contains("switched with --now"), "{err}");
         assert!(err.downcast_ref::<retry::ProviderError>().is_none());
         assert_eq!(p.id(), "answers", "the wrapper is transparent otherwise");
+    }
+}
+
+#[cfg(test)]
+mod local_transport_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    #[tokio::test]
+    async fn strict_local_transport_never_follows_a_redirect() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = [0; 4096];
+                let n = socket.read(&mut buf).await.unwrap();
+                let response = if String::from_utf8_lossy(&buf[..n]).contains(" /start ") {
+                    format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{address}/end\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                } else {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".into()
+                };
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let clients = HttpClients::loopback_only().unwrap();
+        let response = clients
+            .for_body(&serde_json::json!({}))
+            .post(format!("http://{address}/start"))
+            .body("synthetic evidence")
+            .send()
+            .await
+            .unwrap();
+        server.abort();
+        assert_eq!(response.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
     }
 }

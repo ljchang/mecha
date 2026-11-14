@@ -5,11 +5,18 @@
 //! who approves side effects — is injected, so the same loop drives the REPL,
 //! a one-shot run, and a batch worker.
 
+#[path = "agent_completion.rs"]
+mod completion;
+pub use completion::{
+    CompletionArtifactIssue, CompletionFeedback, CompletionObservation, CompletionObserver,
+    CompletionReadiness, CompletionReport,
+};
+
 use crate::config::{AgentConfig, TrifectaPolicy};
 use crate::message::*;
 use crate::provider::{Provider, StreamEvent};
 use crate::tool::{Approver, Decision, DenialCause, Egress, Registry, ToolCtx, ToolOutput};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -193,6 +200,28 @@ pub fn append_user_text(messages: &mut Vec<Message>, text: String) {
     }
 }
 
+/// Keep harness completion notices distinguishable when a steer joins their
+/// user message. Existing harness blocks must all be recognized before
+/// unmarking the message.
+fn fold_steer(messages: &mut Vec<Message>, text: String) {
+    if let Some(last) = messages.last_mut() {
+        if last.role == Role::User
+            && last.harness
+            && last
+                .content
+                .iter()
+                .any(|block| matches!(block, Block::Text { text } if completion::is_notice(text)))
+            && last
+                .content
+                .iter()
+                .all(|block| matches!(block, Block::Text { text } if is_harness_voice(text)))
+        {
+            last.harness = false;
+        }
+    }
+    append_user_text(messages, text);
+}
+
 /// A user message that is the person's own text and nothing else — no tool
 /// results.
 ///
@@ -205,6 +234,31 @@ pub fn append_user_text(messages: &mut Vec<Message>, text: String) {
 /// wrong copy.
 pub fn is_plain_user_text(m: &Message) -> bool {
     m.is_plain_user_text()
+}
+
+/// A submitted steer with its authority established by the host.
+#[derive(Clone)]
+pub enum QueuedSteer {
+    Owner(crate::goal_context::OwnerInput),
+    Unverified(String),
+}
+
+impl QueuedSteer {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Owner(input) => input.text(),
+            Self::Unverified(text) => text,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct GoalIngress {
+    inputs: Vec<crate::goal_context::OwnerInput>,
+    session: Option<Arc<crate::session::Session>>,
+    #[cfg(feature = "memory-prototype")]
+    pub(crate) task_recorder:
+        Option<Arc<crate::memory_session::chat::task_host::TaskDecisionRecorder>>,
 }
 
 /// What the loop consults that is properly per-*run* rather than per-agent:
@@ -223,6 +277,12 @@ pub struct RunContext {
     pub tools: Arc<ToolCtx>,
     pub approver: Arc<dyn Approver>,
     pub budget: Budget,
+    /// Opt-in advice near this run's hard turn ceiling; never changes its budget.
+    pub budget_notice: bool,
+    /// Optional operational completion check; no observer runs by default.
+    pub completion_observer: Option<Arc<dyn CompletionObserver>>,
+    /// The host's original run deadline, never extended by completion checks.
+    pub completion_deadline: Option<tokio::time::Instant>,
     /// Cancels this run. `None` means it cannot be interrupted.
     ///
     /// Opt-in rather than always-on, because making a run cancellable changes
@@ -290,6 +350,8 @@ pub struct RunContext {
     /// tools it asked for. Interrupting sooner would mean discarding a turn the
     /// user already paid for.
     pub queued_input: Option<Arc<Mutex<VecDeque<String>>>>,
+    pub(crate) owner_steering: Option<Arc<Mutex<VecDeque<QueuedSteer>>>>,
+    pub(crate) goal_ingress: Option<GoalIngress>,
     /// Tools this *run* may not dispatch, whatever the registry holds.
     ///
     /// **A narrowing that belongs to one run rather than to the agent.** The
@@ -889,11 +951,16 @@ impl RunContext {
             tools: Arc::new(tools),
             approver,
             budget: Budget::default(),
+            budget_notice: false,
+            completion_observer: None,
+            completion_deadline: None,
             cancel: None,
             cancel_reason: Arc::new(std::sync::Mutex::new(None)),
             phase: Phase::default(),
             compact_at_tokens: None,
             queued_input: None,
+            owner_steering: None,
+            goal_ingress: None,
             withheld: Arc::from(Vec::new()),
             hooks: Arc::new(crate::hooks::HookSet::default()),
             policy: Arc::new(crate::policy::ExecPolicy::empty()),
@@ -905,6 +972,16 @@ impl RunContext {
             end_after_deferral: false,
             close_with: None,
         }
+    }
+
+    pub fn with_completion_observer(mut self, observer: Arc<dyn CompletionObserver>) -> Self {
+        self.completion_observer = Some(observer);
+        self
+    }
+
+    pub fn with_completion_deadline(mut self, deadline: tokio::time::Instant) -> Self {
+        self.completion_deadline = Some(deadline);
+        self
     }
 
     /// Cap the model's reasoning per request in this run; see the field.
@@ -937,6 +1014,12 @@ impl RunContext {
 
     pub fn with_budget(mut self, budget: Budget) -> Self {
         self.budget = budget;
+        self
+    }
+
+    /// Enable advisory finalization guidance near this run's turn ceiling.
+    pub fn with_budget_notice(mut self, enabled: bool) -> Self {
+        self.budget_notice = enabled;
         self
     }
 
@@ -1015,6 +1098,28 @@ impl RunContext {
         self
     }
 
+    /// Supply owner evidence at the host boundary. A missing session explicitly
+    /// selects an in-memory chat. Neither a message role nor an untyped queue
+    /// entry establishes this authority.
+    pub fn with_goal_ingress(
+        mut self,
+        inputs: Vec<crate::goal_context::OwnerInput>,
+        session: Option<Arc<crate::session::Session>>,
+    ) -> Self {
+        self.goal_ingress = Some(GoalIngress {
+            inputs,
+            session,
+            #[cfg(feature = "memory-prototype")]
+            task_recorder: None,
+        });
+        self
+    }
+
+    pub fn with_owner_steering(mut self, queue: Arc<Mutex<VecDeque<QueuedSteer>>>) -> Self {
+        self.owner_steering = Some(queue);
+        self
+    }
+
     /// Withhold tools from this run's dispatch. See [`RunContext::withheld`].
     pub fn withholding(mut self, names: impl IntoIterator<Item = String>) -> Self {
         self.withheld = names.into_iter().collect::<Vec<_>>().into();
@@ -1042,6 +1147,19 @@ impl RunContext {
     /// Everything the user typed since the last turn, in order.
     fn take_queued_input(&self) -> Vec<String> {
         let Some(queue) = &self.queued_input else {
+            // Front ends can retain their tagged queue with dynamic goals off.
+            // In that case its strings follow the original steering path.
+            if self.goal_ingress.is_none() {
+                if let Some(queue) = &self.owner_steering {
+                    return queue
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner())
+                        .drain(..)
+                        .map(|steer| steer.text().to_string())
+                        .filter(|text| !text.trim().is_empty())
+                        .collect();
+                }
+            }
             return Vec::new();
         };
         // A poisoned lock means a panic while holding it. Dropping the queued
@@ -1219,9 +1337,16 @@ impl Taint {
 /// each caller has to remember. Keep the history and you keep the taint; start
 /// a new conversation — a batch item, a subagent, an eval case — and you get a
 /// clean one, because you built a new `Conversation` to do it.
+pub(crate) type GoalReplaySchedule = VecDeque<(
+    crate::goal_context::DecisionBinding,
+    crate::goal_context::ContextVersion,
+)>;
+
 #[derive(Debug, Clone, Default)]
 pub struct Conversation {
     pub messages: Vec<Message>,
+    pub(crate) goal_context: crate::goal_context::GoalContextState,
+    pub(crate) goal_context_replay: Option<GoalReplaySchedule>,
     /// What has entered this conversation so far. Grows, never shrinks: there
     /// is no way to un-read a page.
     pub taint: Taint,
@@ -1316,6 +1441,8 @@ impl Conversation {
             rewritten: Vec::new(),
             pressure: crate::pressure::ContextTracker::default(),
             goal_anchor: None,
+            goal_context: Default::default(),
+            goal_context_replay: None,
             harness_notes: Vec::new(),
             grants: Vec::new(),
             cache_lens: crate::cache_lens::CacheLens::default(),
@@ -1336,12 +1463,36 @@ impl Conversation {
             // and predicts from its second turn on.
             pressure: crate::pressure::ContextTracker::default(),
             goal_anchor: None,
+            goal_context: Default::default(),
+            goal_context_replay: None,
             harness_notes: Vec::new(),
             grants: Vec::new(),
             cache_lens: crate::cache_lens::CacheLens::default(),
             program_calls: Vec::new(),
             program_calls_from: 0,
         }
+    }
+
+    pub fn has_dynamic_goal_context(&self) -> bool {
+        !self.goal_context.versions().is_empty()
+    }
+
+    /// Drop active history while preserving the identity of recorded decisions.
+    pub fn clear_with_recording(
+        &mut self,
+        session: Option<&crate::session::Session>,
+    ) -> Result<()> {
+        if self.has_dynamic_goal_context() {
+            if let Some(session) = session {
+                session.append(&crate::session::Record::GoalContextClear)?;
+            }
+            self.goal_context.clear();
+        }
+        *self = Self {
+            goal_context: std::mem::take(&mut self.goal_context),
+            ..Self::default()
+        };
+        Ok(())
     }
 
     pub fn push(&mut self, message: Message) {
@@ -1498,6 +1649,8 @@ impl From<Vec<Message>> for Conversation {
             rewritten: Vec::new(),
             pressure: crate::pressure::ContextTracker::default(),
             goal_anchor: None,
+            goal_context: Default::default(),
+            goal_context_replay: None,
             harness_notes: Vec::new(),
             grants: Vec::new(),
             cache_lens: crate::cache_lens::CacheLens::default(),
@@ -1573,7 +1726,22 @@ type Batch = (
     Vec<Block>,
     std::collections::BTreeMap<String, bool>,
     Vec<crate::tool::code::record::ProgramCall>,
+    PlanBatch,
 );
+
+#[derive(Default)]
+struct PlanBatch {
+    audits: Vec<crate::message::PlanResultAudit>,
+    feedback: crate::planning::Feedback,
+}
+impl PlanBatch {
+    fn attach(self, message: &mut Message) {
+        if !self.audits.is_empty() {
+            message.plan_results = self.audits;
+            message.planning = Some(self.feedback);
+        }
+    }
+}
 
 /// The sub-call passes' usage of every program in `trace`
 /// (`ToolCallTrace::program`): what the loop adds to the run's own after a
@@ -1802,12 +1970,14 @@ budget went entirely to reasoning before you began your answer. Do not start the
 not re-derive what you already worked out. Either give your answer now, briefly, using what you \
 already know, or make the single next tool call. Keep your reasoning short this turn.";
 
+/// Advisory resource facts, delivered once while tools are still available.
+/// Exact whole-message registration keeps these separate from owner corrections.
+pub(crate) const BUDGET_NOTICE_TWO: &str = "Run budget: two model turns remain, including this one. Preserve time for the requested deliverable and an honest account of unresolved requirements. Continue gathering evidence when a concrete available source or new result justifies it. Otherwise finish from supported evidence and state what is missing, using any fallback the user specified. Do not invent missing facts.";
+pub(crate) const BUDGET_NOTICE_ONE: &str = "Run budget: one model turn remains, including this one. Preserve time for the requested deliverable and an honest account of unresolved requirements. Continue gathering evidence when a concrete available source or new result justifies it. Otherwise finish from supported evidence and state what is missing, using any fallback the user specified. Do not invent missing facts.";
+
 /// Every voice the harness speaks in the **user** role.
 ///
-/// Ten of them now (the arms below number the later ones; the two closing
-/// lines of one picture per run, `PICTURE_ON_ITS_WAY` and
-/// `PICTURE_STILL_BEING_MADE`, are the newest), and the miner
-/// has to know every one: `agent.rs` prefixes
+/// The miner has to know every one: `agent.rs` prefixes
 /// a refusal it did not author with `"Denied by the user: "`, and the mirror of
 /// that mistake is text mecha wrote being read as text a person typed.
 /// `learning::extract_interventions` mines a transcript for corrections and has
@@ -1841,7 +2011,10 @@ already know, or make the single next tool call. Keep your reasoning short this 
 /// and are matched whole.
 pub(crate) fn is_harness_voice(text: &str) -> bool {
     let text = text.trim();
-    text == FINAL_ANSWER_NUDGE
+    completion::is_notice(text)
+        || text == FINAL_ANSWER_NUDGE
+        || text == BUDGET_NOTICE_TWO
+        || text == BUDGET_NOTICE_ONE
         || text == EMPTY_TURN_NUDGE
         || text == PICTURE_ON_ITS_WAY
         || text == PICTURE_STILL_BEING_MADE
@@ -2381,6 +2554,29 @@ pub struct Agent {
     /// ([`Agent::narrow_code_by`]): a rebuild widens `code`'s union to what
     /// was registered since, and the profile must judge that union too.
     code_profile: Option<(crate::tool::profile::ToolProfile, Vec<String>)>,
+    goal_charter: Option<GoalCharter>,
+    dynamic_goals: bool,
+}
+
+struct GoalCharter {
+    path: std::path::PathBuf,
+    before: String,
+    after: String,
+}
+
+impl GoalCharter {
+    fn render(&self, charter: Option<&str>) -> Option<String> {
+        let system = [
+            self.before.as_str(),
+            charter.unwrap_or_default(),
+            self.after.as_str(),
+        ]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+        (!system.is_empty()).then_some(system)
+    }
 }
 
 /// [`Agent::registry_mut`]'s guard: the registry, and on drop `code` built
@@ -2436,7 +2632,47 @@ impl Agent {
             prior_nudges: PriorNudges::Keep,
             code: None,
             code_profile: None,
+            goal_charter: None,
+            dynamic_goals: false,
         })
+    }
+
+    /// Enable owner goal context at the interactive host's startup.
+    pub fn with_dynamic_goals(mut self) -> Self {
+        self.dynamic_goals = true;
+        self
+    }
+
+    pub fn dynamic_goals_enabled(&self) -> bool {
+        self.dynamic_goals
+    }
+
+    /// Bind the owner-controlled charter path and its exact static prompt
+    /// slot. Legacy callers continue to receive the original setup prompt.
+    pub fn with_goal_charter(
+        mut self,
+        path: std::path::PathBuf,
+        legacy_range: Option<std::ops::Range<usize>>,
+    ) -> Result<Self> {
+        let system = self.system.as_deref().unwrap_or_default();
+        let (before, after) = if let Some(range) = legacy_range {
+            anyhow::ensure!(range.start <= range.end, "invalid charter slot order");
+            let before = system
+                .get(..range.start)
+                .context("invalid charter slot start")?;
+            let after = system
+                .get(range.end..)
+                .context("invalid charter slot end")?;
+            (before, after.strip_prefix("\n\n").unwrap_or(after))
+        } else {
+            (system, "")
+        };
+        self.goal_charter = Some(GoalCharter {
+            path,
+            before: before.to_string(),
+            after: after.to_string(),
+        });
+        Ok(self)
     }
 
     /// Run against a clock other than the machine's — an experiment's fixture
@@ -2945,6 +3181,27 @@ impl Agent {
         convo: &mut Conversation,
         events: Option<UnboundedSender<AgentEvent>>,
     ) -> Result<RunOutcome> {
+        anyhow::ensure!(
+            !convo.has_dynamic_goal_context()
+                || cx.goal_ingress.is_some()
+                || convo.goal_context_replay.is_some(),
+            "dynamic goal context requires --dynamic-goals at a supported chat boundary"
+        );
+        // Check the incoming native boundary before budget notices, steering,
+        // or request-only notes can append a user message to an assistant tail.
+        // A retry must not disguise an unsupported dynamic-goal continuation.
+        if convo.goal_context_replay.is_none()
+            && (convo.goal_context.current().is_some()
+                || cx
+                    .goal_ingress
+                    .as_ref()
+                    .is_some_and(|ingress| !ingress.inputs.is_empty()))
+        {
+            anyhow::ensure!(
+                convo.messages.last().is_some_and(|m| m.role == Role::User),
+                "live dynamic-goal request requires an owner or tool-result turn"
+            );
+        }
         // **The `compact` channel is minted per run, here, and not by whoever
         // built the context.** Setup decides whether this run compacts at all
         // — that is a config question, and `None` means the tool is not in the
@@ -3005,11 +3262,21 @@ impl Agent {
             // leaves the run beside the line.
             tools.goal_commitments = cx.homeostat.as_ref().and_then(|h| h.in_run_commitments());
             tools.goal_guidance = self.cfg.goal_guidance;
-            tools.step_checks = self
-                .cfg
-                .step_checks
+            tools.step_checks_unavailable =
+                self.cfg.step_checks && self.registry.get("shell").is_none();
+            tools.step_checks = (self.cfg.step_checks && self.registry.get("shell").is_some())
                 .then(|| Arc::new(std::sync::Mutex::new(Vec::new())));
             tools.step_counts = Some(Arc::new(crate::tool::StepCounts::default()));
+            tools.goal_context_version = Arc::default();
+            tools.goal_decision = Arc::default();
+            #[cfg(feature = "memory-prototype")]
+            if tools.task_plan.is_some() {
+                tools.verified_steps = Arc::default();
+                tools.step_checks = None;
+                tools.step_checks_unavailable = true;
+                tools.step_escalation = None;
+                tools.plan_call = None;
+            }
             // Past appraisals are keyed on the tool set the run record will
             // name — this registry, after whatever a front-end withheld
             // since the block was rendered (`PastAppraisals::for_registry`).
@@ -3187,6 +3454,12 @@ impl Agent {
 
         let mut usage = Usage::default();
         let mut turns = 0;
+        // Run-local, not inferred from history: compaction may remove the block.
+        let mut budget_notice_sent = false;
+        let mut completion_report = CompletionReport::default();
+        if let Some(observer) = &cx.completion_observer {
+            observer.record(&completion_report);
+        }
         let mut trace: Vec<ToolCallTrace> = Vec::new();
         let mut malformed = 0u32;
         let mut blocked_sends = 0u32;
@@ -3264,6 +3537,12 @@ impl Agent {
         // keeps what it learned. `RunOutcome.taint` reports the same thing for
         // callers that want it without reaching into the conversation.
         let messages = &mut convo.messages;
+        let mut owner_inputs = cx
+            .goal_ingress
+            .as_ref()
+            .map(|ingress| ingress.inputs.clone())
+            .unwrap_or_default();
+        let mut first_decision = true;
 
         loop {
             // Checked before the budget ceilings and handled differently from
@@ -3320,7 +3599,7 @@ impl Agent {
                 .flatten()
             {
                 emit(&events, AgentEvent::QueuedInput(queued.clone()));
-                append_user_text(messages, queued);
+                fold_steer(messages, queued);
             }
 
             // Is this iteration going to stop before it does any more work?
@@ -3596,8 +3875,24 @@ impl Agent {
             if let Some(cause) = ceiling {
                 tracing::info!(cause = cause.describe(), turns, "stopping early");
                 let mut text = run_said.clone().unwrap_or_default();
-                if self.cfg.force_final_answer {
-                    match self.final_answer(cx, messages, &events).await {
+                if self.cfg.force_final_answer && !cx.cancelled() {
+                    let mut request = self.final_answer_request(cx, messages);
+                    if self
+                        .bind_goal_decision(
+                            cx,
+                            &mut convo.goal_context,
+                            &mut convo.goal_context_replay,
+                            &mut request,
+                            messages,
+                            &mut owner_inputs,
+                            first_decision,
+                        )?
+                        .is_some()
+                    {
+                        taint.private = true;
+                        convo.taint = taint;
+                    }
+                    match self.final_answer(cx, messages, &events, &request).await {
                         Ok(Some(answer)) => text = answer,
                         Ok(None) => {}
                         Err(e) => {
@@ -3675,6 +3970,27 @@ impl Agent {
                 );
                 return Ok(outcome);
             }
+            // Compaction awaited above and may have been interrupted. Do not
+            // mutate the transcript with advice for a request that cannot run.
+            if cx.cancelled() {
+                continue;
+            }
+            // Every existing stop has won before this advisory is considered.
+            // Count the request about to be made, using the authoritative run
+            // override rather than the context-window forecast.
+            let turns_left = cx.budget.max_turns.unwrap_or(self.cfg.max_turns) - turns;
+            if cx.budget_notice && !budget_notice_sent && turns_left <= 2 {
+                append_user_text(
+                    messages,
+                    if turns_left == 1 {
+                        BUDGET_NOTICE_ONE
+                    } else {
+                        BUDGET_NOTICE_TWO
+                    }
+                    .into(),
+                );
+                budget_notice_sent = true;
+            }
             turns += 1;
             emit(&events, AgentEvent::TurnStart { turn: turns });
 
@@ -3689,6 +4005,35 @@ impl Agent {
                 convo.taint = taint;
             }
 
+            let steers: Vec<QueuedSteer> = if cx.goal_ingress.is_some() && closing.is_none() {
+                cx.owner_steering
+                    .as_ref()
+                    .map(|queue| {
+                        queue
+                            .lock()
+                            .unwrap_or_else(|err| err.into_inner())
+                            .iter()
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            // Leave the queue and conversation untouched until the same
+            // record that binds the version also accepts this request.
+            let steered_messages = (!steers.is_empty()).then(|| {
+                let mut folded = messages.clone();
+                for steer in &steers {
+                    if let QueuedSteer::Owner(input) = steer {
+                        owner_inputs.push(input.clone());
+                    }
+                    fold_steer(&mut folded, steer.text().to_string());
+                }
+                folded
+            });
+            let request_history = steered_messages.as_deref().unwrap_or(messages);
+
             // The size of exactly what is about to go on the wire. Taken here
             // rather than after the response, because the overflow arm below
             // rewrites `messages` between the two and the pair must describe
@@ -3700,12 +4045,12 @@ impl Agent {
             // reading this request carried, so a run that crosses midnight
             // records the date the model last saw.
             convo.harness_notes = notes.head.clone();
-            let mut sent_bytes = self.wire_bytes(messages, &notes);
+            let mut sent_bytes = self.wire_bytes(request_history, &notes);
             let mut request = CompletionRequest {
                 response_schema: None,
                 model: self.model.clone(),
                 system: self.system.clone(),
-                messages: self.wire(messages, &notes).into_owned(),
+                messages: self.wire(request_history, &notes).into_owned(),
                 tools: self.registry.specs_for(cx.phase),
                 max_tokens: self.cfg.max_tokens,
                 effort: self.cfg.effort,
@@ -3733,6 +4078,33 @@ impl Agent {
                     crate::message::ToolChoice::Auto
                 },
             };
+
+            if let Some(evidence_bytes) = self.bind_goal_decision(
+                cx,
+                &mut convo.goal_context,
+                &mut convo.goal_context_replay,
+                &mut request,
+                request_history,
+                &mut owner_inputs,
+                first_decision,
+            )? {
+                sent_bytes += evidence_bytes;
+                taint.private = true;
+                convo.taint = taint;
+            }
+            first_decision = false;
+            if let Some(folded) = steered_messages {
+                *messages = folded;
+                if let Some(queue) = &cx.owner_steering {
+                    queue
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner())
+                        .drain(..steers.len());
+                }
+                for steer in steers {
+                    emit(&events, AgentEvent::QueuedInput(steer.text().to_string()));
+                }
+            }
 
             // A prompt that overflows the model's window is refused outright,
             // and the reactive threshold cannot always prevent it: a turn's
@@ -3833,6 +4205,18 @@ impl Agent {
                     // sent.
                     pressure.invalidate();
                     sent_bytes = self.wire_bytes(messages, &notes);
+                    request.trailing_notes = notes.tail.len();
+                    if let Some(evidence_bytes) = self.bind_goal_decision(
+                        cx,
+                        &mut convo.goal_context,
+                        &mut convo.goal_context_replay,
+                        &mut request,
+                        messages,
+                        &mut owner_inputs,
+                        false,
+                    )? {
+                        sent_bytes += evidence_bytes;
+                    }
                     self.complete(cx, &request, &stream).await?
                 }
                 other => other?,
@@ -3950,6 +4334,22 @@ impl Agent {
                 }
             }
 
+            // Dynamic owner evidence is a request-only projection. Rebuilding
+            // it after a server pause would change the paused request rather
+            // than resume it unchanged. Refuse the raw envelope before an
+            // empty-turn nudge, closing rewrite or client tool dispatch can
+            // disguise that boundary; keep the returned message for audit.
+            // Historical replay still follows its exact recorded projection.
+            if response.stop_reason == StopReason::PauseTurn
+                && convo.goal_context.current().is_some()
+                && convo.goal_context_replay.is_none()
+            {
+                messages.push(response.message);
+                anyhow::bail!(
+                    "live dynamic-goal continuation after a provider pause is unsupported"
+                );
+            }
+
             // The closing reply answers in words. A call the model still made,
             // or wrote out as text, is not run and never shown: the owner
             // sees the words that remain, or that the picture is on its way
@@ -4052,7 +4452,7 @@ impl Agent {
                     // Where this turn's traces begin: the guard's refusal
                     // streak skips the calls the harness refused.
                     let traced = trace.len();
-                    let (results, provenance, reads) = self
+                    let (results, provenance, reads, plan_batch) = self
                         .run_tools(
                             cx,
                             &response.message,
@@ -4253,7 +4653,11 @@ impl Agent {
 
                     let mut result_message = Message::tool_results(results);
                     result_message.tool_provenance = provenance;
+                    plan_batch.attach(&mut result_message);
                     messages.push(result_message);
+                    crate::planning::validate_plan_results(
+                        messages.last().expect("just appended result"),
+                    )?;
                     // The next request closes the run (§5.5): on a repeat
                     // call in every chat, or right after the picture is
                     // queued where the run is set to end then.
@@ -4346,7 +4750,7 @@ impl Agent {
                         // Preserve refused checks in their trace, without reporting
                         // harness dispatch as a model-initiated send attempt.
                         let mut check_blocks = 0;
-                        let (results, provenance, reads) = self
+                        let (results, provenance, reads, plan_batch) = self
                             .run_tools(
                                 cx,
                                 &request,
@@ -4407,6 +4811,7 @@ impl Agent {
                         }
                         let mut answer = Message::tool_results(results);
                         answer.tool_provenance = provenance;
+                        plan_batch.attach(&mut answer);
                         messages.push(answer);
                         if trace[start..].iter().any(|c| c.is_error && !c.denied) {
                             // The executor knows which step this check belongs to.
@@ -4522,6 +4927,22 @@ impl Agent {
                 // conversation as-is resumes it; no extra user message.
                 StopReason::PauseTurn => continue,
                 _ => {
+                    // A final artifact can be ready at a budget ceiling, but
+                    // only an ordinary answer with budget remaining may resume.
+                    // Forced final-answer and closing paths never enter here
+                    // as eligible operational work.
+                    if stop_reason == StopReason::EndTurn
+                        && !produced_nothing
+                        && closing.is_none()
+                        && cx.completion_observer.is_some()
+                    {
+                        let resumed = completion_report
+                            .observe(cx, !stopping_now(loop_detected, turns, &usage), messages)
+                            .await;
+                        if resumed || cx.cancelled() {
+                            continue;
+                        }
+                    }
                     let mut outcome = self.finish(
                         text,
                         &response,
@@ -4554,6 +4975,145 @@ impl Agent {
                 }
             }
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn bind_goal_decision(
+        &self,
+        cx: &RunContext,
+        state: &mut crate::goal_context::GoalContextState,
+        replay: &mut Option<GoalReplaySchedule>,
+        request: &mut CompletionRequest,
+        conversation_messages: &[Message],
+        inputs: &mut Vec<crate::goal_context::OwnerInput>,
+        run_start: bool,
+    ) -> Result<Option<usize>> {
+        use crate::goal_context::{CharterSnapshot, DecisionBinding};
+        if let Some(schedule) = replay {
+            let (binding, version) = schedule
+                .front()
+                .context("dynamic goal replay exhausted its recorded decisions")?;
+            anyhow::ensure!(
+                run_start || !binding.run_start(),
+                "dynamic goal replay changed a recorded run boundary"
+            );
+            let evidence_bytes = if run_start {
+                request.messages = binding.messages().to_vec();
+                request.trailing_notes = binding.trailing_notes();
+                0
+            } else {
+                Self::attach_owner_evidence(request, version)
+            };
+            binding.verify_messages(&request.messages)?;
+            binding.verify_tool_surface(&request.tools, request.tool_choice)?;
+            anyhow::ensure!(
+                request.trailing_notes == binding.trailing_notes(),
+                "dynamic goal replay changed recorded trailing notes"
+            );
+            request.system = binding.system().map(str::to_string);
+            *cx.tools
+                .goal_context_version
+                .lock()
+                .unwrap_or_else(|err| err.into_inner()) = Some(version.clone());
+            *cx.tools
+                .goal_decision
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(
+                crate::planning::GoalDecisionStamp::capture(binding, version)?,
+            );
+            schedule.pop_front();
+            return Ok(Some(evidence_bytes));
+        }
+        if inputs.is_empty() && state.current().is_none() {
+            return Ok(None);
+        }
+        let ingress = cx
+            .goal_ingress
+            .as_ref()
+            .context("owner goal input requires an explicit host boundary")?;
+        let charter = match &self.goal_charter {
+            Some(config) => {
+                let path = &config.path;
+                let source = match std::fs::read_to_string(path) {
+                    Ok(source) => Some(source),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(err) => {
+                        return Err(err).with_context(|| format!("read charter {}", path.display()))
+                    }
+                };
+                // Match the run's registered surface. A forced final answer
+                // suppresses tools for one request without changing the charter.
+                let todo = self.registry.get("todo").is_some() && !cx.is_withheld("todo");
+                CharterSnapshot::from_source(source, todo)
+                    .with_context(|| format!("refresh charter {}", path.display()))?
+            }
+            None => CharterSnapshot::disabled(),
+        };
+        // Stage every transition and the binding together. An append failure
+        // leaves the live version, tool snapshot and decision ordinal unchanged.
+        let mut candidate = state.clone();
+        let mut versions = Vec::new();
+        if inputs.is_empty() {
+            versions.extend(candidate.transition(charter, None)?);
+        } else {
+            for input in inputs.iter().cloned() {
+                versions.extend(candidate.transition(charter.clone(), Some(input))?);
+            }
+        }
+        let version = candidate
+            .current()
+            .context("missing dynamic goal revision")?
+            .clone();
+        if let Some(config) = &self.goal_charter {
+            request.system = config.render(version.charter().prompt_block());
+        }
+        let evidence_bytes = Self::attach_owner_evidence(request, &version);
+        let binding = DecisionBinding::new(
+            candidate.next_decision(),
+            version.revision(),
+            &request.messages,
+            request.system.clone(),
+            run_start,
+            request.trailing_notes,
+        )?
+        .with_conversation_messages(conversation_messages)?
+        .with_tool_surface(&request.tools, request.tool_choice)?;
+        candidate.bind(binding.clone())?;
+        let goal_stamp = crate::planning::GoalDecisionStamp::capture(&binding, &version)?;
+        #[cfg(feature = "memory-prototype")]
+        if let Some(recorder) = &ingress.task_recorder {
+            recorder.record(binding.clone(), versions.clone())?;
+        }
+        if let Some(session) = &ingress.session {
+            session.append(&crate::session::Record::GoalContextDecision { binding, versions })?;
+        }
+        *state = candidate;
+        *cx.tools
+            .goal_decision
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(goal_stamp);
+        inputs.clear();
+        *cx.tools
+            .goal_context_version
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(version);
+        Ok(Some(evidence_bytes))
+    }
+
+    fn attach_owner_evidence(
+        request: &mut CompletionRequest,
+        version: &crate::goal_context::ContextVersion,
+    ) -> usize {
+        let evidence = version.owner_prompt_block();
+        let bytes = crate::message::notes_bytes(std::slice::from_ref(&evidence));
+        if let Some(last) = request.messages.last_mut().filter(|m| m.role == Role::User) {
+            let before_notes = last.content.len().saturating_sub(request.trailing_notes);
+            last.content.insert(before_notes, Block::text(evidence));
+        } else {
+            request.messages.push(Message::user(evidence));
+        }
+        request.trailing_notes += 1;
+        bytes
     }
 
     /// Summarise the middle of the transcript so the conversation keeps fitting.
@@ -4882,12 +5442,11 @@ impl Agent {
     /// *user* message: anything mining transcripts for what the user said —
     /// `learning::extract_interventions` — must be able to tell the harness's
     /// own voice apart from a person's.
-    async fn final_answer(
+    fn final_answer_request(
         &self,
         cx: &RunContext,
         messages: &mut Vec<Message>,
-        events: &Option<UnboundedSender<AgentEvent>>,
-    ) -> Result<Option<String>> {
+    ) -> CompletionRequest {
         // Folded, not pushed: after a tool turn the tail is the tool-results
         // message, and a bare `Message::user` beside it is two user messages
         // in a row — the shape this file names as invalid. `append_user_text`
@@ -4897,7 +5456,7 @@ impl Agent {
         append_user_text(messages, FINAL_ANSWER_NUDGE.to_string());
 
         let notes = self.request_notes(cx);
-        let request = CompletionRequest {
+        CompletionRequest {
             response_schema: None,
             model: self.model.clone(),
             system: self.system.clone(),
@@ -4913,9 +5472,17 @@ impl Agent {
             local_only: false,
             trailing_notes: notes.tail.len(),
             tool_choice: crate::message::ToolChoice::Auto,
-        };
+        }
+    }
 
-        let response = match self.complete(cx, &request, events).await? {
+    async fn final_answer(
+        &self,
+        cx: &RunContext,
+        messages: &mut Vec<Message>,
+        events: &Option<UnboundedSender<AgentEvent>>,
+        request: &CompletionRequest,
+    ) -> Result<Option<String>> {
+        let response = match self.complete(cx, request, events).await? {
             Completion::Finished(response) => *response,
             // Interrupted even during the forced last answer. Nothing more to
             // do: the caller already knows the run is being cut short.
@@ -5432,7 +5999,7 @@ impl Agent {
         Self::arm_at_start(cx, convo);
         let mut trace = Vec::new();
         let mut blocked_sends = 0;
-        let (blocks, provenance, reads) = self
+        let (blocks, provenance, reads, _plan_batch) = self
             .dispatch(
                 cx,
                 vec![(call_id.clone(), name.to_string(), input)],
@@ -5493,6 +6060,46 @@ impl Agent {
         // turn's may; a harness call's runs inline (`dispatch_one`).
         defer: bool,
     ) -> Batch {
+        #[cfg(feature = "memory-prototype")]
+        let task_batch = if let Some(live) = &cx.tools.task_plan {
+            let mut ids = std::collections::HashSet::new();
+            let reservation = if !defer
+                || cx
+                    .tools
+                    .goal_decision
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_none()
+            {
+                Err(anyhow::anyhow!(
+                    "task batch requires a bound native model decision"
+                ))
+            } else if calls.iter().all(|(id, _, _)| ids.insert(id)) {
+                live.reserve_batch(calls.len())
+            } else {
+                Err(anyhow::anyhow!("duplicate provider call id in task batch"))
+            };
+            match reservation {
+                Ok(batch) => Some(batch),
+                Err(error) => {
+                    return (
+                        calls
+                            .iter()
+                            .map(|(id, _, _)| Block::ToolResult {
+                                tool_use_id: id.clone(),
+                                content: format!("Task batch refused: {error}"),
+                                is_error: true,
+                            })
+                            .collect(),
+                        calls.iter().map(|(id, _, _)| (id.clone(), false)).collect(),
+                        vec![],
+                        PlanBatch::default(),
+                    )
+                }
+            }
+        } else {
+            None
+        };
         // Refusals and staging notices are ours; executed results overwrite
         // their entries with the tool's actual per-call classification.
         let mut provenance: std::collections::BTreeMap<String, bool> =
@@ -5601,8 +6208,9 @@ impl Agent {
         } else {
             (None, None)
         };
-        let executing =
-            futures::future::join_all(approved.into_iter().map(|(i, tool, id, name, input)| {
+        let execution_futures = approved
+            .into_iter()
+            .map(|(i, tool, id, name, input)| {
                 // Stamp the call's own id onto the context it runs under, so
                 // a tool that contains a run — a subagent — can tag the
                 // events it forwards. Only when somebody is watching: the
@@ -5630,11 +6238,54 @@ impl Agent {
                     host_calls,
                     None,
                 );
+                #[cfg(feature = "memory-prototype")]
+                let tool_ctx = {
+                    let mut tool_ctx = (*tool_ctx).clone();
+                    if let (Some(live), Some((start, batch)), Some(goal)) = (
+                        &cx.tools.task_plan,
+                        task_batch,
+                        cx.tools
+                            .goal_decision
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .clone(),
+                    ) {
+                        tool_ctx.plan_call =
+                            Some(Arc::new(crate::tool::todo::memory::PlanCall::new(
+                                Arc::clone(live),
+                                start + i as u32,
+                                batch,
+                                goal,
+                                cx.tools.goal_track.as_ref().and_then(|g| g.anchor()),
+                                host_cap,
+                            )));
+                    }
+                    Arc::new(tool_ctx)
+                };
                 async move {
                     let out = Self::execute(&tool, &name, input, &tool_ctx).await;
-                    (i, id, name, out)
+                    #[cfg(feature = "memory-prototype")]
+                    let contribution = tool_ctx.plan_call.as_ref().and_then(|call| call.take());
+                    #[cfg(not(feature = "memory-prototype"))]
+                    let contribution: Option<(
+                        crate::message::PlanResultAudit,
+                        crate::planning::Feedback,
+                    )> = None;
+                    (i, id, name, out, contribution)
                 }
-            }));
+            })
+            .collect::<Vec<_>>();
+        let executing = async {
+            #[cfg(feature = "memory-prototype")]
+            if task_batch.is_some() {
+                let mut executed = Vec::with_capacity(execution_futures.len());
+                for execution in execution_futures {
+                    executed.push(execution.await);
+                }
+                return executed;
+            }
+            futures::future::join_all(execution_futures).await
+        };
         // Only the calls' contexts hold a sender now, so the serving loop ends
         // when the last of them is done.
         drop(host_tx);
@@ -5674,7 +6325,8 @@ impl Agent {
         // into `role: "tool"` messages ahead of the parts array anyway.
         let mut pictures = Vec::new();
         let mut batch_reads = Vec::new();
-        for (i, id, name, mut out) in executed {
+        let mut plan_batch = PlanBatch::default();
+        for (i, id, name, mut out, contribution) in executed {
             // A deferred call's slow half (`ToolOutput::deferred`): handed to
             // the host's queue, where it outlives this run and its output
             // answers the call late; refused in the tool's own words when the
@@ -5864,6 +6516,16 @@ impl Agent {
                     content: out.content.clone(),
                 },
             );
+            if let Some((mut audit, feedback)) = contribution {
+                audit.result_index = i;
+                audit.steps_start = plan_batch.feedback.steps.len();
+                audit.decisions_start = plan_batch.feedback.decisions.len();
+                plan_batch.feedback.steps.extend(feedback.steps);
+                plan_batch.feedback.decisions.extend(feedback.decisions);
+                audit.steps_end = plan_batch.feedback.steps.len();
+                audit.decisions_end = plan_batch.feedback.decisions.len();
+                plan_batch.audits.push(audit);
+            }
             results[i] = Some(Block::ToolResult {
                 tool_use_id: id,
                 content: out.content,
@@ -5876,7 +6538,7 @@ impl Agent {
         }
         let mut blocks: Vec<Block> = results.into_iter().flatten().collect();
         blocks.append(&mut pictures);
-        (blocks, provenance, batch_reads)
+        (blocks, provenance, batch_reads, plan_batch)
     }
 
     /// What a batch of calls will arm, forecast from declared reach before
@@ -6170,7 +6832,7 @@ impl Agent {
             }
         };
         match result {
-            Ok(resp) => PassAnswer::Answered(resp),
+            Ok(resp) => PassAnswer::Answered(Box::new(resp)),
             Err(e) => PassAnswer::Failed(crate::tool::code::pass_failure(&e)),
         }
     }
@@ -6238,6 +6900,10 @@ impl Agent {
         program_room: Option<usize>,
     ) -> Arc<ToolCtx> {
         Arc::new(ToolCtx {
+            #[cfg(feature = "memory-prototype")]
+            plan_call: None,
+            #[cfg(feature = "memory-prototype")]
+            task_plan: None,
             call_id: Some(id.to_string()),
             taint: Some(turn_taint),
             recorded_taint: Some(recorded_taint),
@@ -7341,6 +8007,8 @@ fn emit(events: &Option<UnboundedSender<AgentEvent>>, event: AgentEvent) {
 
 #[cfg(test)]
 mod tests {
+    include!("agent_completion_tests.rs");
+    include!("agent_budget_notice_tests.rs");
     use super::*;
     use crate::config::PermissionMode;
     use crate::provider::StreamSink;
@@ -7578,6 +8246,759 @@ mod tests {
         )
         .unwrap();
         (agent, provider)
+    }
+
+    #[tokio::test]
+    async fn owner_goal_context_is_conversation_local_and_excludes_untyped_input() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct OverlappingProvider {
+            inner: Arc<ScriptedProvider>,
+            paired: tokio::sync::Barrier,
+            entered: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl Provider for OverlappingProvider {
+            fn local(&self) -> bool {
+                true
+            }
+
+            fn id(&self) -> &str {
+                self.inner.id()
+            }
+
+            fn default_model(&self) -> &str {
+                self.inner.default_model()
+            }
+
+            async fn complete(
+                &self,
+                request: &CompletionRequest,
+                sink: Option<&StreamSink>,
+            ) -> Result<CompletionResponse> {
+                if self.entered.fetch_add(1, Ordering::Relaxed) < 2 {
+                    self.paired.wait().await;
+                }
+                self.inner.complete(request, sink).await
+            }
+        }
+
+        let (mut agent, provider) = agent_with(
+            vec![assistant(vec![Block::text("done")], StopReason::EndTurn); 3],
+            PermissionMode::Allow,
+        );
+        agent.provider = Box::new(OverlappingProvider {
+            inner: Arc::clone(&provider),
+            paired: tokio::sync::Barrier::new(2),
+            entered: AtomicUsize::new(0),
+        });
+        let mut first = Conversation::from(vec![Message::user("survey the orchard")]);
+        let mut second = Conversation::from(vec![Message::user("organize the samples")]);
+        let owned = |text: &str| {
+            agent.context().as_ref().clone().with_goal_ingress(
+                vec![crate::goal_context::OwnerInput::new(
+                    crate::goal_context::OwnerSource::CliChat,
+                    text.to_string(),
+                )
+                .unwrap()],
+                None,
+            )
+        };
+        let first_run = owned("survey the orchard");
+        let second_run = owned("organize the samples");
+        let (a, b) = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            tokio::join!(
+                agent.run_in(&first_run, &mut first, None),
+                agent.run_in(&second_run, &mut second, None),
+            )
+        })
+        .await
+        .expect("both conversations reached the provider concurrently");
+        a.unwrap();
+        b.unwrap();
+        first.push(Message::user("instead, calibrate the rain gauge"));
+        let queue = Arc::new(Mutex::new(VecDeque::from(["remote suggestion".into()])));
+        let revision = owned("instead, calibrate the rain gauge").with_queued_input(queue);
+        agent.run_in(&revision, &mut first, None).await.unwrap();
+        assert_eq!(
+            first.goal_context.current().unwrap().owner_inputs().len(),
+            2
+        );
+        assert_eq!(
+            second.goal_context.current().unwrap().owner_inputs().len(),
+            1
+        );
+        assert!(first.goal_anchor.is_none());
+        let seen = provider.seen.lock().unwrap();
+        for request in &seen[..2] {
+            let text = request.messages.last().unwrap().text();
+            assert_ne!(
+                text.contains("survey the orchard"),
+                text.contains("organize the samples"),
+            );
+        }
+        let evidence = seen[2]
+            .messages
+            .last()
+            .unwrap()
+            .content
+            .iter()
+            .find_map(|block| match block {
+                Block::Text { text } if text.starts_with("<owner_context") => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(evidence.contains("survey the orchard"));
+        assert!(evidence.contains("instead, calibrate the rain gauge"));
+        assert!(!evidence.contains("organize the samples"));
+        assert!(!evidence.contains("remote suggestion"));
+        assert!(seen[2]
+            .messages
+            .iter()
+            .any(|m| m.text().contains("remote suggestion")));
+    }
+
+    async fn assert_dynamic_goal_pause_refused(
+        change_charter: bool,
+        tail_note: bool,
+        budget_note: bool,
+        pause_blocks: Option<Vec<Block>>,
+    ) {
+        use crate::goal_context::{OwnerInput, OwnerSource};
+
+        struct ChangeDuringPause {
+            inner: Arc<ScriptedProvider>,
+            charter: std::path::PathBuf,
+        }
+        #[async_trait]
+        impl Provider for ChangeDuringPause {
+            fn local(&self) -> bool {
+                true
+            }
+            fn id(&self) -> &str {
+                self.inner.id()
+            }
+            fn default_model(&self) -> &str {
+                self.inner.default_model()
+            }
+            async fn complete(
+                &self,
+                request: &CompletionRequest,
+                sink: Option<&StreamSink>,
+            ) -> Result<CompletionResponse> {
+                let response = self.inner.complete(request, sink).await?;
+                std::fs::write(
+                    &self.charter,
+                    "[[line]]\nid = 'garden'\ntext = 'Protect the seedlings.'\n",
+                )?;
+                Ok(response)
+            }
+        }
+
+        let dir = std::env::temp_dir().join(crate::session::Session::new_id());
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("charter.toml");
+        std::fs::write(
+            &path,
+            "[[line]]\nid = 'garden'\ntext = 'Preserve the old vines.'\n",
+        )
+        .unwrap();
+        let paused = assistant(
+            pause_blocks.unwrap_or_else(|| vec![Block::text("Server work paused.")]),
+            StopReason::PauseTurn,
+        );
+        let (mut agent, provider) = agent_with(
+            vec![
+                paused.clone(),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        if change_charter {
+            agent.provider = Box::new(ChangeDuringPause {
+                inner: Arc::clone(&provider),
+                charter: path.clone(),
+            });
+        }
+        let agent = agent.with_goal_charter(path, None).unwrap();
+        let owner = "Inspect the garden.";
+        let mut cx = agent.context().as_ref().clone().with_goal_ingress(
+            vec![OwnerInput::new(OwnerSource::CliChat, owner.into()).unwrap()],
+            None,
+        );
+        if tail_note {
+            cx.notes = Arc::from(vec!["A request-only harness note.".to_string()]);
+        }
+        if budget_note {
+            cx.budget_notice = true;
+            cx.budget.max_turns = Some(3);
+        }
+        let mut convo = Conversation::user(owner);
+        let result = agent.run_in(&cx, &mut convo, None).await;
+        std::fs::remove_dir_all(dir).unwrap();
+        let error = result.expect_err("live dynamic goals must not alter a paused continuation");
+        assert!(format!("{error:#}")
+            .contains("live dynamic-goal continuation after a provider pause is unsupported"));
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(
+            seen.len(),
+            1,
+            "no modified continuation reaches the provider"
+        );
+        assert_eq!(convo.messages, vec![Message::user(owner), paused.message]);
+        assert_eq!(convo.goal_context.decisions().len(), 1);
+        assert_eq!(convo.goal_context.versions().len(), 1);
+        let binding = &convo.goal_context.decisions()[0];
+        binding.verify_messages(&seen[0].messages).unwrap();
+        assert_eq!(binding.system(), seen[0].system.as_deref());
+        let version = convo.goal_context.current().unwrap();
+        assert!(version
+            .charter()
+            .prompt_block()
+            .unwrap()
+            .contains("Preserve the old vines."));
+        assert_eq!(binding.version(), version.revision());
+        assert!(cx.tools.goal_context_version.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_refuses_before_second_request() {
+        assert_dynamic_goal_pause_refused(false, false, false, None).await;
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_tail_notes_cannot_mask_assistant_boundary() {
+        assert_dynamic_goal_pause_refused(false, true, false, None).await;
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_does_not_activate_changed_charter() {
+        assert_dynamic_goal_pause_refused(true, false, false, None).await;
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_budget_notice_cannot_mask_assistant_boundary() {
+        assert_dynamic_goal_pause_refused(false, false, true, None).await;
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_without_usable_text_is_not_nudged() {
+        assert_dynamic_goal_pause_refused(
+            false,
+            false,
+            false,
+            Some(vec![Block::Thinking {
+                text: "Server-side work remains in progress.".into(),
+                signature: Some("synthetic-pause-signature".into()),
+            }]),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_with_tool_use_is_not_dispatched() {
+        assert_dynamic_goal_pause_refused(
+            false,
+            false,
+            false,
+            Some(vec![Block::ToolUse {
+                id: "paused-call".into(),
+                name: "echo".into(),
+                input: json!({"text": "must not run"}),
+            }]),
+        )
+        .await;
+    }
+
+    async fn assert_dynamic_goal_assistant_tail_refused(budget_turns: Option<u32>) {
+        use crate::goal_context::{OwnerInput, OwnerSource};
+        let owner = "Inspect the garden.";
+        let (agent, provider) = agent_with(
+            vec![assistant(vec![Block::text("done")], StopReason::EndTurn)],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone().with_goal_ingress(
+            vec![OwnerInput::new(OwnerSource::CliChat, owner.into()).unwrap()],
+            None,
+        );
+        // Projection appends a user message for these notes. Only the native
+        // boundary can prove that an owner or tool-result turn actually exists.
+        cx.notes = Arc::from(vec!["A request-only harness note.".to_string()]);
+        cx.budget_notice = budget_turns.is_some();
+        cx.budget.max_turns = budget_turns;
+        let native = vec![
+            Message::user(owner),
+            Message::assistant(vec![Block::text("Paused.")]),
+        ];
+        let mut convo = Conversation::from(native.clone());
+        let error = agent
+            .run_in(&cx, &mut convo, None)
+            .await
+            .expect_err("an assistant tail is not a new live owner decision");
+        assert!(format!("{error:#}")
+            .contains("live dynamic-goal request requires an owner or tool-result turn"));
+        assert!(provider.seen.lock().unwrap().is_empty());
+        assert_eq!(convo.messages, native);
+        assert!(convo.goal_context.versions().is_empty());
+        assert!(convo.goal_context.decisions().is_empty());
+        assert!(cx.tools.goal_context_version.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_direct_assistant_tail_entry_is_refused() {
+        assert_dynamic_goal_assistant_tail_refused(None).await;
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_direct_budget_note_cannot_create_owner_boundary() {
+        for turns in [1, 2] {
+            assert_dynamic_goal_assistant_tail_refused(Some(turns)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_guard_leaves_ordinary_resume_unchanged() {
+        let paused = assistant(
+            vec![Block::text("Server work paused.")],
+            StopReason::PauseTurn,
+        );
+        let (agent, provider) = agent_with(
+            vec![
+                paused.clone(),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::user("Inspect the garden.");
+        agent
+            .run_in(agent.context(), &mut convo, None)
+            .await
+            .unwrap();
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        let mut expected = seen[0].messages.clone();
+        expected.push(paused.message);
+        assert_eq!(seen[1].messages, expected);
+        assert!(convo.goal_context.decisions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_historical_replay_keeps_recorded_projection() {
+        use crate::goal_context::{DecisionBinding, OwnerInput, OwnerSource};
+        let owner = "Inspect the garden.";
+        let (agent, provider) = agent_with(
+            vec![assistant(vec![Block::text("done")], StopReason::EndTurn)],
+            PermissionMode::Allow,
+        );
+        let cx = agent.context().as_ref().clone().with_goal_ingress(
+            vec![OwnerInput::new(OwnerSource::CliChat, owner.into()).unwrap()],
+            None,
+        );
+        let mut original = Conversation::user(owner);
+        agent.run_in(&cx, &mut original, None).await.unwrap();
+        let first = original.goal_context.decisions()[0].clone();
+        let version = original.goal_context.current().unwrap().clone();
+        let paused = assistant(
+            vec![Block::text("Server work paused.")],
+            StopReason::PauseTurn,
+        );
+        let native = vec![Message::user(owner), paused.message.clone()];
+        let mut historical = provider.seen.lock().unwrap()[0].clone();
+        historical.messages = agent.wire(&native, &agent.request_notes(&cx)).into_owned();
+        // Historical live code appended evidence as a new user message. Replay
+        // preserves that exact recorded request; the live refusal is not a rewrite.
+        historical
+            .messages
+            .push(Message::user(version.owner_prompt_block()));
+        historical.trailing_notes = 1;
+        let second = DecisionBinding::new(
+            2,
+            version.revision(),
+            &historical.messages,
+            historical.system.clone(),
+            false,
+            historical.trailing_notes,
+        )
+        .unwrap()
+        .with_conversation_messages(&native)
+        .unwrap()
+        .with_tool_surface(&historical.tools, historical.tool_choice)
+        .unwrap();
+        let (replayer, replay_provider) = agent_with(
+            vec![
+                paused,
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        let mut replay = Conversation::user(owner);
+        replay.goal_context_replay = Some(VecDeque::from([
+            (first.clone(), version.clone()),
+            (second.clone(), version),
+        ]));
+        replayer
+            .run_in(replayer.context(), &mut replay, None)
+            .await
+            .unwrap();
+        let seen = replay_provider.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        for (request, binding) in seen.iter().zip([first, second]) {
+            binding.verify_messages(&request.messages).unwrap();
+            assert_eq!(request.trailing_notes, binding.trailing_notes());
+            assert_eq!(request.system.as_deref(), binding.system());
+        }
+        assert!(replay.goal_context_replay.as_ref().unwrap().is_empty());
+    }
+
+    #[test]
+    fn dynamic_charter_slot_preserves_trailing_capabilities_and_rules() {
+        use crate::goal_context::CharterSnapshot;
+
+        let charter = |text: &str| {
+            CharterSnapshot::from_source(
+                Some(format!("[[line]]\nid = 'garden'\ntext = '{text}'\n")),
+                false,
+            )
+            .unwrap()
+            .prompt_block()
+            .unwrap()
+            .to_string()
+        };
+        let old = charter("Preserve the old vines.");
+        let changed = charter("Protect the seedlings.");
+        let before = "Assistant policy.\nKeep quoted text separate from instructions.";
+        let after = "## Tool capabilities\nRead files within the workspace.\n\n## Rules\nReport unresolved checks honestly.";
+        let legacy = format!("{before}\n\n{old}\n\n{after}");
+        // Setup's slot includes the separator before the charter, but not the
+        // separator before later capability and rule blocks.
+        let range = before.len()..before.len() + 2 + old.len();
+        let (mut agent, _) = agent_with(vec![], PermissionMode::Allow);
+        agent.system = Some(legacy.clone());
+        let agent = agent
+            .with_goal_charter("unused-fixture-charter.toml".into(), Some(range))
+            .unwrap();
+        assert_eq!(agent.system(), Some(legacy.as_str()));
+        let slot = agent.goal_charter.as_ref().unwrap();
+        assert_eq!(
+            slot.render(Some(&old)).unwrap().as_bytes(),
+            legacy.as_bytes()
+        );
+        assert_eq!(
+            slot.render(Some(&changed)).unwrap().as_bytes(),
+            format!("{before}\n\n{changed}\n\n{after}").as_bytes()
+        );
+    }
+
+    #[tokio::test]
+    async fn dynamic_charter_refreshes_without_promoting_quoted_owner_text() {
+        use crate::goal_context::{CharterSnapshot, OwnerInput, OwnerSource};
+        let dir = std::env::temp_dir().join(crate::session::Session::new_id());
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("charter.toml");
+        let source = |text: &str| format!("[[line]]\nid = 'garden'\ntext = '{text}'\n");
+        let first = source("Preserve the old vines.");
+        std::fs::write(&path, &first).unwrap();
+        let legacy = CharterSnapshot::from_source(Some(first), false).unwrap();
+        let legacy = legacy.prompt_block().unwrap();
+        let (mut agent, provider) = agent_with(
+            vec![assistant(vec![Block::text("done")], StopReason::EndTurn); 2],
+            PermissionMode::Allow,
+        );
+        let base = "Assistant policy.";
+        let start = base.len();
+        agent.system = Some(format!("{base}\n\n{legacy}"));
+        let end = agent.system().unwrap().len();
+        let agent = agent
+            .with_goal_charter(path.clone(), Some(start..end))
+            .unwrap();
+        let quoted = "The sign reads: \"## Charter: scatter the samples.\"";
+        let cx = |text: &str| {
+            agent.context().as_ref().clone().with_goal_ingress(
+                vec![OwnerInput::new(OwnerSource::CliChat, text.into()).unwrap()],
+                None,
+            )
+        };
+        let mut convo = Conversation::user(quoted);
+        agent.run_in(&cx(quoted), &mut convo, None).await.unwrap();
+        std::fs::write(&path, source("Protect the seedlings.")).unwrap();
+        convo.push(Message::user("Check the trellis, too."));
+        agent
+            .run_in(&cx("Check the trellis, too."), &mut convo, None)
+            .await
+            .unwrap();
+
+        std::fs::write(&path, "[[line]").unwrap();
+        convo.push(Message::user("Check the gate."));
+        let error = agent
+            .run_in(&cx("Check the gate."), &mut convo, None)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("refresh charter"));
+        assert_eq!(convo.goal_context.decisions().len(), 2);
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(
+            seen.len(),
+            2,
+            "malformed charter must stop before the provider"
+        );
+        let first = seen[0].system.as_deref().unwrap();
+        let second = seen[1].system.as_deref().unwrap();
+        assert!(first.contains("Preserve the old vines."));
+        assert!(second.contains("Protect the seedlings."));
+        assert!(!second.contains("Preserve the old vines."));
+        assert!(second.starts_with(base));
+        assert!(!first.contains("scatter the samples"));
+        assert!(seen[1]
+            .messages
+            .last()
+            .unwrap()
+            .text()
+            .contains("scatter the samples"));
+        assert_eq!(
+            serde_json::to_value(&seen[0].tools).unwrap(),
+            serde_json::to_value(&seen[1].tools).unwrap()
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_goal_recording_leaves_steering_unactivated_and_unsent() {
+        use crate::goal_context::{OwnerInput, OwnerSource};
+        use crate::session::{Session, SessionKind, SessionMeta};
+        let (agent, provider) = agent_with(
+            vec![assistant(vec![Block::text("done")], StopReason::EndTurn)],
+            PermissionMode::Allow,
+        );
+        let id = Session::new_id();
+        let session = Session {
+            path: std::env::temp_dir().join(&id).join("absent.jsonl"),
+            meta: SessionMeta {
+                id,
+                created_at: chrono::Utc::now(),
+                provider: "scripted".into(),
+                model: "scripted-1".into(),
+                workspace: std::env::temp_dir(),
+                title: None,
+                kind: Some(SessionKind::Test),
+            },
+        };
+        let start = OwnerInput::new(OwnerSource::Tui, "examine the bench".into()).unwrap();
+        let steer = OwnerInput::new(OwnerSource::Tui, "examine the stool instead".into()).unwrap();
+        let queue = Arc::new(Mutex::new(VecDeque::from([QueuedSteer::Owner(steer)])));
+        let cx = agent
+            .context()
+            .as_ref()
+            .clone()
+            .with_goal_ingress(vec![start], Some(Arc::new(session)))
+            .with_owner_steering(Arc::clone(&queue));
+        let mut convo = Conversation::user("examine the bench");
+        let error = agent.run_in(&cx, &mut convo, None).await.unwrap_err();
+        assert!(format!("{error:#}").contains("was deleted"));
+        assert!(!convo.has_dynamic_goal_context());
+        assert_eq!(convo.messages, [Message::user("examine the bench")]);
+        assert!(provider.seen.lock().unwrap().is_empty());
+        assert_eq!(queue.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn goal_tool_reads_the_request_version_and_closing_leaves_steer_queued() {
+        use crate::goal_context::{OwnerInput, OwnerSource};
+        let owner = |text: &str| OwnerInput::new(OwnerSource::Tui, text.into()).unwrap();
+        let (agent, provider) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "g1".into(),
+                        name: "goal_context".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+                assistant(vec![Block::text("closed")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(crate::tool::goal_context::GoalContext)],
+            PermissionMode::Allow,
+        );
+        let queue = Arc::new(Mutex::new(VecDeque::from([
+            QueuedSteer::Owner(owner("start with the labels")),
+            QueuedSteer::Unverified("a mirrored message".into()),
+        ])));
+        let cx = agent
+            .context()
+            .as_ref()
+            .clone()
+            .with_goal_ingress(vec![owner("catalog the trays")], None)
+            .with_owner_steering(Arc::clone(&queue));
+        let mut convo = Conversation::user("catalog the trays");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert!(queue.lock().unwrap().is_empty());
+        queue
+            .lock()
+            .unwrap()
+            .push_back(QueuedSteer::Owner(owner("leave this queued")));
+        let mut closing = agent
+            .context()
+            .as_ref()
+            .clone()
+            .with_goal_ingress(Vec::new(), None)
+            .with_owner_steering(Arc::clone(&queue));
+        closing.close_with = Some(Closing {
+            line: "Work handed off.",
+            reply: "Closed.",
+        });
+        convo.push(Message::user("Acknowledge handoff."));
+        agent.run_in(&closing, &mut convo, None).await.unwrap();
+        let current = convo.goal_context.current().unwrap();
+        assert_eq!(current.owner_inputs().len(), 2);
+        assert_eq!(queue.lock().unwrap().len(), 1);
+        let seen = provider.seen.lock().unwrap();
+        let result = seen[1]
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|block| match block {
+                Block::ToolResult { content, .. } => Some(content),
+                _ => None,
+            })
+            .unwrap();
+        let result: Value = serde_json::from_str(result).unwrap();
+        assert_eq!(result["goal_context_revision"], current.revision());
+        assert_eq!(result["confirmed_goal"], Value::Null);
+        assert!(result["owner_goal_evidence"]
+            .as_str()
+            .unwrap()
+            .contains("start with the labels"));
+        assert!(!result["owner_goal_evidence"]
+            .as_str()
+            .unwrap()
+            .contains("a mirrored message"));
+        assert!(!seen[2]
+            .messages
+            .last()
+            .unwrap()
+            .text()
+            .contains("leave this queued"));
+    }
+
+    #[tokio::test]
+    async fn a_forced_final_answer_records_its_goal_context() {
+        use crate::goal_context::{OwnerInput, OwnerSource};
+        let (mut agent, provider) = agent_with(
+            vec![assistant(vec![Block::text("done")], StopReason::EndTurn)],
+            PermissionMode::Allow,
+        );
+        agent.cfg.force_final_answer = true;
+        let text = "Sort the trays by label.";
+        let mut cx = agent.context().as_ref().clone().with_goal_ingress(
+            vec![OwnerInput::new(OwnerSource::CliChat, text.to_string()).unwrap()],
+            None,
+        );
+        cx.budget.max_turns = Some(0);
+        let mut convo = Conversation::user(text);
+        let result = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert_eq!(result.text, "done");
+        assert!(result.taint.private);
+        let [decision] = convo.goal_context.decisions() else {
+            panic!("expected exactly one recorded final-answer request");
+        };
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].tools.is_empty());
+        assert!(decision.run_start());
+        decision.verify_messages(&seen[0].messages).unwrap();
+        decision
+            .verify_tool_surface(&seen[0].tools, seen[0].tool_choice)
+            .unwrap();
+        assert_eq!(decision.trailing_notes(), seen[0].trailing_notes);
+        assert!(seen[0]
+            .messages
+            .last()
+            .unwrap()
+            .text()
+            .contains("<owner_context"));
+    }
+
+    #[tokio::test]
+    async fn forced_final_answer_preserves_charter_revision_with_todo_available() {
+        use crate::goal_context::{OwnerInput, OwnerSource};
+        use crate::session::{Record, Session, SessionKind, SessionMeta};
+
+        let id = Session::new_id();
+        let dir = std::env::temp_dir().join(&id);
+        let session = Arc::new(
+            Session::create(
+                &dir,
+                SessionMeta {
+                    id,
+                    created_at: chrono::Utc::now(),
+                    provider: "scripted".into(),
+                    model: "scripted-1".into(),
+                    workspace: dir.clone(),
+                    title: None,
+                    kind: Some(SessionKind::Test),
+                },
+            )
+            .unwrap(),
+        );
+        let charter = dir.join("charter.toml");
+        std::fs::write(
+            &charter,
+            "[[line]]\nid = 'trays'\ntext = 'Keep the trays organized.'\n",
+        )
+        .unwrap();
+        let (mut agent, provider) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "echo-1".into(),
+                        name: "echo".into(),
+                        input: json!({"value":"organized"}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![
+                Arc::new(crate::tool::todo::TodoTool::new()),
+                Arc::new(EchoTool),
+            ],
+            PermissionMode::Allow,
+        );
+        agent.cfg.force_final_answer = true;
+        let agent = agent.with_goal_charter(charter, None).unwrap();
+        let text = "Sort the trays by label.";
+        let mut cx = agent.context().as_ref().clone().with_goal_ingress(
+            vec![OwnerInput::new(OwnerSource::CliChat, text.to_string()).unwrap()],
+            Some(Arc::clone(&session)),
+        );
+        cx.budget.max_turns = Some(1);
+        let mut convo = Conversation::user(text);
+        let before = convo.messages.clone();
+        session.append(&Record::Message(before[0].clone())).unwrap();
+        let result = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        session.record_run(&before, &convo).unwrap();
+        assert_eq!(result.text, "done");
+
+        let transcript = Session::read(&session.path).unwrap();
+        let trajectory = crate::replay::extract_transcript(&transcript)
+            .expect("a budget ceiling does not change the charter or introduce steering");
+        assert_eq!(trajectory.goal_decisions.len(), 2);
+        assert_eq!(
+            trajectory.goal_decisions[0].0.version(),
+            trajectory.goal_decisions[1].0.version()
+        );
+        let seen = provider.seen.lock().unwrap();
+        assert!(seen[0].tools.iter().any(|tool| tool.name == "todo"));
+        assert!(seen[1].tools.is_empty());
+        assert_eq!(seen[0].system, seen[1].system);
+        for ((binding, _), request) in trajectory.goal_decisions.iter().zip(seen.iter()) {
+            binding
+                .verify_tool_surface(&request.tools, request.tool_choice)
+                .unwrap();
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// A call the provider could not parse, as `openai.rs` hands it over.
@@ -9256,6 +10677,7 @@ mod tests {
         assert!(!taint.private);
         taint.arm_for_content(&[Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -11374,6 +12796,69 @@ mod tests {
         agent
     }
 
+    #[cfg(feature = "memory-prototype")]
+    #[tokio::test]
+    async fn prototype_goal_memory_arms_the_interlock_but_local_errors_do_not() {
+        use crate::memory::{context::Situation, fixture};
+        use crate::tool::goal_memory::GoalMemory;
+        let dir = std::env::temp_dir().join(format!("memory-interlock-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("fixture.memory-prototype.sqlite");
+        fixture::demo(&path).unwrap();
+        let tool = GoalMemory::open(
+            &path,
+            fixture::access(),
+            "synthetic".into(),
+            Situation {
+                event: "Plan an organization summary".into(),
+                goal: "task:summary".into(),
+                needs: None,
+            },
+        )
+        .unwrap();
+        let (mut agent, _) = agent_with(Vec::new(), PermissionMode::Allow);
+        agent.registry_mut().insert(Arc::new(tool));
+        agent.registry_mut().insert(Arc::new(SendTool));
+        agent.ctx_mut().security.trifecta = TrifectaPolicy::Block;
+        let cx = Arc::clone(agent.context());
+        let mut convo = Conversation::user("Plan a summary");
+        let bad = agent
+            .dispatch_one(
+                &cx,
+                &mut convo,
+                "goal_context",
+                json!({"memory":{"query":"!!!"}}),
+                &None,
+            )
+            .await;
+        assert!(bad.is_error);
+        assert!(
+            !convo.taint.untrusted,
+            "local validation errors are not outside content"
+        );
+        let read = agent
+            .dispatch_one(
+                &cx,
+                &mut convo,
+                "goal_context",
+                json!({"memory":{"query":"Person"}}),
+                &None,
+            )
+            .await;
+        assert!(!read.is_error && read.content.contains("Organization B"));
+        assert!(convo.taint.private && convo.taint.untrusted);
+        let send = agent
+            .dispatch_one(&cx, &mut convo, "send", json!({}), &None)
+            .await;
+        assert!(
+            send.denied && send.is_error,
+            "memory evidence must arm chosen-egress blocking"
+        );
+        drop(agent);
+        drop(cx);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// A call the harness makes itself (`Agent::dispatch_one`, Regenerate's
     /// path) meets the gates a model's call meets, in the same function: the
     /// interlock against the conversation's taint, a `pre_tool` hook, and the
@@ -12325,6 +13810,7 @@ justification = "echo is off on this box"
         let mut taint = Taint::default();
         taint.arm_for_content(&[Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -16013,7 +17499,72 @@ justification = "echo is off on this box"
     }
 
     #[tokio::test]
-    async fn successful_checks_do_not_repeat_and_disabled_checks_stay_unverified() {
+    async fn missing_shell_skips_declared_checks_without_dispatch() {
+        let plan = |id: &str, status: &str, check: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "todo".into(),
+                    input: json!({"items":[{"content":"work","status":status,"check":check}]}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let (agent, _) = agent_with_tools(
+            vec![
+                plan("p1", "in_progress", "original check"),
+                plan("p2", "completed", "replacement"),
+                plan("p3", "completed", "original check"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(crate::tool::todo::TodoTool::new())],
+            PermissionMode::Allow,
+        );
+        assert!(agent.cfg.step_checks);
+        let mut convo = Conversation::user("go");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert!(!outcome
+            .tool_calls
+            .iter()
+            .any(|c| c.name == crate::step::CHECK_TRACE));
+        assert!(!convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .any(|b| matches!(b,
+            Block::ToolUse { id, .. } if id.starts_with("mecha-check-"))));
+        let feedback: Vec<_> = convo
+            .messages
+            .iter()
+            .filter_map(|m| m.planning.as_ref())
+            .collect();
+        let steps: Vec<_> = feedback.iter().flat_map(|f| &f.steps).collect();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(
+            steps[0].verification,
+            crate::planning::Verification::Skipped
+        );
+        assert_eq!(
+            feedback
+                .last()
+                .unwrap()
+                .decisions
+                .last()
+                .unwrap()
+                .unverified_steps,
+            1
+        );
+        let text = serde_json::to_string(&convo.messages).unwrap();
+        assert_eq!(
+            text.matches("A declared plan check was not run; completion remains unverified.")
+                .count(),
+            1
+        );
+        assert!(!text.contains("unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn step_check_availability_respects_the_configuration_lever() {
         struct PassingShell;
         #[async_trait]
         impl Tool for PassingShell {
@@ -16030,7 +17581,14 @@ justification = "echo is off on this box"
                 Ok(ToolOutput::ok("passed"))
             }
         }
-        for enabled in [true, false] {
+        for (enabled, shell_registered) in
+            [(true, true), (true, false), (false, true), (false, false)]
+        {
+            let checks_run = enabled && shell_registered;
+            let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(crate::tool::todo::TodoTool::new())];
+            if shell_registered {
+                tools.push(Arc::new(PassingShell));
+            }
             let plan = |id: &str, status: &str| {
                 assistant(
                     vec![Block::ToolUse {
@@ -16048,13 +17606,15 @@ justification = "echo is off on this box"
                     plan("p3", "completed"),
                     assistant(vec![Block::text("done")], StopReason::EndTurn),
                 ],
-                vec![
-                    Arc::new(crate::tool::todo::TodoTool::new()),
-                    Arc::new(PassingShell),
-                ],
+                tools,
                 PermissionMode::Allow,
             );
             agent.cfg.step_checks = enabled;
+            // Deliberately stale caller state must be overwritten for every run.
+            Arc::make_mut(&mut agent.cx).tools = Arc::new(ToolCtx {
+                step_checks_unavailable: !(enabled && !shell_registered),
+                ..(*agent.cx.tools).clone()
+            });
             let mut convo = Conversation::user("go");
             let outcome = agent.run(&mut convo, None).await.unwrap();
             assert_eq!(
@@ -16063,7 +17623,7 @@ justification = "echo is off on this box"
                     .iter()
                     .filter(|c| c.name == crate::step::CHECK_TRACE)
                     .count(),
-                usize::from(enabled)
+                usize::from(checks_run)
             );
             let feedback: Vec<_> = convo
                 .messages
@@ -16073,15 +17633,23 @@ justification = "echo is off on this box"
             let step = feedback.iter().flat_map(|f| &f.steps).next().unwrap();
             assert_eq!(
                 step.verification,
-                if enabled {
+                if checks_run {
                     crate::planning::Verification::Passed
                 } else {
                     crate::planning::Verification::Skipped
                 }
             );
             let last = feedback.last().unwrap().decisions.last().unwrap();
-            assert_eq!(last.unverified_steps, usize::from(!enabled));
+            assert_eq!(last.unverified_steps, usize::from(!checks_run));
             assert!(crate::learning::extract_mismatches(&convo.messages, &[]).is_empty());
+            let text = serde_json::to_string(&convo.messages).unwrap();
+            assert_eq!(
+                text.matches("A declared plan check was not run; completion remains unverified.")
+                    .count(),
+                usize::from(enabled && !shell_registered),
+                "notice must respect step_checks={enabled}, shell_registered={shell_registered}"
+            );
+            assert!(!text.contains("unknown tool"));
         }
     }
 
@@ -21666,5 +23234,233 @@ justification = "this box never sends from an armed conversation"
         );
         assert_eq!(texts[2], "Let me look. Then", "a tool turn keeps its text");
         assert_eq!(sent[2].thinking(), "chose a call", "and its thinking");
+    }
+    #[cfg(feature = "memory-prototype")]
+    #[tokio::test]
+    async fn durable_todo_dispatch_orders_two_writes_and_reused_ids() -> Result<()> {
+        let f = crate::memory_session::chat::task_plan::tests::Fixture::new()?;
+        let (agent, _) = agent_with_tools(vec![], vec![f.tool.clone()], PermissionMode::Allow);
+        let mut cx = (*agent.cx).clone();
+        cx.tools = Arc::new(f.ctx.clone());
+        let mut trace = vec![];
+        let mut taint = Taint::default();
+        let mut blocked = 0;
+        let mut pictures = RunPictures::default();
+        let input = |status: &str| json!({"items":[{"content":"Inspect fixture","status":status,"check":"inspect fixture"}],"serves":"task:synthetic"});
+        let (blocks, provenance, _, audits) = agent
+            .dispatch(
+                &cx,
+                vec![
+                    ("first".into(), "todo".into(), input("in_progress")),
+                    ("second".into(), "todo".into(), input("completed")),
+                ],
+                &None,
+                &mut trace,
+                &mut taint,
+                &mut blocked,
+                &mut pictures,
+                24000,
+                None,
+                true,
+            )
+            .await;
+        assert_eq!(blocks.len(), 2);
+        assert!(
+            blocks.iter().all(|b| matches!(
+                b,
+                Block::ToolResult {
+                    is_error: false,
+                    ..
+                }
+            )),
+            "{blocks:?}"
+        );
+        assert!(taint.private);
+        let mut message = Message::tool_results(blocks);
+        message.tool_provenance = provenance;
+        audits.attach(&mut message);
+        crate::planning::validate_plan_results(&message)?;
+        assert_eq!(
+            message
+                .plan_results
+                .iter()
+                .map(|a| a.ordinal)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(
+            message
+                .plan_results
+                .iter()
+                .map(|a| a.result_index)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(message.planning.as_ref().unwrap().decisions.len(), 2);
+        assert!(message
+            .planning
+            .as_ref()
+            .unwrap()
+            .steps
+            .iter()
+            .all(|s| s.call_id.as_deref() == Some("second")));
+        let (blocks, _, _, audits) = agent
+            .dispatch(
+                &cx,
+                vec![("first".into(), "todo".into(), input("pending"))],
+                &None,
+                &mut trace,
+                &mut taint,
+                &mut blocked,
+                &mut pictures,
+                24000,
+                None,
+                true,
+            )
+            .await;
+        assert!(matches!(
+            &blocks[0],
+            Block::ToolResult {
+                is_error: false,
+                ..
+            }
+        ));
+        assert_eq!(audits.audits[0].ordinal, 2);
+        let counts = f.ctx.goal_track.as_ref().unwrap().snapshot();
+        let before_trace = trace.len();
+        let (blocks, _, _, audits) = agent
+            .dispatch(
+                &cx,
+                vec![
+                    ("duplicate".into(), "todo".into(), input("pending")),
+                    ("duplicate".into(), "todo".into(), input("completed")),
+                ],
+                &None,
+                &mut trace,
+                &mut taint,
+                &mut blocked,
+                &mut pictures,
+                24000,
+                None,
+                true,
+            )
+            .await;
+        assert!(blocks
+            .iter()
+            .all(|b| matches!(b, Block::ToolResult { is_error: true, .. })));
+        assert!(audits.audits.is_empty());
+        assert_eq!(trace.len(), before_trace, "duplicates refuse before gates");
+        assert_eq!(f.ctx.goal_track.as_ref().unwrap().snapshot(), counts);
+        Ok(())
+    }
+    #[cfg(feature = "memory-prototype")]
+    #[tokio::test]
+    async fn durable_todo_batch_keeps_first_receipt_when_second_commit_fails() -> Result<()> {
+        use crate::memory_session::chat::task_plan::tests::Fixture;
+        struct StopAfterFirst {
+            fixture: Arc<Fixture>,
+            calls: std::sync::atomic::AtomicUsize,
+        }
+        #[async_trait]
+        impl Tool for StopAfterFirst {
+            fn name(&self) -> &str {
+                "todo"
+            }
+            fn description(&self) -> &str {
+                self.fixture.tool.description()
+            }
+            fn input_schema(&self) -> Value {
+                self.fixture.tool.input_schema()
+            }
+            fn capabilities(&self) -> crate::tool::Capabilities {
+                self.fixture.tool.capabilities()
+            }
+            async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+                let output = self.fixture.tool.call(input, ctx).await?;
+                if self
+                    .calls
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    == 0
+                {
+                    self.fixture.stop()?;
+                }
+                Ok(output)
+            }
+        }
+        let f = Arc::new(Fixture::new()?);
+        let wrapper = Arc::new(StopAfterFirst {
+            fixture: Arc::clone(&f),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let (agent, _) = agent_with_tools(vec![], vec![wrapper], PermissionMode::Allow);
+        let mut cx = (*agent.cx).clone();
+        cx.tools = Arc::new(f.ctx.clone());
+        let input = |status: &str| json!({"items":[{"content":"Inspect fixture","status":status,"check":"inspect fixture"}],"serves":"task:synthetic"});
+        let (blocks, _, _, audits) = agent
+            .dispatch(
+                &cx,
+                vec![
+                    ("first".into(), "todo".into(), input("in_progress")),
+                    ("second".into(), "todo".into(), input("completed")),
+                ],
+                &None,
+                &mut vec![],
+                &mut Taint::default(),
+                &mut 0,
+                &mut RunPictures::default(),
+                24000,
+                None,
+                true,
+            )
+            .await;
+        assert!(matches!(
+            &blocks[0],
+            Block::ToolResult {
+                is_error: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &blocks[1],
+            Block::ToolResult { is_error: true, .. }
+        ));
+        let mut message = Message::tool_results(blocks);
+        audits.attach(&mut message);
+        crate::planning::validate_plan_results(&message)?;
+        assert_eq!(message.plan_results.len(), 1);
+        assert_eq!(message.plan_results[0].result_index, 0);
+        assert_eq!(message.planning.as_ref().unwrap().decisions.len(), 1);
+        assert_eq!(f.ctx.goal_track.as_ref().unwrap().snapshot().1, 1);
+        assert_eq!(f.ctx.step_counts.as_ref().unwrap().snapshot(), (0, 0, 0, 0));
+        // Ordinary policy still owns durable mutation approval.
+        let f = Fixture::new()?;
+        let (agent, _) = agent_with_tools(vec![], vec![f.tool.clone()], PermissionMode::ReadOnly);
+        let mut cx = (*agent.cx).clone();
+        cx.tools = Arc::new(f.ctx.clone());
+        let (blocks, _, _, audits) = agent
+            .dispatch(
+                &cx,
+                vec![("denied".into(), "todo".into(), input("pending"))],
+                &None,
+                &mut vec![],
+                &mut Taint::default(),
+                &mut 0,
+                &mut RunPictures::default(),
+                24000,
+                None,
+                true,
+            )
+            .await;
+        assert!(matches!(
+            &blocks[0],
+            Block::ToolResult { is_error: true, .. }
+        ));
+        assert!(audits.audits.is_empty());
+        assert_eq!(f.ctx.goal_track.as_ref().unwrap().snapshot().1, 0);
+        assert!(f
+            .tool
+            .items_in(&crate::tool::todo::PlanKey::of(&f.ctx))
+            .is_empty());
+        Ok(())
     }
 }

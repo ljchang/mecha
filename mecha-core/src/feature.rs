@@ -70,6 +70,11 @@ pub enum Feature {
     /// Present in every build, and available only in one built with the
     /// cargo feature `monty` ([`crate::interpreter::BUILT`]).
     Code,
+    /// The assistant's own memory: an encrypted store of what its runs did
+    /// and observed, under `<home>/memory` ([`crate::memory_home`]). Present
+    /// in every build, and available only in one built with the cargo
+    /// feature `memory-prototype` ([`crate::memory_home::BUILT`]).
+    Memory,
 }
 
 impl Feature {
@@ -100,6 +105,7 @@ impl Feature {
         Feature::Messages,
         Feature::System,
         Feature::Code,
+        Feature::Memory,
     ];
 
     /// The name on the command line and on the wire.
@@ -131,6 +137,7 @@ impl Feature {
             Feature::Messages => "messages",
             Feature::System => "system",
             Feature::Code => "code",
+            Feature::Memory => "memory",
         }
     }
 
@@ -162,6 +169,7 @@ impl Feature {
             Feature::Messages => "Messages between sessions",
             Feature::System => "Machine state for the assistant",
             Feature::Code => "Code mode (programs over tool results)",
+            Feature::Memory => "Memory (what the assistant keeps from its own runs)",
         }
     }
 
@@ -249,6 +257,11 @@ impl Feature {
             | Feature::Messages
             | Feature::System
             | Feature::Code => true,
+            // Its guards are still to come: today the switch says only that
+            // the owner wants the home store, and every attachment is an
+            // explicit `--episodic-memory`. Answers `true` in the change
+            // that makes an ordinary session attach the home store.
+            Feature::Memory => false,
             Feature::Incognito
             | Feature::Tasks
             | Feature::Ocr
@@ -299,6 +312,12 @@ impl Feature {
             // trial's home has none: switched on there, every trial would
             // fail its preflight and blame the trial rather than the line.
             | Feature::Code
+            // Not yet. Its store, key and authority are all under
+            // `$MECHA_HOME/memory` (`memory_home`), so a trial's home could
+            // hold its own — but a trial home has no store until something
+            // initializes one, and that is the experiment instrument's change
+            // to make, with this answer.
+            | Feature::Memory
             // A manifest's `live_servers` can carry the operator's graph in,
             // and the row cannot tell that entry from a declared one;
             // `config_at` defaults this bool instead (FEATURES-DESIGN §5.1).
@@ -633,6 +652,9 @@ pub struct Facts {
     /// is checked every time a pool starts (`worker::verify`), not on every
     /// read of this row, which a page load makes.
     pub code_worker_installed: bool,
+    /// What the home holds of a memory store (`memory_home::store`): none of
+    /// it, all of it, some of it, or unreadable. Never an open.
+    pub memory_store: crate::memory_home::Store,
     /// The **global** configuration — the only one any row reads.
     ///
     /// Carried here, rather than taken beside `Facts`, so the rule is the
@@ -688,6 +710,7 @@ impl Facts {
                 std::fs::metadata(crate::interpreter::worker::installed_path(home))
                     .is_ok_and(|m| m.is_file() && m.len() == pin.binary_bytes)
             }),
+            memory_store: crate::memory_home::store(home),
             config: global.clone(),
         }
     }
@@ -778,8 +801,8 @@ pub fn state(facts: &Facts, f: Feature) -> State {
     // print a command the same binary rejects. Switched on (by another
     // build sharing the file), it is a yes this build cannot honour, and
     // reads unready, shown, rather than off.
-    if let Some(why) = unbuilt(f) {
-        let (reason, fix) = (why.to_string(), Some(BUILD_WITH_MONTY.to_string()));
+    if let Some((why, build)) = unbuilt_with_fix(f) {
+        let (reason, fix) = (why.to_string(), Some(build.to_string()));
         return match switch(&facts.config, f) {
             Some(Switch::On) => State::Unready { reason, fix },
             _ => State::Off { reason, fix },
@@ -933,8 +956,9 @@ fn evidence(facts: &Facts, f: Feature) -> bool {
         Feature::Personas => facts.personas_stored == Some(true),
         Feature::Voice => facts.voice_unit_installed,
         Feature::Frontdoor => facts.has_factory_binary,
-        // Code mode is newer than `[features]`: no install had it to lose.
-        Feature::Messages | Feature::System | Feature::Code => false,
+        // Code mode and memory are newer than `[features]`: no install had
+        // either to lose.
+        Feature::Messages | Feature::System | Feature::Code | Feature::Memory => false,
         Feature::Incognito
         | Feature::Tasks
         | Feature::Ocr
@@ -1044,9 +1068,9 @@ pub fn plan_enable(cfg: &Config, ids: &[String]) -> Result<Vec<Feature>, String>
     for id in ids {
         let f = Feature::parse(id)
             .ok_or_else(|| format!("`{id}` is not a feature — `mecha features` lists them"))?;
-        if let Some(why) = unbuilt(f) {
+        if let Some((why, build)) = unbuilt_with_fix(f) {
             return Err(format!(
-                "`{id}` cannot be switched on here: {why} — {BUILD_WITH_MONTY}"
+                "`{id}` cannot be switched on here: {why} — {build}"
             ));
         }
         // A switch on with these unmet would stop every start, not degrade
@@ -1562,17 +1586,35 @@ pub fn write_switches(path: &Path, changes: &[(Feature, bool)]) -> anyhow::Resul
     Ok(())
 }
 
-/// Why this binary cannot run `f` at all, or `None`. Only code mode can be
-/// built out: its interpreter is the cargo feature `monty`, on by default and
-/// left out by `--no-default-features`.
+/// Why this binary cannot run `f` at all, or `None`. Two features can be
+/// built out: code mode's interpreter is the cargo feature `monty`, on by
+/// default and left out by `--no-default-features`; memory's store is the
+/// cargo feature `memory-prototype`, off by default.
 pub fn unbuilt(f: Feature) -> Option<&'static str> {
-    (f == Feature::Code && !crate::interpreter::BUILT).then_some(
-        "this mecha was built without code mode's interpreter (the cargo feature `monty`)",
-    )
+    unbuilt_with_fix(f).map(|(why, _)| why)
 }
 
-/// The fix [`unbuilt`] names.
+/// [`unbuilt`]'s reason beside the build that would have `f`, from one match
+/// so a third built-out feature cannot take another's fix.
+pub fn unbuilt_with_fix(f: Feature) -> Option<(&'static str, &'static str)> {
+    match f {
+        Feature::Code if !crate::interpreter::BUILT => Some((
+            "this mecha was built without code mode's interpreter (the cargo feature `monty`)",
+            BUILD_WITH_MONTY,
+        )),
+        Feature::Memory if !crate::memory_home::BUILT => Some((
+            "this mecha was built without the memory store (the cargo feature `memory-prototype`)",
+            BUILD_WITH_MEMORY,
+        )),
+        _ => None,
+    }
+}
+
+/// The fix [`unbuilt`] names for code mode.
 pub const BUILD_WITH_MONTY: &str = "build mecha with `--features monty`";
+
+/// The fix [`unbuilt`] names for memory.
+pub const BUILD_WITH_MEMORY: &str = "build mecha with `--features memory-prototype`";
 
 fn on(detail: impl Into<String>) -> State {
     State::On {
@@ -1972,6 +2014,23 @@ fn own_state(facts: &Facts, f: Feature) -> State {
                     "bwrap"
                 }
             ))
+        }
+        // The home store, by its three files and no open (a page load asks
+        // this, and an open reads the key). `state` has already answered for
+        // a build without the store.
+        // A partial store is its own answer: `init` refuses one, so the row
+        // must not print it as the fix (the #443 shape; review of #862).
+        Feature::Memory => {
+            use crate::memory_home::{Store, INIT_COMMAND, READABLE, REPAIR};
+            match facts.memory_store {
+                Store::Whole => on("the encrypted store in the mecha home's memory/"),
+                Store::Absent => off("no memory store in the mecha home yet", INIT_COMMAND),
+                Store::Partial => off("the memory store in the mecha home is incomplete", REPAIR),
+                Store::Unreadable => off(
+                    "the memory store in the mecha home could not be read",
+                    READABLE,
+                ),
+            }
         }
     }
 }
@@ -2469,6 +2528,57 @@ mod tests {
     /// from every test at once. This `match` has no wildcard: a new variant
     /// does not compile until it is placed here, and placing it here is
     /// placing it in `ALL` (found on review of #428).
+    /// Memory's row: a build without the store says so before anything
+    /// else; with it, the switch and then the home store's three files.
+    #[test]
+    fn memory_reads_its_build_its_switch_and_the_home_store() {
+        use crate::memory_home::Store;
+        let memory = |facts: &Facts| state(facts, Feature::Memory);
+        let mut facts = empty_machine();
+        if !crate::memory_home::BUILT {
+            let State::Off { reason, fix } = memory(&facts) else {
+                panic!("an unbuilt feature is off")
+            };
+            assert!(reason.contains("memory-prototype"), "{reason}");
+            assert_eq!(fix.as_deref(), Some(BUILD_WITH_MEMORY));
+            let refused = plan_enable(&facts.config, &["memory".into()]).unwrap_err();
+            assert!(refused.contains(BUILD_WITH_MEMORY), "{refused}");
+            // Switched on by another build sharing the file: a yes this
+            // build cannot honour is shown, never hidden.
+            set_switch(&mut facts.config, Feature::Memory, true);
+            assert!(matches!(memory(&facts), State::Unready { .. }));
+            return;
+        }
+        assert_eq!(memory(&facts).word(), "off");
+        assert_eq!(
+            plan_enable(&facts.config, &["memory".into()]),
+            Ok(vec![Feature::Memory])
+        );
+        set_switch(&mut facts.config, Feature::Memory, true);
+        let State::Unready { fix, .. } = memory(&facts) else {
+            panic!("switched on with no store is unready, and says how to make one")
+        };
+        assert_eq!(fix.as_deref(), Some(crate::memory_home::INIT_COMMAND));
+        // Some of a store and not all: `init` would refuse, so it is not the fix.
+        facts.memory_store = Store::Partial;
+        let State::Unready { reason, fix } = memory(&facts) else {
+            panic!("a partial store is unready")
+        };
+        assert!(reason.contains("incomplete"), "{reason}");
+        assert_eq!(fix.as_deref(), Some(crate::memory_home::REPAIR));
+        // Could not be read: a finding of its own, never "no store yet".
+        facts.memory_store = Store::Unreadable;
+        let State::Unready { reason, fix } = memory(&facts) else {
+            panic!("an unreadable store is unready")
+        };
+        assert!(reason.contains("could not be read"), "{reason}");
+        assert_eq!(fix.as_deref(), Some(crate::memory_home::READABLE));
+        facts.memory_store = Store::Whole;
+        assert_eq!(memory(&facts).word(), "on");
+        set_switch(&mut facts.config, Feature::Memory, false);
+        assert_eq!(memory(&facts).word(), "off");
+    }
+
     #[test]
     fn every_variant_is_in_all() {
         for &f in Feature::ALL {
@@ -2498,12 +2608,13 @@ mod tests {
                 | Feature::Publishing
                 | Feature::Messages
                 | Feature::System
-                | Feature::Code => {}
+                | Feature::Code
+                | Feature::Memory => {}
             }
         }
-        // The match above lists 26 — raise this with it, and a variant
+        // The match above lists 27 — raise this with it, and a variant
         // added to the match but not to `ALL` fails here.
-        assert_eq!(Feature::ALL.len(), 26);
+        assert_eq!(Feature::ALL.len(), 27);
     }
 
     #[test]
@@ -3137,7 +3248,14 @@ mod tests {
             // Not in this build: the fix is the build, which `enable` names
             // when it refuses.
             if unbuilt(f).is_some() {
-                assert_eq!(fix, BUILD_WITH_MONTY, "{}", f.id());
+                // Against the constants, not the function that built the
+                // row, or this would hold for any mapping.
+                let expected = match f {
+                    Feature::Code => BUILD_WITH_MONTY,
+                    Feature::Memory => BUILD_WITH_MEMORY,
+                    other => panic!("{} is built out with no fix pinned here", other.id()),
+                };
+                assert_eq!(fix, expected, "{}", f.id());
                 continue;
             }
             let args: Vec<String> = fix.split_whitespace().skip(3).map(String::from).collect();

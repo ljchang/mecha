@@ -965,9 +965,48 @@ pub async fn drive(
         ..Default::default()
     };
 
-    for turn in &trajectory.turns {
-        convo.push(Message::user(turn.clone()));
+    let dynamic = !trajectory.goal_decisions.is_empty();
+    let starts: Vec<usize> = trajectory
+        .goal_decisions
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (binding, _))| binding.run_start().then_some(i))
+        .collect();
+    let run_count = if dynamic {
+        starts.len()
+    } else {
+        trajectory.turns.len()
+    };
+    for index in 0..run_count {
+        if dynamic {
+            let start = starts[index];
+            let end = starts
+                .get(index + 1)
+                .copied()
+                .unwrap_or(trajectory.goal_decisions.len());
+            let group = &trajectory.goal_decisions[start..end];
+            convo.messages = group[0]
+                .0
+                .conversation_messages()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("dynamic replay lacks the recorded pre-request conversation")
+                })?
+                .to_vec();
+            convo.goal_context_replay = Some(group.iter().cloned().collect());
+            convo.taint.private = true;
+        } else {
+            convo.push(Message::user(trajectory.turns[index].clone()));
+        }
         let outcome = agent.run_in(cx, &mut convo, None).await?;
+        if dynamic {
+            anyhow::ensure!(
+                convo
+                    .goal_context_replay
+                    .as_ref()
+                    .is_some_and(|q| q.is_empty()),
+                "dynamic goal replay ended before all recorded decision boundaries"
+            );
+        }
         stats.absorb(&outcome);
         replayed.extend(outcome.tool_calls);
         final_text = outcome.text;
@@ -1045,6 +1084,36 @@ pub async fn drive_branch(
     }
     let seeded = seed.len();
     let mut convo = Conversation::resumed(seed, taint);
+    if !trajectory.goal_decisions.is_empty() {
+        convo.taint.private = true;
+        let matches: Vec<usize> = trajectory
+            .goal_decisions
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (binding, _))| {
+                binding
+                    .conversation_messages()
+                    .is_some_and(|messages| messages == convo.messages)
+                    .then_some(i)
+            })
+            .collect();
+        anyhow::ensure!(matches.len() == 1,
+            "dynamic goal branch lacks one exact recorded decision boundary; altered steering or ambiguous seeds are unsupported");
+        let start = matches[0];
+        let end = trajectory
+            .goal_decisions
+            .iter()
+            .enumerate()
+            .skip(start + 1)
+            .find_map(|(i, (binding, _))| binding.run_start().then_some(i))
+            .unwrap_or(trajectory.goal_decisions.len());
+        convo.goal_context_replay = Some(
+            trajectory.goal_decisions[start..end]
+                .iter()
+                .cloned()
+                .collect(),
+        );
+    }
     let mut stats = crate::session::RunStats {
         usage_complete: true,
         ..Default::default()
@@ -1491,9 +1560,11 @@ mod tests {
     /// until its author decides which it is (a count per file would let a
     /// writer replace a read in the same file unnoticed).
     ///
-    /// Not covered: a `read_only()` that *computes* its answer. The gate
-    /// trusts it as a real run's approver does; ROLLOUT's closed effect class
-    /// is what replaces this list and this test.
+    /// Computed answers require an explicit CONDITIONAL entry plus runtime
+    /// gate controls for each supported mode. Todo's volatile mode is a pure
+    /// read here; its durable mode reports a write and must be refused. Other
+    /// computed methods remain outside this inventory; the gate trusts them
+    /// as a real run's approver does until ROLLOUT's closed effect class lands.
     ///
     /// `PURE` entries are refused anyway when their capabilities say so:
     /// `WebSearch`/`WebOpen` for egress, `Subagent` for starting a child run,
@@ -1505,6 +1576,7 @@ mod tests {
         const WRITES: bool = true;
         // (file, implementing type, registered name if a literal, class)
         const PINNED: &[(&str, &str, Option<&str>, bool)] = &[
+            ("mecha-core/src/memory_runtime.rs", "BoundRead", None, PURE),
             (
                 "mecha-core/src/tool/request_access.rs",
                 "RequestAccess",
@@ -1628,6 +1700,12 @@ mod tests {
                 PURE,
             ),
             (
+                "mecha-core/src/tool/goal_memory.rs",
+                "GoalMemory",
+                None, // delegates its name to GoalContext
+                PURE, // read-only SQLite handle, RAM-only ranking
+            ),
+            (
                 "mecha-core/src/tool/hud.rs",
                 "HudPreview",
                 Some("hud_preview"),
@@ -1703,6 +1781,13 @@ mod tests {
                 PURE,
             ),
         ];
+        // The source method must still be found with this exact registered
+        // identity. These entries cannot synthesize a missing method. The
+        // todo_live_replay_* tests below check both branches against LiveGate;
+        // treating todo as an unconditional name-based writer would break
+        // volatile replay, while treating both modes as pure would allow writes.
+        const CONDITIONAL: &[(&str, &str, Option<&str>)] =
+            &[("mecha-core/src/tool/todo.rs", "TodoTool", Some("todo"))];
         const KEY: &str = "fn read_only(&self) -> bool {";
 
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -1801,14 +1886,23 @@ mod tests {
                         .map(str::trim)
                         .filter(|l| !l.is_empty() && !l.starts_with("//"))
                         .collect();
-                    if lines == ["true"] {
-                        let rel = file.strip_prefix(workspace).unwrap();
+                    let rel = file
+                        .strip_prefix(workspace)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    // Inspect computed methods only in explicitly named files;
+                    // the default trait method is not an implementation.
+                    if lines == ["true"] || CONDITIONAL.iter().any(|(f, _, _)| *f == rel) {
                         let imp = impl_start(code, at);
-                        found.insert((
-                            rel.to_string_lossy().replace('\\', "/"),
-                            implementing_type(code, imp),
-                            registered_name(code, imp),
-                        ));
+                        let ty = implementing_type(code, imp);
+                        let name = registered_name(code, imp);
+                        let conditional = CONDITIONAL
+                            .iter()
+                            .any(|(f, t, n)| *f == rel && *t == ty && *n == name.as_deref());
+                        if lines == ["true"] || conditional {
+                            found.insert((rel, ty, name));
+                        }
                     }
                     from = body_end;
                 }
@@ -1864,6 +1958,30 @@ mod tests {
             "GraphTool answers read_only() for every name it is built with; a new \
              constructor must be a read, or GraphTool must stop answering read-only"
         );
+    }
+
+    /// An unconditional name-based todo refusal would regress the legacy mode.
+    #[test]
+    fn todo_live_replay_allows_volatile_bookkeeping() {
+        let todo = crate::tool::todo::TodoTool::new();
+        assert!(todo.read_only());
+        assert_eq!(
+            LiveGate::reads_only().refuses(&todo, &json!({"items": []})),
+            None
+        );
+    }
+
+    /// Returning true for the durable branch would let replay change the store.
+    #[cfg(feature = "memory-prototype")]
+    #[test]
+    fn todo_live_replay_refuses_durable_store_writes() -> Result<()> {
+        let fixture = crate::memory_session::chat::task_plan::tests::Fixture::new()?;
+        assert!(!fixture.tool.read_only());
+        assert_eq!(
+            LiveGate::reads_only().refuses(fixture.tool.as_ref(), &json!({"items": []})),
+            Some("it writes".into())
+        );
+        Ok(())
     }
 
     /// Review of #713: a live replay without a gate is refused where it is
@@ -2563,6 +2681,98 @@ decision = "prompt"
         }
     }
 
+    struct CapturedDynamic(Arc<Mutex<Vec<CompletionRequest>>>);
+    #[async_trait]
+    impl Provider for CapturedDynamic {
+        fn local(&self) -> bool {
+            true
+        }
+        fn id(&self) -> &str {
+            "scripted"
+        }
+        fn default_model(&self) -> &str {
+            "scripted-1"
+        }
+        async fn complete(
+            &self,
+            request: &CompletionRequest,
+            _sink: Option<&StreamSink>,
+        ) -> Result<CompletionResponse> {
+            self.0.lock().unwrap().push(request.clone());
+            Ok(assistant(
+                vec![Block::text("finished")],
+                StopReason::EndTurn,
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn dynamic_replay_sends_each_historical_system_and_owner_version() {
+        use crate::goal_context::{
+            CharterSnapshot, DecisionBinding, GoalContextState, OwnerInput, OwnerSource,
+        };
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let approver = Arc::new(ModeApprover {
+            mode: PermissionMode::Allow,
+        });
+        let agent = Agent::new(
+            Box::new(CapturedDynamic(captured.clone())),
+            crate::tool::Registry::new(),
+            approver.clone(),
+            ToolCtx::default(),
+            AgentConfig::default(),
+            Some("today's unrelated system and charter".into()),
+        )
+        .unwrap();
+        let cx = RunContext::new(ToolCtx::default(), approver).with_budget(Budget::turns(2));
+        let mut state = GoalContextState::default();
+        let mut trajectory = Trajectory::default();
+        for (index, owner) in ["prepare report", "focus on figure"]
+            .into_iter()
+            .enumerate()
+        {
+            let charter = CharterSnapshot::from_source(
+                Some(format!(
+                    "[[line]]\nid='priority'\ntext='historical charter {index}'\n"
+                )),
+                false,
+            )
+            .unwrap();
+            let version = state
+                .transition(
+                    charter,
+                    Some(OwnerInput::new(OwnerSource::CliChat, owner.into()).unwrap()),
+                )
+                .unwrap()
+                .unwrap();
+            let conversation = vec![Message::user(owner)];
+            let mut wire = conversation.clone();
+            wire[0]
+                .content
+                .push(Block::text(version.owner_prompt_block()));
+            let system = version.charter().prompt_block().map(str::to_string);
+            let binding =
+                DecisionBinding::new(index as u64 + 1, version.revision(), &wire, system, true, 1)
+                    .unwrap()
+                    .with_conversation_messages(&conversation)
+                    .unwrap();
+            trajectory.goal_decisions.push((binding, version));
+        }
+        let result = drive(&agent, &cx, &trajectory).await.unwrap();
+        assert_eq!(result.turns, 2);
+        let requests = captured.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        for (request, (binding, version)) in requests.iter().zip(&trajectory.goal_decisions) {
+            assert_eq!(request.system.as_deref(), binding.system());
+            assert_eq!(request.messages, binding.messages());
+            assert_eq!(request.trailing_notes, 1);
+            assert!(request.messages[0]
+                .text()
+                .contains(&format!("revision=\"{}\"", version.revision())));
+            assert!(!request.system.as_deref().unwrap().contains("today's"));
+        }
+    }
+
     async fn drive_scripted(
         turns: Vec<CompletionResponse>,
         calls: Vec<RecordedCall>,
@@ -2655,6 +2865,7 @@ decision = "prompt"
             final_text: "done".into(),
             steered: false,
             harness_calls: 0,
+            goal_decisions: Vec::new(),
         };
         let report = drive_scripted(
             vec![
@@ -2759,6 +2970,7 @@ decision = "prompt"
                 Some("shot.png".into()),
             )],
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
         }];
@@ -2781,6 +2993,7 @@ decision = "prompt"
             final_text: "done".into(),
             steered: true,
             harness_calls: 0,
+            goal_decisions: Vec::new(),
         };
         // The forced prefix: the first call already made and answered.
         let seed = vec![
@@ -2874,6 +3087,7 @@ decision = "prompt"
             final_text: "done".into(),
             steered: false,
             harness_calls: 0,
+            goal_decisions: Vec::new(),
         };
 
         let report = drive_scripted(
@@ -3067,6 +3281,7 @@ decision = "prompt"
             final_text: "done".into(),
             steered: false,
             harness_calls: 0,
+            goal_decisions: Vec::new(),
         };
         // The model calls `other` where the recording says `echo`; the refusal
         // comes back as a tool result, and the cancelled run ends the turn.

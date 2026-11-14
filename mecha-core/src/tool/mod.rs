@@ -10,6 +10,8 @@ pub mod code;
 pub mod document;
 pub mod effect;
 pub mod goal_context;
+#[cfg(feature = "memory-prototype")]
+pub mod goal_memory;
 pub mod hud;
 pub mod image_library;
 pub mod image_view;
@@ -730,6 +732,11 @@ pub struct PersonAsk {
 /// What a tool is allowed to touch.
 #[derive(Debug, Clone)]
 pub struct ToolCtx {
+    #[cfg(feature = "memory-prototype")]
+    pub task_plan: Option<Arc<crate::memory_session::chat::task_plan::LivePlanTurn>>,
+    #[cfg(feature = "memory-prototype")]
+    pub plan_call: Option<Arc<todo::memory::PlanCall>>,
+    pub goal_decision: Arc<std::sync::Mutex<Option<crate::planning::GoalDecisionStamp>>>,
     /// Owner-bound evidence for the confirmed goal; never supplied by a model tool.
     pub appraisal_evidence: Option<crate::anticipation::BoundEvidence>,
     /// How the user will review a call this run stages, in this surface's
@@ -903,6 +910,8 @@ pub struct ToolCtx {
     /// value here is ever rendered into a request.
     pub goal_commitments: Option<Vec<crate::guilt::StoreGuilt>>,
     pub goal_guidance: bool,
+    /// Version seen by the provider that requested the current tool batch.
+    pub goal_context_version: Arc<std::sync::Mutex<Option<crate::goal_context::ContextVersion>>>,
     pub goal_lessons: Vec<crate::planning::Lesson>,
     pub goal_examples: Vec<crate::planning::Example>,
     /// Past clean appraisals of this run's situation and goal, for
@@ -921,6 +930,10 @@ pub struct ToolCtx {
     /// tool after the block is rendered.
     pub success_examples: Option<crate::planning::ServedSuccesses>,
     pub step_checks: Option<std::sync::Arc<std::sync::Mutex<Vec<crate::step::CheckRequest>>>>,
+    /// Checks are enabled, but the run has no registered `shell`. Stamped
+    /// by the agent each run; a missing queue alone can also mean that the
+    /// configuration deliberately disabled checks and must not add guidance.
+    pub step_checks_unavailable: bool,
     /// Whether a person is in this run's conversation, stamped by the
     /// front-end (`setup::posture_for`). The `shell` tool registers every
     /// command it spawns with it (`shell_registry`), which is what `mecha
@@ -1110,27 +1123,30 @@ impl GoalTrack {
     /// no anchor stands — a plan with no confirmed goal cannot drift from
     /// one, and counting it would make the denominator every planned run.
     pub fn note_plan(&self, serves: Option<&crate::goal::GoalRef>) {
-        use std::sync::atomic::Ordering::Relaxed;
-        let Some(anchor) = self.anchor() else {
-            return;
+        self.apply_plan_delta(Self::plan_delta(self.anchor().as_ref(), serves));
+    }
+
+    pub(crate) fn plan_delta(
+        anchor: Option<&crate::goal::GoalRef>,
+        serves: Option<&crate::goal::GoalRef>,
+    ) -> (u32, u32, u32) {
+        let Some(anchor) = anchor else {
+            return (0, 0, 0);
         };
-        self.plan_writes.fetch_add(1, Relaxed);
-        // An anchor no plan can name (a trigger, a request) has no drift to
-        // judge — every named goal would read as a changed pointer — but the
-        // write still happened: counting it keeps "planned under an anchor it
-        // cannot judge" apart from "never planned" (found on review).
         if !anchor.a_plan_can_name() {
-            return;
+            return (1, 0, 0);
         }
-        match crate::goal::drift_of(&anchor, serves) {
-            crate::goal::Drift::Same => {}
-            crate::goal::Drift::Changed => {
-                self.drifted_writes.fetch_add(1, Relaxed);
-            }
-            crate::goal::Drift::Unnamed => {
-                self.unnamed_writes.fetch_add(1, Relaxed);
-            }
+        match crate::goal::drift_of(anchor, serves) {
+            crate::goal::Drift::Same => (1, 0, 0),
+            crate::goal::Drift::Changed => (1, 1, 0),
+            crate::goal::Drift::Unnamed => (1, 0, 1),
         }
+    }
+    pub(crate) fn apply_plan_delta(&self, delta: (u32, u32, u32)) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.plan_writes.fetch_add(delta.0, Relaxed);
+        self.drifted_writes.fetch_add(delta.1, Relaxed);
+        self.unnamed_writes.fetch_add(delta.2, Relaxed);
     }
 
     /// `(anchor, plan writes, changed-pointer writes, unnamed writes)` as
@@ -1188,6 +1204,11 @@ impl StepCounts {
 impl Default for ToolCtx {
     fn default() -> Self {
         ToolCtx {
+            #[cfg(feature = "memory-prototype")]
+            task_plan: None,
+            #[cfg(feature = "memory-prototype")]
+            plan_call: None,
+            goal_decision: Arc::default(),
             appraisal_evidence: None,
             review_hint: None,
             workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -1216,11 +1237,13 @@ impl Default for ToolCtx {
             goal_readings: None,
             goal_commitments: None,
             goal_guidance: false,
+            goal_context_version: Arc::default(),
             goal_lessons: Vec::new(),
             goal_examples: Vec::new(),
             goal_appraisals: None,
             success_examples: None,
             step_checks: None,
+            step_checks_unavailable: false,
             run_posture: None,
             shell_registry: None,
             image_trail: None,
@@ -3314,3 +3337,6 @@ mod jail_tests {
         assert_eq!((writes, drifted, unnamed), (1, 1, 0));
     }
 }
+
+#[cfg(all(test, feature = "memory-prototype"))]
+mod goal_memory_tests;

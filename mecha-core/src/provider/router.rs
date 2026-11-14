@@ -133,6 +133,58 @@ pub fn is_loopback(url: &str) -> bool {
             .is_ok_and(|ip| ip.is_loopback())
 }
 
+/// Numeric loopback HTTP address, with no credentials/query/fragment.
+/// Used by opt-in local experiments that also disable redirects and proxies.
+pub fn is_literal_loopback(url: &str) -> bool {
+    let Ok(u) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    u.scheme() == "http"
+        && u.username().is_empty()
+        && u.password().is_none()
+        && u.query().is_none()
+        && u.fragment().is_none()
+        && u.host_str().is_some_and(|h| {
+            h.trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+        })
+}
+
+/// Resident-model probe using the same no-proxy/no-redirect policy as the
+/// isolated local completion client. It never names or loads a model.
+pub async fn local_models(base_url: &str) -> Option<Vec<RouterModel>> {
+    if !is_literal_loopback(base_url) {
+        return None;
+    }
+    let clients = super::HttpClients::loopback_only().ok()?;
+    let http = clients.for_body(&serde_json::json!({}));
+    let b = base(base_url);
+    let response = http
+        .get(format!("{b}/props"))
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let env: Envelope = response.json().await.ok()?;
+    if env.role.as_deref() != Some("router") {
+        return None;
+    }
+    let response = http
+        .get(format!("{b}/models"))
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    Some(response.json::<ModelList>().await.ok()?.data)
+}
+
 /// The routers `follow_loaded` entries stand for. Local entries only: the
 /// flag means nothing off-machine, and honouring it there would put a
 /// request to someone else's server in front of every command — which
@@ -1366,6 +1418,97 @@ mod tests {
             assert!(is_loopback(url), "{url}");
         }
         assert!(!is_loopback("http://100.64.0.7:8080"));
+    }
+
+    #[test]
+    fn literal_loopback_accepts_numeric_http_hosts_and_paths() {
+        for url in [
+            "http://127.0.0.1",
+            "http://127.0.0.2:8080/v1/",
+            "http://[::1]",
+            "http://[0:0:0:0:0:0:0:1]:8080/v1/",
+        ] {
+            assert!(is_literal_loopback(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn literal_loopback_rejects_hostnames_and_remote_addresses() {
+        for url in [
+            "http://localhost:8080/v1",
+            "http://LOCALHOST:8080",
+            "http://example.invalid:8080",
+            "http://192.0.2.1:8080",
+            "http://[2001:db8::1]:8080",
+            "http://127.0.0.1.example.invalid:8080",
+        ] {
+            assert!(!is_literal_loopback(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn literal_loopback_rejects_credentials() {
+        for url in [
+            "http://user@127.0.0.1:8080",
+            "http://:password@127.0.0.1:8080",
+            "http://user:password@[::1]:8080/v1",
+        ] {
+            assert!(!is_literal_loopback(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn literal_loopback_rejects_queries_including_empty() {
+        for url in ["http://127.0.0.1:8080/v1?model=test", "http://[::1]:8080?"] {
+            assert!(!is_literal_loopback(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn literal_loopback_rejects_fragments_including_empty() {
+        for url in ["http://127.0.0.1:8080/v1#model", "http://[::1]:8080#"] {
+            assert!(!is_literal_loopback(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn literal_loopback_requires_http() {
+        for url in [
+            "https://127.0.0.1:8080/v1",
+            "ftp://127.0.0.1:8080",
+            "ws://[::1]:8080",
+            "file:///tmp/model",
+        ] {
+            assert!(!is_literal_loopback(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn literal_loopback_rejects_malformed_urls() {
+        for url in [
+            "",
+            "not a URL",
+            "/v1",
+            "http://",
+            "http://[::1",
+            "http://127.0.0.1:invalid",
+        ] {
+            assert!(!is_literal_loopback(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn literal_loopback_is_stricter_than_host_only_loopback() {
+        // General provider routing checks location only. Isolated local
+        // experiments additionally require a numeric host and a clean HTTP URL.
+        for url in [
+            "http://localhost:8080/v1",
+            "https://127.0.0.1:8080",
+            "http://user:password@[::1]:8080/v1?model=test#selection",
+        ] {
+            assert!(is_loopback(url), "{url}");
+            assert!(!is_literal_loopback(url), "{url}");
+        }
     }
 
     #[test]

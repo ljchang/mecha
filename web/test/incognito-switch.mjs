@@ -32,6 +32,8 @@ function page(start) {
     'start',
     `'use strict';
      let { key, draft, attachments, incognito, gone } = start;
+     let memoryNeedsResume = false, memoryIntent = false, memorySession = null, memory = null, memoryRevision = 0, memoryConnected = false, memorySending = false, running = false;
+     const memorySessions = new Map();
      let todo = ['[~] plan the thing'];
      let editing = { path: 'images/a.png', initial: 'KUMQUAT' };
      let pictureNote = { path: 'images/a.png', why: 'no such file' };

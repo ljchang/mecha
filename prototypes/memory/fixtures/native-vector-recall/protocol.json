@@ -1,0 +1,31 @@
+{
+  "protocol": "native-vector-decision-trial-v1",
+  "fixture": "cases.json",
+  "synthetic_only": true,
+  "seed_experience": "authored OpenAI-compatible replies driving actual native fs_read/fs_write/check/v8 capture; not scored model behavior",
+  "scored_sessions": 16,
+  "arms": [
+    "lexical",
+    "dense"
+  ],
+  "budgets": {
+    "anchors": 3,
+    "neighbors": 0,
+    "packet_bytes": 20000,
+    "retrieval_seconds": 15,
+    "max_turns": 6,
+    "max_output_tokens": 16384,
+    "session_seconds": 180
+  },
+  "controls": {
+    "temperature": 0.6,
+    "max_tokens": 4096,
+    "retries": 0
+  },
+  "freeze": "Hash exact tracked protocol and fixture bytes; freeze complete seed database and authority, immutable originals, public requests, slot order, binary and explicit runtime identities before scored inference.",
+  "pairing": "Complete independent closed database and authority copies. Same request, schema, query, model settings and seed in each pair. Opaque run paths. No arm labels in model input.",
+  "qualified_positive": "Independently correct artifact AND one transcript goal_context attempt with exact query/no bindings, successful requested-mode completion/no rejects, valid native receipt and complete dependency closure AND decisive original ToolResult span in delivered canonical evidence and recapture closure. Require authenticated descriptor membership in seed receipt and decisive-original dependency closure; do not require unrelated seed originals or parent projection when an independent original anchor is delivered. Every actually consulted dependency still must be recaptured.",
+  "no_evidence": "Report missing and withdrawn separately. Require unknown artifact and protocol; withdrawn original closure must be neither delivered nor admitted. Do not count as positive evidence coverage.",
+  "failure": "All sixteen preplanned slots retained; no replay, retry, tuning or replacement after first dispatch. Fallback cannot qualify as requested dense treatment.",
+  "scope": "Exploratory paired comparison; delivery and correct outcome do not prove causal use. No concepts, production activation, private import or owner-graph migration."
+}

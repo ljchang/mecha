@@ -1331,6 +1331,7 @@ mod tests {
         crate::provider::openai::encode_message_for_test(
             &Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -1763,6 +1764,17 @@ mod planning_metadata_tests {
             }],
         };
         observed.planning = Some(feedback);
+        observed.plan_results = vec![crate::message::PlanResultAudit {
+            turn_id: "PRIVATE AUDIT TURN SENTINEL".into(),
+            ordinal: 0,
+            result_index: 0,
+            revision_id: "PRIVATE AUDIT REVISION SENTINEL".into(),
+            receipt_id: "PRIVATE AUDIT RECEIPT SENTINEL".into(),
+            steps_start: 0,
+            steps_end: 0,
+            decisions_start: 0,
+            decisions_end: 1,
+        }];
         observed.harness = true;
         assert_eq!(
             encode_message(&plain, false),

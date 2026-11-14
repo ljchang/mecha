@@ -169,6 +169,10 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_charter: bool,
 
+    /// Version owner chat instructions and charter revisions in chat, TUI, and assistant web chat.
+    #[arg(long, global = true)]
+    pub dynamic_goals: bool,
+
     /// Don't offer the `compact` tool — the run still compacts at its
     /// threshold, the model just cannot ask for it early.
     ///
@@ -466,6 +470,14 @@ pub enum Command {
     /// The knowledge graph from the terminal: search it, read an entity,
     /// capture a note — through the same `kg_*` tool surface the model uses.
     Kg(commands::kg::Args),
+
+    /// Experimental memory store: synthetic fixtures only, explicit database.
+    #[cfg(feature = "memory-prototype")]
+    Memory(commands::memory::Args),
+
+    /// Initialize or recover a memory store: the mecha home's, or a manifest's.
+    #[cfg(feature = "memory-prototype")]
+    MemorySession(commands::memory_session::Args),
     /// Two readers with different sources ask each other about one entity.
     Gossip(commands::gossip::GossipArgs),
     /// Judge whether queued generalisations hold beyond their one source.
@@ -600,6 +612,10 @@ impl Command {
     fn is_one_run(&self) -> bool {
         use commands::{exp, frontdoor, harness, mail, questions, sessions, tasks};
         match self {
+            #[cfg(feature = "memory-prototype")]
+            // Memory commands with explicit local endpoint/model arguments manage
+            // resident-only inference themselves, outside generic provider setup.
+            Command::Memory(_) | Command::MemorySession(_) => false,
             Command::Run(_)
             | Command::Batch(_)
             | Command::Eval(_)
@@ -733,6 +749,10 @@ impl Command {
     /// review).
     fn runs_a_model(&self) -> bool {
         match self {
+            #[cfg(feature = "memory-prototype")]
+            // Memory commands with explicit local endpoint/model arguments manage
+            // resident-only inference themselves, outside generic provider setup.
+            Command::Memory(_) | Command::MemorySession(_) => false,
             Command::Run(_)
             | Command::Chat(_)
             | Command::Tui(_)
@@ -944,6 +964,47 @@ async fn main() {
 
 async fn dispatch() -> Result<()> {
     let mut cli = Cli::parse();
+    // A driven one-shot cannot resume at all; reject that boundary before
+    // memory resume preflight tries to find or read the selected transcript.
+    if let Command::Run(args) = &cli.command {
+        commands::run::preflight_start(&cli.global, args)?;
+    }
+    #[cfg(feature = "memory-prototype")]
+    let ordinary_memory = match &cli.command {
+        Command::Run(args) => commands::run::preflight_memory(&mut cli.global, args)?,
+        _ => None,
+    };
+    #[cfg(feature = "memory-prototype")]
+    let chat_memory = match &cli.command {
+        Command::Chat(args) => commands::chat::preflight_memory(&mut cli.global, args).await?,
+        _ => None,
+    };
+    // Refuse unsupported memory resumes before router/provider observations.
+    let resume = match &cli.command {
+        Command::Run(args) => args.resume.as_ref(),
+        Command::Tui(args) => args.resume.as_ref(),
+        Command::Chat(args) => {
+            #[cfg(feature = "memory-prototype")]
+            if args.episodic_memory.is_some() {
+                None
+            } else {
+                args.resume.as_ref()
+            }
+            #[cfg(not(feature = "memory-prototype"))]
+            {
+                args.resume.as_ref()
+            }
+        }
+        _ => None,
+    };
+    if let Some(id) = resume {
+        let path =
+            mecha_core::session::Session::find(&mecha_core::session::Session::default_dir()?, id)?;
+        mecha_core::session::Session::load(&path)?;
+    }
+    if let Command::Replay(args) = &cli.command {
+        commands::replay::preflight_memory(args)?;
+    }
     // A driven run reads no project layer (D1b): a pinned historical tree's
     // `mecha.toml` is neither the owner's nor the run's to choose, and it
     // could attach a server or a hook, or undo the sandbox. Forced here, for
@@ -969,8 +1030,24 @@ async fn dispatch() -> Result<()> {
         commands::features::print_notices();
     }
     match cli.command {
-        Command::Run(args) => commands::run::execute(&cli.global, args).await,
-        Command::Chat(args) => commands::chat::execute(&cli.global, args).await,
+        Command::Run(args) => {
+            commands::run::execute(
+                &cli.global,
+                args,
+                #[cfg(feature = "memory-prototype")]
+                ordinary_memory,
+            )
+            .await
+        }
+        Command::Chat(args) => {
+            commands::chat::execute(
+                &cli.global,
+                args,
+                #[cfg(feature = "memory-prototype")]
+                chat_memory,
+            )
+            .await
+        }
         Command::Tui(args) => tui::execute(&cli.global, args.resume, args.no_session).await,
         Command::VoiceServe(args) => commands::voice_serve::execute(&cli.global, args).await,
         Command::Batch(args) => commands::batch::execute(&cli.global, args).await,
@@ -988,7 +1065,7 @@ async fn dispatch() -> Result<()> {
         Command::Setup(args) => commands::setup::execute(&cli.global, args).await,
         Command::Doctor(args) => commands::doctor::execute(args).await,
         Command::Features(args) => commands::features::execute(args).await,
-        Command::Serve(args) => commands::serve::execute(args).await,
+        Command::Serve(args) => commands::serve::execute(args, cli.global.dynamic_goals).await,
         Command::Diagnose(args) => commands::diagnose::execute(&cli.global, args).await,
         Command::Harness(args) => commands::harness::execute(&cli.global, args).await,
         Command::Exp(args) => commands::exp::execute(&cli.global, args).await,
@@ -999,6 +1076,10 @@ async fn dispatch() -> Result<()> {
         Command::Questions(args) => commands::questions::run(&cli.global, args).await,
         Command::Polls(args) => commands::polls::run(&cli.global, args).await,
         Command::Kg(args) => commands::kg::run(&cli.global, args).await,
+        #[cfg(feature = "memory-prototype")]
+        Command::Memory(args) => commands::memory::execute(args).await,
+        #[cfg(feature = "memory-prototype")]
+        Command::MemorySession(args) => commands::memory_session::execute(args).await,
         Command::Gossip(args) => commands::gossip::run(&cli.global, &args).await,
         Command::Corroborate(args) => commands::corroborate::run(&cli.global, &args).await,
         Command::Vet(args) => commands::vet::run(&cli.global, &args).await,
@@ -1148,6 +1229,30 @@ mod tests {
     }
 
     use super::*;
+
+    #[cfg(feature = "memory-prototype")]
+    #[test]
+    fn memory_never_loads_a_model_holds_the_router_or_announces_features() {
+        for tail in [
+            vec!["demo"],
+            vec!["inspect"],
+            vec!["query", "works"],
+            vec!["forget", "employment"],
+        ] {
+            let mut argv = vec![
+                "mecha",
+                "memory",
+                "--experimental",
+                "--db",
+                "test.memory-prototype.sqlite",
+            ];
+            argv.extend(tail);
+            let command = Cli::try_parse_from(argv).unwrap().command;
+            assert!(!command.runs_a_model());
+            assert!(!command.is_one_run());
+            assert!(!command.announces_features());
+        }
+    }
 
     /// The router snapshot is taken where a default provider can be resolved,
     /// and never by `mecha doctor`, whose module doc promises no network.

@@ -1,0 +1,234 @@
+//! Memory for ordinary web chats.
+//!
+//! One store for the server, one attachment per conversation. A typed turn
+//! is begun before its message is recorded and sealed after its taint
+//! record; a turn that memory cannot begin or capture is passed over and
+//! the conversation goes on. The registry is shared by every conversation,
+//! so the recall tool in it is a router that answers each call with the
+//! reader bound to the call's `ToolCtx::conversation`, never its
+//! workspace, which a resumed conversation shares with the chat its
+//! directory was first made for.
+use anyhow::{Context, Result};
+use mecha_core::{
+    goal_context::OwnerInput,
+    grant::Grant,
+    memory_session::{
+        chat::{ChatAttachMode, ChatMemory, ChatMemoryReport, ChatMemoryTurn},
+        router::RecallRouter,
+        SessionMemory, SessionMemoryRequest, SessionMemoryStatus,
+    },
+    session::Session,
+};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
+
+pub(super) const OPEN_WEB_PROTOCOL: &str =
+    mecha_core::memory_session::chat::CHAT_OPEN_WEB_MEMORY_PROTOCOL;
+
+pub(super) struct OrdinaryMemory {
+    path: PathBuf,
+    request: SessionMemoryRequest,
+    pub(super) router: Arc<RecallRouter>,
+    /// By session id. A conversation is in here from the moment its memory
+    /// attaches until the server closes or forgets it; the attachment
+    /// holds its lease.
+    chats: Mutex<HashMap<String, Arc<Mutex<ChatMemory>>>>,
+}
+
+/// What a run carries from its start to its end.
+pub(super) struct Remembered {
+    chat: Arc<Mutex<ChatMemory>>,
+    turn: ChatMemoryTurn,
+    conversation: String,
+}
+
+impl OrdinaryMemory {
+    /// `root` is the directory every web chat's workspace lives under; the
+    /// store may not be inside it.
+    pub(super) fn open(path: &Path, dynamic_goals: bool, root: &Path) -> Result<Arc<Self>> {
+        anyhow::ensure!(
+            dynamic_goals,
+            "remembering web chats requires --dynamic-goals"
+        );
+        let path = std::path::absolute(path)?;
+        let request = SessionMemory::load_request(&path)?;
+        let schema = SessionMemory::open(&request, root)
+            .context("opening the memory store for web chats")?
+            .recall_schema()?;
+        Ok(Arc::new(Self {
+            path,
+            request,
+            router: RecallRouter::of(schema.as_ref()),
+            chats: Mutex::new(HashMap::new()),
+        }))
+    }
+    /// Attach a conversation: a new one before anything but its header is
+    /// recorded, or one this store already holds.
+    pub(super) fn attach(&self, session: &Session, workspace: &Path, resumed: bool) -> Result<()> {
+        SessionMemory::validate_request_path(&self.path, workspace)?;
+        let chat = SessionMemory::open(&self.request, workspace)?.attach_open_web_chat(
+            session,
+            if resumed {
+                ChatAttachMode::Resume
+            } else {
+                ChatAttachMode::Create
+            },
+        )?;
+        self.chats
+            .lock()
+            .map_err(|_| anyhow::anyhow!("web memory unavailable"))?
+            .insert(session.meta.id.clone(), Arc::new(Mutex::new(chat)));
+        Ok(())
+    }
+    fn chat(&self, session: &Session) -> Option<Arc<Mutex<ChatMemory>>> {
+        self.chats.lock().ok()?.get(&session.meta.id).cloned()
+    }
+    /// Before a turn starts: a grant that reaches the store, its key or
+    /// the transcript refuses the turn itself, since the next tool call
+    /// could read or rewrite them.
+    ///
+    /// Only a verdict on a grant refuses. Memory that cannot be consulted
+    /// at all is no verdict: that turn runs unremembered like any other
+    /// memory failure, since `begin` will fail on the same lock.
+    pub(super) fn grants_may_run(&self, session: &Session, grants: &[Grant]) -> Result<()> {
+        let Some(chat) = self.chat(session) else {
+            return Ok(());
+        };
+        let Ok(memory) = chat.lock() else {
+            tracing::warn!(session = %session.meta.id, "web memory unavailable; this turn will not be remembered");
+            return Ok(());
+        };
+        memory.validate_grants(grants)
+    }
+    /// A conversation the server has closed or forgotten: its attachment,
+    /// lease and store handle go with it, so another process may attach.
+    pub(super) fn detach(&self, session_id: &str, conversation: &str) {
+        self.router.release(conversation);
+        if let Ok(mut chats) = self.chats.lock() {
+            chats.remove(session_id);
+        }
+    }
+    /// Begin a typed turn. `None` when this conversation has no memory or
+    /// the turn cannot begin; the turn then runs unremembered, with no
+    /// reader bound for it. `conversation` is the key the front end stamps
+    /// on the turn's tool context.
+    pub(super) fn begin(
+        &self,
+        session: &Session,
+        conversation: &str,
+        owner: Option<&OwnerInput>,
+    ) -> Option<Remembered> {
+        // Whatever the last turn left bound is not this turn's.
+        self.router.release(conversation);
+        let chat = self.chat(session)?;
+        let owner = owner?;
+        let begun = (|| -> Result<ChatMemoryTurn> {
+            let mut memory = chat
+                .lock()
+                .map_err(|_| anyhow::anyhow!("web memory unavailable"))?;
+            let turn = memory.begin_open_web_turn(session, owner)?;
+            self.router.bind(conversation, memory.goal_memory(&turn)?)?;
+            Ok(turn)
+        })();
+        match begun {
+            Ok(turn) => Some(Remembered {
+                chat,
+                turn,
+                conversation: conversation.into(),
+            }),
+            Err(error) => {
+                tracing::warn!(session = %session.meta.id, "this turn will not be remembered: {error:#}");
+                self.router.release(conversation);
+                None
+            }
+        }
+    }
+    /// Seal the turn. Called once its taint record is the last line of the
+    /// transcript, and before anything else is appended.
+    pub(super) fn finish(&self, remembered: Remembered) -> Option<ChatMemoryReport> {
+        self.router.release(&remembered.conversation);
+        let report = remembered
+            .chat
+            .lock()
+            .ok()
+            .map(|mut memory| memory.finish_turn(&remembered.turn))?;
+        if report.status == SessionMemoryStatus::Retained {
+            tracing::debug!(conversation = %report.conversation_id, turn = report.turn_ordinal, "turn remembered");
+        } else {
+            tracing::warn!(
+                conversation = %report.conversation_id,
+                turn = report.turn_ordinal,
+                reason = ?report.reason,
+                "turn not remembered; the conversation goes on"
+            );
+        }
+        Some(report)
+    }
+}
+
+/// Whether a transcript's memory marker is an ordinary web chat's. A hint
+/// for routing a resume or labelling a row, read from the head of the file:
+/// attaching is what authenticates the marker.
+pub(super) fn open_marked(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut head = Vec::new();
+    if file.take(65_536).read_to_end(&mut head).is_err() {
+        return false;
+    }
+    let mut markers = String::from_utf8_lossy(&head)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|record| record["record"] == "chat_memory")
+        .map(|record| record["marker"]["protocol"] == OPEN_WEB_PROTOCOL)
+        .collect::<Vec<_>>();
+    markers.len() == 1 && markers.pop() == Some(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Whether `lines`, written as a transcript, read as open.
+    fn open(lines: &[String]) -> bool {
+        let path = std::env::temp_dir().join(format!("open-marked-{}.jsonl", uuid::Uuid::new_v4()));
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let open = open_marked(&path);
+        let _ = std::fs::remove_file(&path);
+        open
+    }
+    fn marker(protocol: &str) -> String {
+        serde_json::json!({"record": "chat_memory", "marker": {"protocol": protocol}}).to_string()
+    }
+    fn meta() -> String {
+        serde_json::json!({"record": "meta", "id": "fixture"}).to_string()
+    }
+
+    /// Only one marker, and only the ordinary web chat's, sends a
+    /// transcript through the ordinary door.
+    #[test]
+    fn only_an_ordinary_web_chat_s_single_marker_is_open() {
+        assert!(open(&[meta(), marker(OPEN_WEB_PROTOCOL)]));
+        for other in [
+            vec![meta()],
+            vec![meta(), marker("ordinary-chat-memory-v3")],
+            vec![meta(), marker("ordinary-chat-memory-v1")],
+            vec![meta(), marker(OPEN_WEB_PROTOCOL), marker(OPEN_WEB_PROTOCOL)],
+            vec![
+                meta(),
+                marker(OPEN_WEB_PROTOCOL),
+                marker("ordinary-chat-memory-v3"),
+            ],
+            // Past the head that is read.
+            vec![meta(), "x".repeat(70_000), marker(OPEN_WEB_PROTOCOL)],
+        ] {
+            assert!(!open(&other), "{} lines", other.len());
+        }
+        assert!(!open_marked(Path::new("/nonexistent/fixture.jsonl")));
+    }
+}

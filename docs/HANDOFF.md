@@ -22,6 +22,549 @@ maps which document holds what.
 
 ## Where the work is
 
+**Latest durable-planning qualification (2026-11-11):** the opt-in CLI task
+profile supports owner Task creation, ordered model Plan updates and authenticated
+restart/resume in Mecha memory. Actual CLI tests passed locally and on Spark,
+including a real post-commit process kill that stays pending without native
+evidence. Local workspace suites passed 6,513 default / 7,455 memory-enabled tests
+(25 / 30 ignored), both all-target builds, strict all-feature Clippy and fmt;
+standalone memory passed 456 tests. Spark passed 50 required-backend tests with
+skips disabled. See HISTORY and the user memory documentation for exact scope.
+The web task adapter, existing graph task-board/mail migration and cross-session
+task selection remain open; this is not production activation or a model benefit
+claim.
+
+**Ordinary-run integration (qualified 2026-11-10, opt-in prototype):** fresh one-shot
+`run --episodic-memory` now connects the existing Agent loop to source-linked
+observation capture and guarded lexical recall through `memory_session`. Host-only
+`memory-session init|retry|forget` use an explicitly selected encrypted store.
+Task success is NotEvaluated; assistant reasoning remains audit-only in original
+JSONL. The first profile permits only selected direct file tools and goal_context,
+refusing incompatible execution profiles before provider startup. See HISTORY
+for qualification, including the independently audited two-session resident-model
+mechanics trial, and `website/docs/features/memory/index.md` for the command.
+
+**Dynamic context and encrypted CLI chat (2026-11-10, opt-in prototype):**
+`--dynamic-goals` preserves owner-input and charter versions in CLI chat and TUI.
+`serve --dynamic-goals` now forwards the explicit flag through `ChatState::build`
+into the follower options, preserving it through provider rebuilds. The dynamic-goals flag alone does not
+attach encrypted memory to web chat. The owner-authored charter file remains current authority.
+The separate `chat --episodic-memory FILE --dynamic-goals` path now attaches the
+explicit encrypted store to local recorded CLI conversations. `ChatMemory`
+reserves each turn before execution, retains only its new originals, and seals an
+immutable native transcript prefix with prior dependencies. Authenticated resume
+requires the same store/workspace and retained contiguous chain. Ordinary execution loaders
+refuse marked transcripts; historical Stop/Error replay uses recorded answers,
+and Live replay refuses before router/provider setup. Context-only observations do not manufacture confirmed
+goals, and task success stays NotEvaluated.
+
+Read-only `sessions show` uses strict transcript parsing without the execution
+resume gate, so memory-attached history remains inspectable in default builds.
+
+Live dynamic-goal provider-pause continuation remains unsupported and now
+refuses explicitly before another request or tool dispatch. Request-only goal
+evidence cannot be reconstructed as an unchanged server continuation merely by
+appending a user turn. Ordinary non-dynamic pause handling and recorded historical
+replay retain their existing behavior. Memory chats still apply their normal
+incomplete-capture stop; this is not permission to resume an unsealed turn.
+The legacy `questions answer` and `tasks work --resume` paths also refuse these
+versioned sessions explicitly. Preserving their delegated authority alongside
+dynamic owner-input versions is still integration work, not a flag workaround.
+
+Focused tests and the real CLI authored-transport trial passed: three retained
+turns across changed goals/charters and restart, exact six-request historical
+replay, default-off control and five pre-provider refusals. Independent source
+review has no remaining major/medium finding. The authenticated-web checkpoint passed full workspace suites with
+6,493 default / 7,334 memory-enabled tests (25 / 30 ignored), both all-target
+builds, strict Clippy and actual CLI/web smoke workflows. The required Linux
+backend set passed 49/49 with skips disabled; standalone memory passed 408/408.
+HISTORY records the bounded model diagnostic, including its strict
+format failure and control-tool deviation. Neither this CLI opt-in nor successful
+storage establishes production/private-data readiness.
+
+**Remaining ordinary integration:** TUI memory attachment, safe long-chat
+compaction, broader tool coverage, live resource-state appraisal and automatic
+learning selection/scheduling. In this first chat profile, incomplete or
+noncompleted turns, compaction, overflow and unavailable capture stop further
+memory-enabled execution. A complete seal can retry storage admission; missing or
+ambiguous unsealed evidence requires a fresh chat. The V4 task profile separately
+recovers complete native bytes authenticated by its prepared fingerprint, without
+executing tools. Transcripts are bounded to 4 MiB,
+with smaller per-passage and context limits. Oversized tool inputs now retain
+explicit omitted-content metadata, exact native pointers and full-input digests;
+tool results above 4,096 bytes still withhold capture. External files, key loss
+and deletion-authority recovery still need operational qualification.
+
+Explicit `memory-session sources|learn` reuses native concept induction/rumination
+for authenticated one-shot captures; `learning_run_sources` and `learning_sources`
+still read that protocol's seals. Chat-turn selection for learning is not yet
+connected. Concept delivery in ordinary recall and exact citation-pointer use remain gaps: the earlier chronological pilot retained a
+concept but delivered it in none of four adaptive decisions, and withheld all
+eight decision captures above the old 1,024-byte argument bound. The adapter
+now retains oversized-input metadata; that historical pilot has not been rerun. Its authored
+three-arm runner is a development comparison; held-out task families, general
+experiment controls, another harness adapter and useful-transfer evidence remain
+open. Keep the independent owner graph and production runtime unchanged.
+
+**Selected graph CLI integration (2026-11-10, default-off):**
+`chat --memory-graph-server NAME` now binds one enabled owner-global graph reader
+surface to a V2 private attachment. `prepare_selected_graph` freezes the effective
+launch before spawn; chat preflight authenticates the saved lease/source chain and
+compares launch identity, then actual descriptors, before provider preparation.
+Only selected `kg_search`, `kg_entity` and `kg_task_list` reads enter the registry.
+Exact native output provenance and cumulative taint remain required. V1 bytes,
+the observation protocol and SQL schema are unchanged. Retry/forget never run MCP.
+The authored actual CLI workflow passed four retained turns, exact graph snapshot
+recall across changed goals/restart, external failed receipts, large-result
+withholding and thirteen refused starts. It never started an unrelated server.
+Final runtime qualification passed on isolated Spark. Direct bwrap startup and
+execution share a frozen filtered environment; loader controls and unqualified
+scoped limits refuse. The prototype remains default-off and is not installed in
+production. Selected Landlock is source-supported but has no selected-live trial.
+
+**Retrieval-quality gap:** the first graph smoke's generic `Cedar` query ranked
+three shorter query invocations above the longer returned results at limit three.
+No source was lost. A result-specific term yielded exact snapshots with unchanged
+source assertions. Preserve this failure as a retrieval evaluation case; the
+mechanics pass is not evidence that action/result ranking is solved. Do not infer
+a global result-first ranking policy from this one authored case.
+
+**Authenticated web memory (2026-11-10, default-off):**
+`serve --episodic-memory` supplies an explicit fixed local profile. Memory + owns
+one runtime/reader/lease per conversation; V3 web ingress does not broaden CLI
+V1/V2 authority. Actual HTTP and compiled-browser workflows passed creation,
+exact typed text, changed-context recall, Stop, page reconnect and authenticated
+history resume after server restart. Retention status stays separate from task
+success. Unsupported routes and native mutation refuse, including without a chat
+runtime or memory feature. This is typed text/local tools only: no web todo,
+graph MCP, voice, uploads or compaction yet. SQLCipher does not encrypt native
+transcripts or recovery sidecars. The user-facing command is in
+`website/docs/features/memory/index.md`; full evidence and review fixes are in HISTORY.
+
+**Remaining daily-use increments:**
+
+1. Extend durable task memory to the owned web runtime, then migrate board
+   consumers. The opt-in CLI task-chat path now persists session-bound Tasks and
+   versioned Plans in encrypted schema v10, restores check declarations after
+   restart, and reconciles database receipts against durable native audit.
+   `TodoTool::with_memory` restores the actual database snapshot; native JSONL is
+   audit/replay evidence, not task authority. The local-only profile preserves
+   declared checks as Skipped. Remaining work: web/TUI integration; board
+   closure, follow-up and delegated updates; manual mail capture and automated
+   mail-rule TaskSink integration; cross-session task selection; and realistic
+   operation-ledger volume/cost qualification. Several existing consumers bypass
+   the CLI and call graph tools directly. Keep owner closure separate from model
+   step completion and verified outcomes; preserve old graph IDs as historical
+   pointers. Do not treat Mecha TaskRefs as graph nodes, introduce implicit dual
+   writes or fall back to graph when Mecha storage is unavailable.
+2. Safe long-chat compaction. Bind summaries/rewrites to original evidence,
+   dependencies, goal versions and taint; force compaction/restart/interruption
+   tests before permitting continued memory-enabled execution.
+   Include decision-record growth: current bindings retain both full wire messages
+   and pre-projection conversation messages on every provider call. Repeated
+   prefixes grow quadratically; bounded prototype caps do not make this suitable
+   for daily long chats. Design a versioned, deduplicated representation and
+   measure replay cost before raising limits; do not discard exact request
+   evidence merely because a digest exists.
+3. Broader tool/result capture, reliable retrieval and the separately listed
+   learning bridges, followed by realistic private-data/recovery qualification.
+
+Recovery, source withdrawal and permission checks are exit gates on every slice.
+Owner personal data remains independent; no graph migration or production cutover
+follows from authored tests. The implemented graph contract is in
+`superpowers/plans/2026-11-10-readonly-graph-memory-chat.md`; the source-audited next
+web contract is `superpowers/plans/2026-11-10-authenticated-web-memory-chat.md`.
+Its frozen V3 web attachment and V2 web observation pair preserve CLI V1/V2
+authority. The matrix and owned host integration are implemented and qualified; see HISTORY
+for actual HTTP/browser evidence and remaining limits.
+
+**Owner decision, 2026-11-05: keep personal knowledge and agent memory independent.**
+mecha-graph remains the owner's personal knowledge system; v2 develops Mecha's
+experience and learning memory. Keep their lifecycles independent while reusing
+architectural patterns and preserving future integration options. A merger or
+replacement is deferred until v2 is solid. See the current-scope addendum in
+`MECHA-MEMORY-DESIGN.md`; older migration proposals are not an approved cutover.
+
+**Clarification and sequence, 2026-11-08:** the boundary follows record meaning,
+not which MCP currently stores it. Inventory Mecha-owned episodes, appraisals,
+concepts, reflections and persistent tasks behind graph MCP for migration. Keep
+the owner's mail/calendar/notes independently queryable and reuse existing local
+per-conversation planning/todo machinery. First finish compact native packets and
+explicit concept-aware appraisal, then encryption/recovery, then measured hybrid
+retrieval using the existing Mecha on-demand embedding machinery where compatible.
+See `MECHA-MEMORY-DESIGN.md` §31.17 and its implementation plan. These increments
+remain synthetic-only; the current implementation and remaining qualification are
+recorded below.
+
+**Shared draft:** [PR #846](https://github.com/ljchang/mecha/pull/846),
+`codex/mecha-memory-v2-prototype`. This uses the public repository history;
+do not push the older private prototype branch, whose history
+predated main's rewrite. No merge or production cutover is authorized by this handoff.
+
+**2026-11-07 — memory benefit diagnostic complete (prototype branch).**
+V4 `feasibility-provenance` preserves full host lineage separately from exact
+model citations, requires each effective measurement and independently checks
+arithmetic. The installed Rust artifact remains `de5d60980`, SHA256
+`fa48a1fb68e522fb5f700cf0cf5db3519d5c43be1de97e02add3d19da4568bbf`, at
+`~/.local/share/mecha-prototypes/memory-provenance-de5d60980/bin/mecha` on Spark.
+Runtime clock, cancellation, source and authenticated-action boundaries remain
+as documented in ARCHITECTURE; prior implementation qualification is in HISTORY.
+
+`memory_benefit_trial.py` at `8c5b48246` completed 48 first responses across six
+authored cases, two seeds, two evidence arms and fast/thinking2048. Against the
+shared outcome-informed reference, recall improved 20/24 pairs with no regression;
+source-only 4/24 versus recall 24/24. Both arms were 24/24 correct from their own
+visible evidence. Fast/think combined supported responses were 22/24 and 24/24;
+thinking used 4.95x output tokens and 4.57x summed time, with no choice gain.
+HISTORY preserves all metrics, the citation failure and ambiguous explanation.
+This is a small information-use diagnostic, not general learning or production
+utility. The full Python qualification passed 91 tests / 0 skips; current workspace
+build, 6302 default tests / 0 failed / 25 ignored, fmt and strict Clippy passed. Raw outputs,
+independent oracle, frozen rubric and audits: results/memory-benefit-20261107.
+Current GitHub CI/review status remains on draft PR #846; no merge is authorized.
+
+**2026-11-07 — connected appraisal bridge (prototype branch).**
+`memory_experience_bridge::LocalAuthority` freezes an explicit synthetic task
+criterion/check before ordinary `Agent::run_in` dispatch, reads native JSONL once
+for source evidence/appraisal, independently checks the artifact, and admits a
+bounded observation through `Memory::admit_host_capture`. Host-only appraisal,
+charter/sensors and audit records stay outside reader SQLite and the task
+workspace. New v6 files require injected current source authority for bound reads;
+unknown authority, source changes, withdrawal and forgetting fail closed.
+Existing v1–v5 experiments are not migrated. The authored `memory_bridge` example
+uses ordinary file/todo tools and a separate process for a changed-criterion
+`GoalMemory` task. Its outputs establish integration, not real-model benefit.
+See `prototypes/memory/README.md` for the explicit synthetic command and HISTORY
+for verification results. Code `883bd2c72` passed Spark workspace build, fmt,
+strict all-feature Clippy, 6302 default tests (0 failed / 25 ignored), 6649
+memory-enabled tests (0 failed / 29 ignored), and the connected example.
+Production chat does not automatically capture runs.
+
+**Provenance correction:** `12e2432c4` rejects native code/program traces before
+evidence assembly and withholds previously issued unsupported bindings. It
+passed 19 focused runtime tests, the connected workflow and scoped rereview.
+Final workspace qualification passed 6302 default and 6646 memory-enabled tests
+(0 failed; 25/29 ignored respectively), with `--test-threads=1`. Two earlier
+parallel attempts failed in unrelated interpreter/mail fixtures; isolated
+reproductions passed. Those failures remain retained and unexplained, not fixed
+by this memory change. Normal GitHub CI is separate evidence.
+The full gate and current pushed/reviewed head are recorded on draft PR #846.
+
+**Source-check optimization:** exact external-binding verdicts are shared within
+selection, then rechecked through an independent final phase. A 16-passage fixture
+reduced underlying guard calls from 17/34/67/133 to 1/2/2/2 for
+read/search/recall/context while retaining the complete 17-record context.
+Checks are not retained across public operations; withdrawal between phases and
+all three binding-key components have regressions. Focused tests and independent
+source review passed. Code `883bd2c72` passed full Spark workspace build, fmt,
+strict all-feature Clippy, serial default 6302/0/25 and memory-enabled 6649/0/29
+(passed/failed/ignored), plus the retained two-artifact connected demonstration.
+The standalone memory suite passed 221 unit and four integration tests.
+
+**Native model comparison:** `memory_bridge_trial::run_trial` and the explicit
+local-provider example now execute bounded ordinary tasks through the bridge;
+`bridge_model_trial.py` freezes eight experience/later-task pairs (24 planned agent
+runs). Both later arms have identical task contracts and tools; only the guarded
+source store differs. The coordinator checks actual requested controls against
+the manifest, preserves all failed/unstarted slots, and scores correct abstention
+separately from task completion. Provider setup shares the execution deadline;
+failed stream fragments remain in a bounded host-only audit. Independent source
+review has no unresolved major/medium findings. Native authored-HTTP preflight
+passed all 24 captures and seven probes (102 scripted requests, zero real-model
+inference). Full Spark qualification passed workspace/all-target build, fmt,
+strict all-target/all-feature Clippy, serial default tests (6303 passed, 0 failed,
+25 ignored) and serial memory-enabled tests (6667 passed, 0 failed,29 ignored).
+The frozen real-model comparison finished all 24 planned runs (112 model calls).
+Exact later-artifact checks passed 6/8 with memory versus 4/8 without it; the two
+improvements supplied a prior calibration parameter, while controls appropriately
+abstained. This is information availability, not better evidence-relative judgment
+or an appraisal-specific effect. All 8 initial sources stayed unchanged; 22/24
+captures succeeded. Three runs exhausted their turn budget, so the run-completion
+gate failed despite passing protocol-integrity checks. Both multiline-r0 outputs
+preserved text but added an `active` field: the exact grader rejected it although
+the criterion did not explicitly exclude extra fields. Preserve these original
+scores and their ambiguity; do not reclassify or rerun them as a repaired result.
+
+**Latest bounded experiment (source `a2b9f61`, prototype only):** early turn-budget
+advice is implemented and remains default-off. Both the original and new authored
+native preflights pass. The fixed 16-task real comparison plus 2 setups retained 99
+calls: correct artifacts 7/8 in each arm, no premature abstention, normal completion
+control 7/8 versus notice 6/8. Three treatment runs saw the notice. Both arms missed
+output on the same unavailable-information case; advice did not fix it. Capture
+succeeded 17/18. HISTORY and `results/memory-budget-notice-20261107/` hold complete
+conditions, failures, checks and independent audits. Build, strict Clippy and the
+default workspace suite pass (6,326 passed, zero failed, 25 ignored); final
+memory-enabled/GitHub qualification is recorded on PR #846. Existing production and owner
+knowledge remain unchanged. GitHub automatic checks resumed after integrating main;
+current check conclusions remain on PR #846.
+
+**Next MVP gaps:** capture a safely classified failed memory lookup without losing
+the whole episode. `memory_experience_bridge::events_mode` still refuses errored
+memory results to avoid losing consulted-source dependencies. The controlled
+`NativeRecallReport` preserves failure diagnostics, but does not yet provide a
+typed no-retrieval receipt that permits capture after a proven non-reading failure.
+Arbitrary read errors must still fail closed. Compact native packets address the
+reconstructed 19-revision fixture; broader longer-episode schemas and hard-bound
+behavior still need qualification. Dependable stopping remains open: the earlier
+default-off notice had no artifact-success gain. Preserve fixed comparisons and
+test fresh task schemas before expanding concepts or rumination.
+
+**Situated appraisal, source `02cfe11cc`:** explicit v7 source-linked hypotheses,
+shared generation machinery, host-only needs assessment and opt-in current/historical
+GoalMemory retrieval are implemented and qualified. Ordinary Agent integration
+passes changed-goal reappraisal, source withdrawal and needs-request invariance.
+Spark: 6,330 default / 6,735 memory-enabled tests pass, zero failures (25/29 ignored),
+strict Clippy/build/fmt pass, standalone 241+4, Python 101/zero skips, coordinator 16.
+The fixed equal-source comparison retained 46 calls: correct artifacts 3/4 source-only
+versus 4/4 with interpretation; normal completion 1/4 versus 4/4; all eight captures
+succeeded. One control saved no output; two others saved correctly but exhausted
+their budgets. Generation-inclusive treatment used 3.26x output tokens. This is a
+tiny development result, not a general benefit or efficiency claim. HISTORY retains
+all denominators, model-quality gaps and the independent audit.
+
+**Current memory priority: measured hybrid retrieval and operational gaps; semantic reliability remains open.**
+
+The explicit `memory init-native` / `native-session` path now reuses the existing
+situated executor with a bounded host request, v8 action/artifact capture and
+reopened guarded recall. It records started state before provider discovery and
+refuses replay of an existing task directory. Actual output is independently
+checked; execution/capture errors retain reports and exit nonzero. It does not
+activate normal chat/web memory or automatically collect private sensors.
+
+`prepare_native_concept` / `retain_native_concept` and native rumination siblings
+admit canonical native originals through an explicit guarded path. Session identity,
+roles and full metadata/source closure survive retention. Canonical concepts may
+be consulted and recaptured, but Concept/Interpretation-influenced episodes cannot
+become independent learning inputs. Legacy native appraisal still refuses
+Concept-bearing closure. The separate `situated-native-concept-appraisal-v1`
+contract and `appraise_native_session` expose hypotheses separately from observed
+facts, require complete applicability assessments and recheck the entire source
+closure. Their checked references do not establish semantic correctness.
+
+The compact native reader preserves full original text and authenticated metadata
+under the unchanged 20,000-byte cap. The reconstructed fuller-citation fixture
+fits at 18,438 bytes instead of 20,352 canonical bytes with the same 19 revisions.
+Rich v8 consulted lineage supports 64 records; v6/v7 remain at 32. Canonical stored
+records and exports remain unchanged. Oversized mandatory content is still
+withheld. Authored integration now covers separate concept-aware appraisal,
+changed criteria, opposition, reopening and withdrawal. HISTORY records the
+implementation and qualification; this establishes mechanics, not model learning.
+
+Native semantic appraisal remains unqualified. The recorded raw/typed and
+checks-first cohorts did not establish reliable uncertainty or evidence reasoning.
+The completed fourteen-call synthetic concept pilot likewise established no choice
+benefit: both arms were 6/6 correct, with supported explanations 5/6 source-only
+versus 4/6 with concepts; revision added opposition without changing the rule.
+HISTORY retains complete denominators, costs, first failures and qualification.
+The owner-selected model is Qwen3.6-35b-a3b-uncensored; recheck residency before calls.
+
+Explicit encrypted native storage, complete encrypted snapshots and fresh-path
+historical restore are implemented and independently reviewed. Restore applies
+current forgetting and refuses weaker access scopes under a held current-store
+transaction. The initial encrypted source `114f33ddf` passed its full workspace
+suites and all eighteen GitHub CI jobs. Review then found unconditional cipher
+build costs; the correction selects ordinary SQLite by default and SQLCipher
+only with `memory-prototype`. Fresh Spark default qualification passed 6,353
+tests (zero failed, 25 ignored), with focused feature/native/CLI, standalone,
+29-check CLI, strict Clippy, Rust 1.96.1 and package checks also passing. HISTORY
+separates these results from the preceding full 7,008-test cipher suite and
+records scopes and preserved failures. See the prototype README for explicit
+key/backup/restore commands. This is database-only protection: external JSONL,
+authority files, artifacts and audits remain separate surfaces. Restore requires
+the current store and does not merge later facts/withdrawals or install a live
+replacement.
+
+Bounded hybrid retrieval is implemented under `MECHA-MEMORY-DESIGN.md` §31.18.
+The additive `Embedder::embed_checked` client passed 13 embedding and nine persona
+checks, scoped strict Clippy and independent review. The two-phase evidence
+selector passed independent review, 499 scoped core and 383 standalone tests
+(including 14 hybrid tests in each), plus strict feature-core Clippy. The
+core comparison workflow and thin `memory evaluate-hybrid` CLI are implemented
+and independently reviewed. Focused qualification passed 20 core/selector tests,
+three CLI tests and the checked-client deadline regression. Combined Spark
+qualification has passed 6,363 default and 7,041 memory-enabled workspace tests,
+386 standalone tests, 124 Python CLI checks and 182 authored Python tests. The
+default total combines unchanged wholly passed targets with an explicit replay
+after correcting a missing layout-backend test prerequisite; the first failure
+is preserved. Strict all-target/all-feature Clippy and the actual Rust 1.96.1
+all-target/all-feature check also passed; source and index remained unchanged.
+A frozen 40-record fixture has 16 scored cases and two empty-gold controls.
+The first Harrier comparison completed all 54 treatment rows. Independent audit
+found complete evidence coverage in 12/16 lexical, 16/16 dense and 15/16 hybrid
+cases, with no unauthorized returns. Dense beat fusion on this small cohort;
+one empty-gold control returned four irrelevant candidates in every arm. This
+does not establish abstention or decision benefit. The original runner's
+postflight failed on the valid activated socket state `running`; separate
+read-only checks corroborated unchanged service/model identity without replaying
+the model. Detailed counts, costs and failure boundaries are in HISTORY.
+
+Controlled native recall and optional bounded completion feedback are implemented
+through the existing Agent loop. `run_native_session_with_completion` and the thin
+`--completion-request` adapter check public output shape and required read status,
+without hidden semantic gold or additional recall/budget allowances. Synthetic
+qualification passed 6,382 default / 7,099 memory-enabled / 386 standalone / 124
+Python CLI / 257 authored Python tests, with zero failures and 25/30 existing
+workspace ignores. Both builds, strict lint, Rust 1.96.1 and the actual CLI gate
+passed; HISTORY records review corrections and retained first failures.
+
+The independently audited fresh four-pair completion comparison saved correct
+artifacts in 3/4 control versus 4/4 feedback sessions. Both arms got both supported
+choices and the withdrawn-evidence unknown correct. Only the irrelevant-evidence
+control omitted its file; one fixed reminder repaired the treatment's omission.
+Both had already answered `unknown` in chat, so the semantic choice did not change.
+All eight recalls/captures qualified. This is a small execution result on three
+source families, not adaptive-learning or general reasoning benefit. It is not
+comparable to the earlier eight-pair vector cohort, whose negative first result
+remains unchanged in HISTORY.
+
+**Next:** extend the implemented ordinary-session chronological development lane
+(§31.23) with prospective retention, changed-goal, contradiction/revision and
+new-family transfer cases. Its no-memory, episodic-only and bounded adaptive arms
+are implemented; integration with general experiment switches, a result index and
+another harness remains unimplemented. This
+completion cohort held memory on and adaptive learning frozen; it cannot establish
+adaptive benefit. Preserve first results and label subsequent public-regression
+runs separately.
+
+Ordinary runtime retrieval remains lexical. Corpus-scale/persistent indexing,
+reliable semantic support and concept revision, wider capture/termination coverage,
+Mecha-owned task/MCP consumer integration, source-file protection and private-data
+qualification remain open. Full disaster recovery needs separately durable deletion
+authority and key recovery. Failed-memory-lookup capture still needs an explicit
+no-retrieval receipt; completion diagnostics do not authorize persistence of an
+unattributed failed read. The Anthropic review in `AGENT-MEMORY-SYSTEMS-RESEARCH.md`
+§12 favors focused tests using existing mechanisms. Owner-graph merger, nightly
+migration, a new wiki/store and automatic production learning remain deferred.
+
+The earlier v4 failure below remains a historical result, not the score of this
+new experiment.
+
+
+The explicit atomic-observation v4 comparison is now implemented and mechanically
+qualified. `memory_support_atomic` separates extraction, original-citation checking
+and current-goal appraisal; `memory_atomic_workflow` compares it with a single
+same-evidence answer. Opaque receipts and final source checks remain mandatory.
+Build, strict Clippy, 6,352 default / 6,864 memory-enabled tests, 279 standalone
+checks and 181 Python invocations (zero skips) passed. The independently frozen
+eight-case comparison matched labels in 5/8 for both policies, with no accuracy
+gain and 3.54x input /1.72x output /2.30x summed time for three calls. All 32 calls
+returned, but five pipeline workflows failed after storage at contextual recall;
+only 3/8 complete versus 8/8 direct answers. The inspected bundle exceeds the
+20,000-byte reader budget. All 16 independent semantic audits are complete: 3 factual and 17 original-citation
+defects in accepted pipeline observations, with no defective observation rejected.
+Correct labels still lacked sufficient/current selected premises in all eight
+pipeline cases. Neither arm abstained on the two unknown cases. The gate fails.
+The follow-up reader repair is implemented in `InterpretationReaderV1` and
+`serialize_records`: full canonical storage is preserved while contextual output
+removes repeated prose. `Memory::stored_interpretation` provides a separately
+authorized host audit, and `memory_atomic_workflow::pipeline` distinguishes
+retain, stored_export and recall outcomes. Saved-store replay improved complete
+recall from 3/8 to 8/8 with all nine dependencies and unchanged source hashes.
+Spark passed 6,352 default / 6,876 memory-enabled tests, 286 standalone and 182
+Python checks with zero skips; full conditions are in HISTORY. The new read-only
+native fact view is implemented above. Criterion application, temporal relevance
+and abstention remain qualification targets; native concept admission stays gated.
+See HISTORY, `MECHA-MEMORY-DESIGN.md` §§31.12–31.15 and the prototype README. The v3
+results below remain historical failures, not the current software qualification.
+
+The default-off synthetic v8 path captures bounded action inputs and independent
+artifact observations, evaluates typed statements and goal bearings, and retains
+host-rendered interpretations. Explicit `EvidenceV3` adds authenticated source
+roles, capture associations and known times, with interpretation influence kept
+separate. The sidecar is bound into wire request identity and rechecked through
+admission; SQLite v8 and old wire/report semantics remain unchanged.
+
+`memory_support_evidence` assesses every original citation. Supported admission
+requires all originals to directly support the claim; optional diagnostic handles
+cannot replace incorrect provenance. `Memory::finish_support_revised` and
+`revised_decisions` select the first eligible known judgment after checking every
+original factual premise. Opposing eligible bearings yield Unknown. The complete
+candidate dispositions survive, and separate historical interpretations remain
+untouched. V3 exports the actual reopened generated/probe interpretations for
+independent audit. No model verdict grants permission or promotes a learned rule.
+
+**Software qualification passed; the fresh semantic gate failed.**
+Focused regression tests cover authenticated metadata, unchanged legacy bytes,
+original-citation replacement, unsupported/conflicting candidates, canonical
+reopen and retained-payload exports. The current Spark workspace build, strict
+Clippy, nine focused v3 tests, 6,352 default tests (25 ignored), and 6,844
+memory-enabled tests (29 ignored) pass. The standalone subset passed 273 checks;
+144 nested Python test invocations pass with zero skips, including the actual
+native binary against three authored HTTP responses. Full SQLite authority,
+request/schema and retained-render audits pass on those actual artifacts.
+The final schema-auditor mismatch was corrected and independently reviewed;
+CI now builds and runs this native contract check. The required owner-corpus
+privacy scan passed before pushing implementation `8383f6d68`. A separate
+frozen eight-case qwen3.6-35b-a3b run completed only three full workflows:
+three Unknown diagnostics lacked required missing-data questions, two evaluations
+omitted original-citation assessments, and one generator emitted an invalid
+support judgment (failures overlap across cases). All 23 available model replies
+are preserved without repair or retry. Independent semantic audit and final
+scoring are recorded in HISTORY: 20 admitted units inspected without unsupported
+factual premises, but 13 citation defects across the three complete formal audits
+(33 qualitative findings across raw/partial outputs). Only four generated
+retained bearings matched the current criterion out of eight planned cases.
+Missing outcomes remain unknown; concepts remain gated.
+See `MECHA-MEMORY-DESIGN.md` §31.11 and the prototype README for contracts.
+
+The previous immutable fresh qwen3.8-27b cohort at `05f47d317` failed: 6/8 complete
+workflows, all eight probe outcomes, one wrong known probe bearing retained, and
+one citation defect among 23 independently inspected retained units. Its timeout
+cost is incomplete and its formal qualified-audit count remains six. Full prior
+measurements, rejected attempts, reused development rounds and exact denominators
+remain in HISTORY and local `results/memory-support-repair-20261107/`.
+Do not replay or tune on that cohort. A new run must freeze source, binary,
+helper, independently authored fixtures and resident model, and preserve every
+failure. Require all eight workflows/audits, zero false support or wrong-bearing
+support, zero original-citation defects, and sufficient useful known/uncertain
+responses. Mechanical success alone does not open the learning gate.
+
+The first bounded synthetic rumination cycle and concept comparison are implemented
+in `memory_concept_workflow::run_trial`, including induction, paired decisions and
+counterexample revision. HISTORY records the fourteen-call pilot and its lack of
+measured choice benefit. Broader transfer and reliable revision remain unqualified.
+Native concept admission/recall uses explicit guarded APIs; do not weaken source
+authorization. Existing `learning.rs` rules enter instruction prompts and remain
+distinct from provisional conceptual knowledge.
+No default nightly migration is planned. Automatic needs-driven goal/context
+orchestration, safe failed-lookup capture and longer-episode qualification remain
+open; retire old appraisal duplication only after consumer parity and measured benefit.
+
+The transitive-freshness limitation remains: revising a consulted source makes
+its independently measured outcome ineligible. Separating historical provenance
+from current support must preserve access revocation and forgetting. No second
+planner/executor is needed.
+
+Still open: reliable semantic evaluation, production action/appraisal integration,
+automatic needs-driven context orchestration, useful concept discovery/revision and rumination, production
+private-data/encryption/source-fidelity qualification, retention/recovery,
+corpus-scale/identity/vector retrieval and an authorized personal-knowledge bridge.
+Nightly migration and merging mecha-graph remain deferred. Generic provider
+per-field usage missingness remains open. No unrelated subsystem open item or
+production deployment claim was requalified by this memory-only increment.
+
+Nonblocking review notes for the owner at merge: the GoalMemory schema's
+host-confirmed-reference wording is broader than its enforcement on the plain
+(non-memory) goal-context path; the bridge duplicates the untrusted wrapper
+literal from `jobs::render`; and CLI memory setup duplicates a looser loopback
+check before the stricter provider check. The standalone module dependency
+boundary also deserves a short usage note. The older explicit JSONL importer
+relies on the operator's synthetic-input acknowledgement rather than requiring a
+native Test session marker; changing that contract and its legacy fixtures is a
+separate minor follow-up. These do not expand authority in the
+reviewed paths; they remain cleanup items, separate from the code-program
+provenance gap corrected by admission and historical-binding refusal in
+`12e2432c4`; nested program capture remains unsupported.
+
+Living Site remains owner-private:
+https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#complete-native-evidence-and-provisional-concept-rumination
+Publication snapshots and the current scorecard are recorded in the Site's
+revision ledger and PR #846. Existing IDs, scripts/SVG, internal links and dist
+mirrors are preserved; browser checks verify rendered math and layout. The Site
+separates infrastructure failure, reused-case development and fresh qualification.
+Shared production binaries, services, configuration, owner stores and nightly
+jobs were not changed.
+
 **2026-10-03 — Breeze is the voice, live; what is open (mecha-69).**
 #523, #525, #527, #528 and #529 are in HISTORY under 2026-10-03, live
 with `ed72a382`. `docs/VOICE-BREEZE-DESIGN.md` §5 records each gate's
@@ -542,7 +1085,7 @@ line): 4132 passed, 0 failed, 5 ignored. Open, cheapest first:
     `merge_file`'s strips by one textual idiom (`trust ==
     LayerTrust::Project && layer.<t>.take()`), so a strip spelled
     differently is invisible to it.
-- **Step 7a-2 is #526, merged (`57424b7f`, 2026-10-03, 5 review passes) and not deployed (mecha-a3); `mecha features plan` exists only on main. Next in the lane: 7a-3, the first real install (layout, via the manifest).** `sidecar.rs` (a registry of
+- **Historical Step 7a-2 context (#526):** layout and further installers now exist in `install::install`, `install_layout` and `features::enable`; the first installer is no longer open work. The dated deployment/measurement details below were not reverified in this pass. `sidecar.rs` (a registry of
   the programs features run, provided-detection by user unit, PATH,
   directory, or a docker image with no socket, and a manifest reader) and a
   read-only `mecha features plan <id> [--verify]`. It re-pins the `tts` slot
@@ -1266,7 +1809,9 @@ probes remain available.
 Goal persistence, event attribution, declared plan checks and goal-specific context
 are implemented; the implementation history and earlier pilot comparisons are in
 HISTORY under this date. Guidance remains opt-in through
-`[agent] goal_guidance = true`; declared check execution defaults on.
+`[agent] goal_guidance = true`; declared check execution defaults on in that
+legacy/general surface. The separate V4 memory task-chat profile preserves
+declarations but deliberately marks verification Skipped.
 
 `mismatch::ArtifactCase::criteria` now supplies owner-bound, post-run field
 verdicts and optional pinned count context without sending expected answers to
@@ -1356,8 +1901,8 @@ before publishing. The previous source audit remains applicable; the follow-up
 audit confirms graceful serve shutdown, awaited MCP teardown and typed/steered
 input broadcasts are implemented on main, with evidence in `HISTORY.md`.
 
-Public at **github.com/ljchang/mecha**, MIT licensed. The latest published
-release is **v0.1.21**, published and installed 2026-09-18 from `a5275980`
+Public at **github.com/ljchang/mecha**, MIT licensed. The release recorded here
+was **v0.1.21**, published and installed 2026-09-18 from `a5275980`
 (v0.1.20 was `eab6773f`, 2026-09-11). The dated v0.1.19 installation record
 above describes an earlier update; the current deployment is the 2026-09-18
 entry under *Machine state, dated* below.
@@ -1784,11 +2329,11 @@ A working agent harness, used and measured rather than just compiled.
 | Area | State |
 |---|---|
 | Providers | Anthropic (raw HTTP, **verified live**) + OpenAI-compatible (llama-server, vLLM, Ollama) |
-| Agent loop | Streaming, tool dispatch, parallel execution, forced final answer |
+| Agent loop | Streaming, tool dispatch, parallel execution (authored serial order in the durable task profile), forced final answer |
 | Tools | `fs_read/write/edit/list`, `shell`, `http_fetch`, `todo`, `web_search`, `ask_user`; `recall` on session-recording front-ends (chat, TUI, resumed runs) — searches the transcript union, including what compaction rewrote away |
 | Planning | `Phase::Plan` hides writing tools structurally — not offered, not dispatchable |
 | MCP | stdio client; per-server on/off; capability overrides that only widen; `prefix_tools = false` for a server whose tools carry their own namespace (collision fails startup loudly) |
-| Memory | mecha-graph (the artist formerly known as pkg, now public) wired as MCP server `graph`, unprefixed `kg_*` tools — the user's mail, Slack, calendar, conversations |
+| Memory | Independent owner information in mecha-graph over MCP; default-off Mecha-owned encrypted episodes and CLI Task/Plan state through explicit memory adapters. No task-board or owner-graph migration is implied. |
 | Subagents | `Agent` wrapped as a `Tool`, allowlisted registry, per-profile model |
 | Search | `SearchBackend` trait — Exa, Tavily, SearXNG — a preference-ordered chain, first to *answer* wins. An exhausted chain of genuine empties is an answer; only a chain where nothing answered is an error. `prefer_deep` promotes a backend to the head on `depth: "deep"`, reordering and never filtering, so every backend stays reachable as a fallback at either depth. Since #241 each backend also declares an egress class **per depth** (`SearchBackend::egress`, defaulting to `Chosen`): searxng and tavily blind at both, **exa blind at quick and not at deep** — `deep-reasoning` fetches pages the query steers it towards. An armed conversation is served by `search_blind` (blind entries, quick depth) and the result says so on every exit path, empty and failing included |
 | Security | Path jail, SSRF guard, trifecta interlock, leak guard, capability model. The send axis is a **class** since #241 (2026-09-17): `Egress::None < Blind < Chosen`, `union` a max. The interlock fires on `Chosen` — a recipient the *model* names — and `block_sends_after_private` on both, so `web_search` (schema has no destination) keeps working in a conversation holding mail or graph data. `docs/EGRESS-DESIGN.md` |
@@ -1844,6 +2389,31 @@ binary is absent |
 `cargo clippy --all-targets` is clean and should stay that way.
 
 ## Environment as left
+
+**2026-11-10 graph checkpoint:** isolated Spark source/build and authored-data
+qualification only; current totals are at the top of this handoff. No production
+binary, service or owner graph was changed and no resident model was called.
+Main eval inventory was recounted at 36 cases / 15 tags. Older dated model and
+service observations below were not reverified for this increment.
+
+**2026-11-09 packet/appraisal increment:** isolated Spark qualification passed
+workspace build, 6,352 default / 6,960 memory-enabled tests (zero failures;
+25/30 ignored), native CLI checks and SQLite integrity. The standalone compile
+exposed a core-only test assertion, corrected with a scoped feature gate. The
+resumed final-source checks passed the core boundary test, 334 standalone tests,
+formatting and strict workspace/all-target/all-feature Clippy. The full suite
+counts apply to identical runtime code before that test-only correction; both
+source snapshots and the original failure are retained. No model inference or
+production installation was part of this increment. Current PR/CI state is on
+#846; earlier dated machine observations below were not refreshed by this run.
+
+**2026-11-08 memory increment:** isolated Spark builds and synthetic model
+comparisons only; no service restart or production installation. The resident
+model was Qwen3.8-27b with one slot and 262144 context, verified through its
+model-specific props with autoload disabled. Earlier deployed artifacts and
+service-health claims below were not reverified. The main eval inventory was
+recounted: 36 cases / 15 tags. Test-only HUD assets were built in the isolated
+checkout; the interpreter worker was verified against its committed binary hash.
 
 **Verified 2026-09-09 15:56 UTC for the anticipation worktree:** baseline build
 and workspace tests passed; final strict workspace tests and Clippy passed
@@ -1909,6 +2479,12 @@ handoff is isolated on `docs/assistant-update-handoff`. Older credential,
 private-store, installed-artifact and remote-deployment claims below remain
 dated observations, not freshly verified state. This update supersedes their
 earlier binary, service and factory-version claims.
+
+**Source clarification, 2026-11-09:** the packaged `llama-local.service` now
+executes installed `mecha-router` with an explicit preset path. The older router
+warning below describes a dated installation, not the current packaged template.
+Voice/Parakeet working-tree consumers and portable benchmark builds still require
+branch/blob checks. This source audit did not inspect or change live unit overrides.
 
 > **This checkout is a live service's `ExecStart`. Do not `git stash`, `git
 > checkout --`, `git restore` — or `git checkout <branch>`.**
@@ -4477,13 +5053,12 @@ is recoverable without the checkout's cwd. Record:
   timer unit that appears in neither of the skill's two lists (it runs the
   installed `mecha`, so "needs nothing" — but absent is not classified).
 
-- **Two macOS residues from #113's CI arm, parked deliberately** (that
-  lane's own flag, so they are not lost): `homeostat.rs` reads
-  `/proc/loadavg` and `/proc/meminfo` unconditionally, so on macOS load
-  and memory are permanently `None` — degrades honestly, but CI now says
-  macOS is supported and that is a silently reduced feature there. And
-  `tui/mod.rs` has a lost `\`-continuation from `cfa2cc2` on the OSC 52
-  clipboard line — cosmetic garbled output.
+- **macOS follow-ups from #113's CI arm:** the load reading still reaches
+  `/proc/loadavg` through `system::Reader::loadavg`, so it remains unavailable
+  on macOS. Memory availability now reaches the macOS source through
+  `homeostat::mem_available_kb` and `system::Reader::now`; the old missing-memory
+  claim is superseded by source inspection on 2026-11-09. The older OSC 52
+  clipboard-output observation remains unverified in this memory-focused pass.
 
 **As of the evening of 2026-08-07, self-serve is done.** All six steps of the
 factory's `SELF-SERVE.md` are built, deployed, and verified live — a stranger
@@ -6476,11 +7051,6 @@ is true now:
   `ArtifactCase::criterion_feedback` observes a bound fixture after the run;
   it does not turn final completion into an enforced convergence loop.
 
-- **Programmatic tool calling** (a `code` tool that calls other tools from inside
-  a program). Two hazards to solve first, both named in the research: taint must
-  update *within* a running program, and approval for a program that makes
-  thirty calls is not thirty approvals.
-
 ### The learning system
 
 The arc is complete, **ungated, and running per session close** (2026-08-30,
@@ -6973,25 +7543,17 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   `precheck`). Nothing would notice a build on an older toolchain failing;
   state it in `Cargo.toml` or add an MSRV job.
 
-### Code mode and the RLM arc — designed and ruled, nothing built
+### Code mode and the RLM arc — remaining qualification
 
 `docs/CODE-MODE-DESIGN.md` is the authority. `docs/RLM-RESEARCH.md` and
-`docs/POST-TRAINING-RESEARCH.md` hold the evidence (#760, merged
-9506285a1). The owner ruled R1–R3 and R5–R9 on 2026-10-30. Verified
-unbuilt at 9506285a1: no `code` tool in the registry, no `Lever::CodeTool`,
-no effect-class axis on `Tool`.
+`docs/POST-TRAINING-RESEARCH.md` hold the evidence. The former blanket
+"nothing built" claim was obsolete: current source includes effect classes,
+`Agent::gate`, `CodeTool`, feature/lever controls and setup registration.
+The source-confirmed implementation inventory moved to HISTORY. This memory
+increment did not reverify code-mode deployment, M1 measurements, budget rulings
+or the analyst profile; consult that design and the owning lane before treating
+those items as finished.
 
-- **M1 is owed before R4.** Measure `monty-pool` worker start and
-  per-host-call overhead on this box, alone and under contention. R4 sets
-  the budget defaults from M0 (done, §10) and M1.
-- **The build order is the design's, not §3.12's.**
-  1. `ROLLOUT-DESIGN.md` §3.2's effect class, shared with rollouts.
-  2. Split `Agent::dispatch`'s per-call body into gate and rendering.
-  3. The `code` tool (read-only slice, handles, typed `llm_query`), as a
-     `Feature` and a `harness::Lever`.
-  4. The `analyst` profile.
-
-  Each step has §8 tests that must fail on the naive build.
 - **Post-training is not started, deliberately.** Step 0 (2026-10-30)
   found six owner denials, with the model-side failures being retry loops.
   Of the three harness fixes it named, #762 (in review) adds one and

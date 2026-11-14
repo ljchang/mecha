@@ -22,6 +22,10 @@ pub mod learn;
 pub mod learning_report;
 pub mod mail;
 pub mod mail_rule;
+#[cfg(feature = "memory-prototype")]
+pub mod memory;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_session;
 pub mod model;
 pub mod model_catalog;
 pub mod msg;
@@ -56,3 +60,6 @@ pub mod voice_serve;
 pub mod work;
 
 pub mod workflow;
+
+#[cfg(feature = "memory-prototype")]
+pub(crate) mod memory_profile;

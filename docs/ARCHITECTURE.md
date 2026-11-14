@@ -84,6 +84,24 @@ Any caller owning its input gets the same behaviour from
 `RunContext`, which is how one agent serves the web surface's concurrent
 conversations under different jails and permission modes.
 
+**Completion feedback is part of the original run, not another executor.**
+An explicitly supplied `CompletionObserver` may inspect a normal nonempty
+terminal answer and append at most one closed-vocabulary harness notice.
+`Agent::run_in` retains its conversation, taint, tool allowances and budgets;
+children do not inherit the observer. Inspection is bounded by two seconds and
+the original host deadline, with cancellation/deadline checks before and after
+awaiting it. Only synchronous loop-accepted snapshots reach `record`, so a late
+blocking read cannot publish success after cancellation. A normal last-turn
+answer may be inspected at a token/turn/cost cap, but cannot resume there.
+
+**Mixed harness and owner text needs block-level provenance.** Completion
+notices use exact registered voice and a harness-marked user message. If a real
+steer joins that message, clear the whole-message flag only when all existing
+blocks are recognized harness text, including an empty-turn nudge. Otherwise
+the owner's steer can disappear from captured evidence; clearing arbitrary
+host-message flags would make the opposite error. The registered notices
+remain excluded individually after the message becomes mixed.
+
 ## Provider notes (Claude 5 family)
 
 **Two HTTP clients per provider, chosen per request by whether the body
@@ -8111,6 +8129,22 @@ was ever deployed.
 
 `session.rs` writes append-only JSONL transcripts; `replay.rs` re-drives them.
 
+**Dynamic context is recorded before the provider attempt, not inferred from
+message positions afterward.** `GoalContextDecision` atomically carries the
+new versions and `DecisionBinding`: exact prewire and effective messages, system
+text, run boundary, tool surface and tool mode. Its digest detects missing or
+substituted fields; it is an integrity check, not an authenticity signature.
+Rewrites and clear retain historical versions. A recognized malformed dynamic
+record refuses before lenient legacy parsing, including escaped or duplicate
+discriminators: recovering one as a plain message would silently erase context.
+An appended binding proves an attempted dispatch, not provider receipt.
+
+`replay::extract_transcript` validates this history. Dynamic replay requires an
+exact recorded boundary and continuation; unsupported steering/branch changes
+refuse. Counterfactual harness probes refuse these transcripts until they can
+apply their intervention without overwriting it with the frozen request. A replay
+that restores the baseline over a compaction candidate measures no intervention.
+
 - **Anything that shapes the request or constrains the run is a confound if
   it is not recorded** (`RunConfig`). Compaction on versus off measured 1/5
   against 5/5 on the same task, so a replay blind to that setting would report
@@ -9894,6 +9928,75 @@ enforced, and is the part to keep:
   found 2026-08-29, when the page-level docs claimed all surfaces shared the
   implementation and a grep for callers said otherwise.
 
+**Versioned chat context is evidence, not charter authorship.** Opt-in
+`--dynamic-goals` uses host-created `OwnerInput` from CLI chat, TUI keyboard input
+and authenticated assistant web chat. A user-role message alone does not establish
+owner provenance. `GoalContextState` belongs to `Conversation`; each run allocates
+its own tool-context binding even when Agent is shared. Untyped steering, remote
+mirrors and subagent inputs cannot mint owner authority. `bind_goal_decision`
+records before consuming steering or publishing the new state, including the
+forced-final-answer path. Charter refresh replaces only its registered system
+slot; raw sensor configuration stays harness-only. Render its todo guidance from
+the registered surface and per-run withholding, not a single request's tools:
+a tool-less final answer is not an owner charter edit. Record the actual request's
+tool surface separately. Clear preserves audit history and its total budgets;
+limit recovery requires a fresh session, not another clear.
+
+**Every taint reader must follow the same conversation boundary.** An explicit
+`GoalContextClear` discards the active messages, cumulative taint and positional
+checkpoints in both `Session::parse` and `TaintTimeline::from_records`. Keeping
+old checkpoints can classify a new untrusted message as clean. A rewrite is
+different: it retains conversation taint. A new suffix without a recorded taint
+checkpoint remains unknown, never implicitly clean.
+
+**Inspection is not execution.** Read-only session display uses the strict
+`Session::read` parser, including feature-independent memory markers. Ordinary
+`Session::load` keeps its memory-resume refusal; applying that execution gate to
+display prevents the owner from inspecting the very transcript named in an error.
+
+**A provider pause is not a new owner turn.** Live dynamic-goal execution refuses
+the raw PauseTurn envelope before empty-response nudges or tool dispatch.
+`run_in` refuses assistant-tail live entry before any host note can create an
+apparent owner boundary, or any charter refresh or state mutation occurs.
+Owner evidence is a request-only projection: skipping it would remove prior
+evidence, while appending it would create an extra user turn. Correct continuation
+requires a separately frozen request contract; do not approximate it with either
+rewrite. Exact historical replay remains on its recorded path. This boundary also
+prevents request-only notes or next-loop budget notices from masking the pause.
+
+**Delegated resume must preserve the owner-input contract as well as the jail.**
+`questions answer` and `tasks work --resume` do not construct dynamic goal ingress,
+so their transcript readers reject a versioned conversation before reopening it
+or dispatching a model. Task resume additionally checks before setup and rechecks
+at its existing load boundary; an early preflight must not become a stale snapshot
+carried past the single-writer check. A refusal preserves the pending question
+and native history. Do not suggest ordinary chat as an equivalent delegated
+resume: it does not reconstruct that question's outbox route and task narrowing.
+
+The charter file remains the current authority. Stored `CharterSnapshot` values
+retain historical bytes and rendering for replay, never an alternate policy-write
+path. `appraisal::charter_for_transcript` selects a historical charter only when
+coverage is unambiguous; mixed charter versions, clears or uncovered runs report
+partial attribution. It must not reinterpret past outcomes with today's charter.
+Dynamic context binding separately arms private-data taint for its owner evidence
+and preserves that mark on transcript hydration, including an interrupted run.
+The legacy fixed `GoalRef` and encrypted one-shot memory protocol keep their
+existing contracts; a multi-turn capture protocol must explicitly bind versions.
+
+**Do not skip ambiguous post-decision history to make dynamic resume work.**
+`Session::parse` refuses otherwise unparseable records after a dynamic decision,
+including unknown tags and torn ordinary records. The first decision's coverage
+flag does not become partial merely because a later line set
+`prior_run_ambiguous`; binding digests do not certify that all native taint,
+grant or rewrite records survived. Skipping that history could hydrate an
+executable conversation with missing security state while claiming complete
+appraisal coverage. This is a deliberate crash/forward-compatibility limitation.
+The search-only `messages_ever` reader may salvage text, but does not authorize
+execution. A future tolerant reader needs explicit incomplete-history state and
+resume/replay gates, not just a relaxed parse error. Memory-marked transcripts
+remain strict before legacy fallback; unmarked dynamic transcripts retain their
+existing successful `lenient_record` compatibility path.
+
 **Order is rank, and `deny_unknown_fields` is what enforces it.** There is no
 priority field, because value conflict is the measured cause of goal drift and a
 weighted sum can always be outvoted by enough small goods. A stray `priority` or
@@ -9902,7 +10005,7 @@ owner write one, believe it did something, and never find out. Do not sort
 `Charter::lines`; `SkillStore` sorts because its block is a menu, and a
 charter's order *is* the content.
 
-**Loading a charter arms no taint**, and `charter.rs` has no dependency on
+**Static charter rendering arms no taint**, and `charter.rs` has no dependency on
 `agent::Taint` at all — the absence is the enforcement. It renders straight into
 the system prompt (no progressive disclosure, no tool), so it is in the cached
 prefix: `CHARTER_CHAR_BUDGET` is 2,500 (2,000 until the goal-sentence ask of
@@ -10747,6 +10850,19 @@ unreachable. Inventing precedence until every run gets an interesting word
 manufactures the signal the measurement exists to test for; showing the sign
 the record already holds does not.
 
+**Turn-budget advice is an opt-in resource fact, not an absence verdict.**
+`RunContext::with_budget_notice` enables one harness notice before the request
+with two turns left (one for a one-turn run), using the effective hard turn
+ceiling. Stop checks still win; advice neither extends the cap nor disables a
+late read or write. Its run-local delivery state survives compaction, and its
+exact text is harness voice rather than owner steering. The synthetic bridge
+excludes recognized harness text from newly admitted `UserRequest` passages,
+while retaining the raw transcript and the original coordinates of owner text
+and tool results. Historical captures are not rewritten. This follows a trial
+whose boredom notice arrived after its eighth and final call: the model had
+never received the warning. The trial explicitly opts in; ordinary runs remain
+unchanged pending behavioral qualification.
+
 **Boredom fires once per rung, never per turn** (`==`, not `>=`). A model is
 measurably likelier to fail a step when its context holds its own earlier
 errors, so nagging about being stuck is a way of making it stick. It keys on the
@@ -10853,8 +10969,19 @@ docstring on `Tracked::checks` says so. The first cut gated on the
 swaps its check through, which is exactly the rewrite the freeze exists for.
 **The loop executes a newly completed step's frozen check** after its tool
 batch, through ordinary shell dispatch: approver, sandbox, interlock and hooks.
-`agent.step_checks` disables execution; denied, unavailable, staged or skipped
-checks remain unverified. At most sixteen checks run per run. The result is a
+`Agent::run_in` admits the optional check queue only when `agent.step_checks`
+is enabled and `shell` is registered. This is a registration check, not a
+permission grant or a snapshot of dynamic availability: registered checks still
+traverse every ordinary dispatch guard. Without a queue, a newly completed
+checked step remains `Verification::Skipped`. `ToolCtx::step_checks_unavailable`
+is stamped each run only for enabled checks without a registered shell;
+`TodoTool` emits one bounded unverified notice only in that case, with no repeat
+for an unchanged completed-plan echo. Deliberately disabled checks remain silent:
+queue absence alone cannot distinguish an unavailable capability from an off lever,
+and emitting guidance for both contaminates bare/evaluation arms. Frozen commands and tamper detection remain intact. The
+first native memory comparison exposed harness-generated calls to a nonexistent
+shell, consuming context while contributing no verification. Disabled, denied,
+unavailable, staged or skipped checks remain unverified. At most sixteen checks run per run. The result is a
 trace named `step::CHECK_TRACE`: `Work::of` keeps those out of `calls` (the harness's work is not the
 model's, and `expect_calls` forecasts the model's), counts `checks_declared`
 / `checks_passed` (a refused check in neither), lets a passing check count
@@ -13159,3 +13286,1314 @@ and RFC2822 are parsed; unknown formats stay unknown. This covers old message
 dates outside the prompt's near-term calendar reference. Manual review found a
 wrong incoming-message weekday that the initial grounded rubric missed, so the
 live controls include both a correct and an incorrect incoming weekday.
+
+## Experimental memory prototype
+
+`memory` is default-off; qualification uses authored data rather than the owner's
+private corpus. The core owns
+capture/retrieval/evaluation; CLI adapters discover no live stores. Commands with explicit local endpoint/model arguments manage their own
+resident-only inference; they bypass generic/default-provider setup and never
+load global configuration for that inference. The explicit `run --memory-context` adapter uses
+ordinary run setup and replaces only its already-available `goal_context`.
+The separate `run --episodic-memory` path connects fresh ordinary sessions to
+`memory_session` through an explicit encrypted host manifest; default runs do
+not acquire capture or new output fields.
+See `MECHA-MEMORY-DESIGN.md` for the production design and
+`../prototypes/memory/README.md` for this implemented subset.
+
+- **The home store's three paths are fixed in code, never configured**
+  (`memory_home`): `<home>/memory/store/`, `key/` and `authority/`, siblings
+  that never contain one another, because the key policy refuses a key under
+  the database's directory or the authority's. A layered `mecha.toml` must not
+  be able to say where the owner's memory or its key is, so there is no
+  `[memory]` path setting to strip. **The admission is the caller's, never
+  the path's**: `memory::sql::validate_path` refuses every directory under
+  `.mecha` unless the `StorageAccess` it is handed was admitted to exactly
+  that directory (`admitting_home_store`), and only `memory_session`'s
+  authority builds one, for a request whose database is in this process's
+  own home store. A rule by spelling admitted `mecha memory`'s synthetic
+  fixture surface to the live store too (review of #862).
+- **`memory` is a registered feature whose switch gates nothing yet**
+  (`Feature::Memory`, `gated() == false`): the row reads the build
+  (`memory_home::BUILT`), the switch and the store's three files, never an
+  open. Attachment is still an explicit `--episodic-memory`; `gated` turns
+  `true` in the change that attaches the home store to an ordinary session.
+- **Recall's taint is derived from what the store recorded, never asserted.**
+  Everything recalled is private. A record is trusted only when a live
+  capture says its bytes did not come from outside the harness
+  (`host_capture::Origin::untrusted`, read through `Hit::read`); no origin,
+  an origin that does not say, a forgotten capture and anything a model
+  derived (a relation, a concept, an interpretation) all read as untrusted.
+  `goal_context` marks its result `from_outside` when any record in the
+  packet is untrusted, so a recall of the owner's words and local results
+  arms `private_data` alone. Before this, every recall armed both legs and
+  any use of memory refused model-chosen sends for the rest of the
+  conversation (owner's ruling, 2026-11-11).
+- **One type decides a passage's origin as it is recorded**
+  (`host_capture::Intake`): the owner's words are local, a tool result is
+  what the loop wrote beside it (`Message::tool_provenance`), and what the
+  model writes is outside once anything outside or unrecorded has entered
+  the conversation — a chat turn starts from the earlier turns' recorded
+  taint. The store dropped `tool_provenance` at capture until 2026-11-11,
+  so every stored passage was of unknown origin. **The transcript's
+  recorded taint outranks the walk** (`Intake::settle`): it is armed by
+  more than tool results (notes, persona blocks, a digest), so where it
+  says untrusted, or is missing, and the walk saw nothing outside, no
+  passage of that capture is sealed as local. And a note or user-role
+  block that the harness's own content rule (`Taint::arm_for_content`)
+  reads as untrusted has no position among the messages, so everything the
+  model wrote in that capture is stored as outside (`Intake::ambient`;
+  both from review of #863). A capture's
+  own record is trusted only when every passage it admitted was. The field is absent
+  from the wire when unknown, so earlier captures keep their digests and
+  read as untrusted.
+- **A recorder leaves out what it cannot place; it does not refuse the run
+  or the turn** (`memory_session::recording::Walk`, shared by the one-shot
+  recorder `recording::capture` and an ordinary chat's
+  `chat_recording::capture_open` so the two cannot disagree on what a
+  passage is). Two kinds of
+  check, kept apart: one on *whose run this is* (the header, the workspace,
+  the goal, a recall that does not reconcile with what the tool returned)
+  still refuses the capture; one on a record's or block's *shape* does
+  not. Three things happen to a shape. A tool the recorder has no list
+  for and a cancelled run cost nothing: the calls and results are passages
+  like any other. A late result is classified exactly,
+  from the provenance its record carries (`Intake::result`). And content
+  the walk can neither place nor classify (a delivered inter-agent
+  message, a notice it has no exact text for, an image, a record kind it
+  has no reading for) is left out and reported to `Intake::unplaced`,
+  which the recorded taint settles once the whole transcript is read:
+  under a taint recorded clean nothing outside entered by any route, and
+  otherwise everything the model wrote in that capture is stored as
+  outside. So a restriction that used to cost the whole memory now costs
+  at most the "local" label. **A rewrite record is read, not skipped**
+  (`Walk::rewrite`): `record_transition` writes the whole current list in
+  place of the tail after a compaction, an eviction, or an owner's line
+  folded into a message that already held tool results, so what follows
+  the cut exists nowhere else in the transcript. A one-shot records its
+  messages once, at the end, so a run that compacted had a memory of its
+  request and nothing else while the walk skipped that record. What a
+  rewrite lists again is not read twice, and an earlier turn's messages
+  are never a later turn's passages. Which entries are new is decided by
+  position, never by bytes alone, because a reply identical to an earlier
+  one is still a reply (review of #865): where the list holds the span's
+  owner message, everything before it is an earlier turn's and everything
+  after is the span's, less what the walk already read, matched in order;
+  where a compaction summarised that message away, entries are matched in
+  order against the earlier conversation (`Walk::hold`) and then the walk,
+  which can still take a new message for an identical one the compaction
+  dropped. That costs the passage, never its label. **A grant may not reach the store**
+  (`authority::exclude_grants`): one that contains the database, the key,
+  the authority directory or the transcript, or sits inside the store, is
+  refused at the start (`validate_surface` for the store,
+  `validate_session_grants` for the transcript once the session exists),
+  at every recall and when the transcript records it, because `grant::admit` protects the mecha home and a manifest may
+  place a store elsewhere (review of #864). The recorder used to admit `fs_read`, `fs_write`,
+  `fs_list` and `goal_context` and refuse any run with a hook, a server, a
+  grant, a subagent, an inbound message or a compaction (owner's rulings,
+  2026-11-11).
+- **An ordinary chat's turn is recorded by the same rule**
+  (`chat_recording::capture_open`, for the local attachment; the graph,
+  task and web attachments are closed profiles and keep the strict walk,
+  `Attachment::open`. The web host is built on the strict walk's refusals,
+  a stopped turn blocking the conversation until an explicit resume, and
+  opens with that host; its recorded tool list is still the closed four
+  in the library, `recording::closed_surface`, not only in its host). What still refuses a turn is whose it is: the
+  prefix it began from, the attachment and its ingress, the workspace, the
+  owner's line as the host froze it at the start, the owner inputs behind
+  every goal-context decision, a recall that does not reconcile, a grant
+  that reaches the store or the transcript (checked against every grant
+  the conversation holds: by the host before each turn starts
+  (`ChatMemory::validate_grants`, which refuses the turn, not only its
+  memory, since `/grant` is allowed in an ordinary chat and `grant::admit`
+  does not know where a manifest placed a store), in `continuation`, at
+  each recall and at capture. A grant made *inside* a run by
+  `request_access` is caught at the next recall and at capture, as in a
+  one-shot, which is after a tool could have used it). The history each
+  request sent is a shape: where it does not follow from the last by
+  growing, the walk cannot say what was in front of the model and the
+  recorded taint classifies the turn. A turn needs a taint record and at
+  least one decision, and no outcome: a turn the provider failed is still
+  what happened. **A turn the recorder cannot capture is passed over, not
+  fatal** (`ChatMemory::continuation`): an ordinary chat skips a turn that
+  began and never sealed, takes the next ordinal after every turn begun,
+  and chains the next turn to the last one retained; the skipped turn's
+  records stay in the transcript as part of what the next turn continues
+  from, taint included, and whatever is appended between turns is read
+  the same way. A passed-over turn cannot be sealed later
+  (`finish_turn`), because its span would take in the turns begun since.
+  A seal that exists and does not verify still refuses, and so does a
+  turn that was retained and has since lost its seal: passing over is for
+  a turn that was never captured, and a retained one has a record in the
+  store that the chain is verified through (review of #865). **The open
+  recorder has its own version pair** (`CHAT_OPEN_OBSERVATION_PROTOCOL`,
+  `CHAT_OPEN_RECORDER_VERSION`): the version is what tells a reader which
+  rules stand behind a record, and a v1 chat record was bound to exact
+  request histories and a closed tool list. A local chat begun under the
+  strict recorder keeps its earlier v1 seals and records its later turns
+  as v4. **The taint must be the turn's last record** to count as its
+  verdict: one followed by anything is read as unknown, which is never
+  clean. The chat recorder
+  used to bind each turn to the exact history every request sent, admit
+  four tools and no grant, and end the chat at the first turn it refused.
+- **An ordinary web chat is remembered through the same recorder**
+  (`serve --chat-memory MANIFEST`, `serve/web_memory.rs`; attachment
+  protocol `ordinary-chat-memory-v5`, recorder version v5,
+  `SessionMemory::attach_open_web_chat`). The separate web memory mode
+  (`memory_chat.rs`, protocol v3) is unchanged and still closed. Five
+  things differ from the terminal chat, each because of how the server is
+  built. **Memory attaches in `ensure_session_as` between `Session::create`
+  and the first `Record::Config`**, because an attachment binds the
+  transcript from its header. **One recall tool serves every
+  conversation** (`memory_session::router::RecallRouter`): the server
+  builds one agent whose tool list is the front of a cached prefix, so the
+  list cannot differ per conversation; the router stands in the registry
+  under the recall tool's name, schema and capabilities (`bind` refuses a
+  reader that differs in any of them, since the interlock believed the
+  ones announced) and answers each call with the reader bound to the
+  call's `ToolCtx::conversation`, the key the front end stamps on each
+  turn. Not its workspace: a resumed conversation keeps its recorded
+  workspace under a new key, so two live chats can share one directory,
+  and a router keyed by it had each releasing the other's reader (review
+  of #866; the 2026-10-18 `ask_user` routing bug restated). The
+  router replaces the plain `goal_context` builtin in the registry
+  (`Registry::insert` keys on the name), for every conversation the agent
+  serves and not only the remembered ones, so with no reader bound it
+  answers as that builtin does, the confirmed goal and its lessons, and
+  only a request for memory itself is told there is none. Before that a
+  board task, a spoken turn and any turn whose memory could not begin
+  lost the goal tool on a remembering server (review of #866). **A
+  configuration record names the producer root**, an ancestor of each
+  chat's workspace, where a terminal chat's names its own
+  (`Attachment::configured_in`, which holds that ancestor to what the
+  chat's own workspace is held to: it may contain neither the store nor
+  the transcript, and never the mecha home). **A line typed while the model works is the owner's**: the host
+  authenticates a steer as an owner input, a later decision's context
+  version lists it after the turn's first, and the walk stores the block
+  that carries it as a `UserRequest` with its own locator
+  (`Walk::expect_steers`); the same words in a block no owner input backs
+  are left out like any other user-role text. The transcript records a
+  steer in one of two shapes and the walk reads both: typed after a tool
+  round it is a block in the message that carries the results; typed
+  before the first, it is folded into the owner's own message, which
+  `record_transition` writes as a `Record::Extend` (`Walk::extension`,
+  pointer `/blocks/N/text`), and the turn's first request already carries
+  it, so the first decision's history may be the turn's opening history
+  with its tail added to (review of #866). **Only a typed turn is
+  remembered**: a spoken turn, a task's seed turn and a harness draw carry
+  no authenticated owner input, run with no reader bound, and their
+  records are part of what the next typed turn continues from. The turn
+  is begun in `begin_turn` before its message is recorded and sealed in
+  the run's task right after `Record::Taint`, before a late result or a
+  title can land behind it. A grant that reaches the store refuses the
+  turn (`OrdinaryMemory::grants_may_run`). A remembered chat resumes
+  through the ordinary door (`resume` reads it with `Session::read`,
+  since `Session::load` refuses every memory-marked transcript, and
+  re-attaches); a server started without `--chat-memory` refuses to
+  resume one. A chat whose memory cannot attach or re-attach goes on
+  unremembered. **An incognito chat is neither remembered nor able to
+  recall** (owner's ruling, 2026-11-12), by two independent means: it has
+  no transcript, so nothing attaches and `begin_turn` begins only a kept
+  session; and `goal_context` is not in `incognito::ALLOWED_BUILTINS`, so
+  its dispatch is withheld and no reader is ever bound to an incognito
+  key. The tool stays in the list the model is shown, as every withheld
+  tool does. A persona chat has its own routes and its own memory and
+  does not pass through this path.
+  **The sidecar still bounds a conversation**: a turn's context names at
+  most 128 decisions and 16 context versions in 24 KiB (later decisions
+  are left to the transcript), each version repeats every owner input so
+  far, an owner's line is at most 2,048 bytes and a conversation holds 64
+  of them and 256 turns. Those are the next limits a long chat meets.
+- **A capture's bounds are constants in one place** (`host_capture`):
+  `MAX_ORIGINALS` and `MAX_RECEIPTS` (256), `MAX_CAPTURE_BYTES` (1 MiB),
+  `MAX_PASSAGE_BYTES` (4,096). A field longer than a passage is stored as
+  its head, cut on a character boundary, with the whole length beside it
+  (`OriginalPassage::source_bytes`, `excerpt`); the transcript line keeps
+  the rest. A run larger than a capture keeps the owner's request, the
+  model's last text and as many passages from the start as fit, cut on
+  whole calls, because admission requires a receipt for every invocation and
+  an invocation for every receipt (`recording::fit`). The bounds were 16
+  passages and 32 KiB, which refused any run of more than about seven
+  calls. `host_capture::validate` and `validate_ordinary` are shared, so a
+  chat turn's capture moved in all four dimensions too (passages 16 to 256,
+  receipts 32 to 256, payload 32 KiB to 1 MiB, dependencies 64 to
+  `MAX_CONSULTED`), and the trial paths' admission got the payload
+  ceiling. The closed chat profiles' walk still stops at 128 messages and
+  32 calls and stores whole passages only, and the trial bridge keeps its
+  sixteen-passage check. `recording::fit` measures what the rest of the
+  capture serializes to (identity, criterion or chat context, scopes,
+  dependencies) rather than reserving a constant, so a store with a
+  maximal manifest cannot pass the start and lose a long run at the end. **These bounds are larger than dense recall's
+  corpus.** `hybrid` embeds the whole eligible store per invocation and
+  refuses past 256 records or 256 KiB (`HybridFallback::CorpusBounds`),
+  falling back to lexical ranking; one large run now exceeds that, where
+  it used to take about sixteen. Only the trial workflow and the native
+  recall route (`goal_memory_recall`) have a dense half; an ordinary
+  session's `goal_context` ranks lexically whatever the store's size. A
+  `CorpusBounds` fallback is therefore a property of that design, not a
+  symptom of a damaged store, and lifting it means a stored index rather
+  than a larger constant. The learning inventory (`learning_run_sources`) still lists at
+  most sixteen passages of a run.
+
+- **Operational tasks have a typed authority boundary inside the memory store.**
+  `memory::task` reuses object/revision/scopes and erasure, but `TaskSession` binds
+  trusted host identity to one store, account and native session. Generic reads,
+  searches and context packets exclude Task dependency closures: domain/scopes
+  alone do not prove that binding, and a relation consulting a Task must not
+  reopen access indirectly. `TaskRef` is data, not a capability. The current API
+  preserves owner-host authorship; the separate `memory::plan` adapter records
+  model progress without rewriting owner intent or claiming verified success.
+  Closed/Cancelled remain SQL-active revisions with terminal payload status, so
+  closure stays readable without permitting another content update.
+- **Task retries acknowledge commits before testing stale expected heads.**
+  The IMMEDIATE transaction checks the host operation key and exact payload
+  before CAS, reauthorizes an existing result and returns its original receipt.
+  A conflicting request or forgotten operation refuses. The receipt proves only
+  a database commit; there is no native append or execution claim. Task-chat plan
+  operations separately reconcile pending native audit without repeating a saved
+  operation. Forgetting scrubs receipt content through the same closure purge
+  and retains opaque tombstones. Task outcomes must not create a dependency
+  cycle back into their own Task object.
+- **A durable todo publishes all effects together.** `tool::todo_memory` stages
+  tracker state, declarations, counters, goal deltas, feedback and exact echo
+  before committing. Publishing only the cloned tracker leaves other shared
+  state changed after a rejected write. The task profile dispatches tools in
+  authored order and binds each successful todo to a host turn/ordinal plus its
+  exact feedback range; provider IDs alone cannot identify occurrences across
+  turns. A dropped item's declaration stays intact, and completing it after
+  restart cannot substitute a different check.
+- **Recovery verifies bytes; it never grants execution authority.** The private
+  live Plan permit is revoked on finish/drop. `BoundNativeSession` pins source
+  identity and exact prefix; final bytes are fingerprinted durably before append,
+  synced and checked against the complete SQL receipt set before capture seals.
+  `chat::task_audit` uses separate verified evidence to reconcile pending or
+  already-audited receipts without minting a live permit. Zero-todo turns require
+  the same final fingerprint. Missing or ambiguous bytes remain blocked. Native
+  task-start reservation precedes Task creation, so interrupted attachment cannot
+  later masquerade as an ordinary unmarked conversation.
+- **Operational plans are not generic episodic originals.** V4 task recording
+  validates exact native todo input/result/feedback against the typed store before
+  omitting those fields from generic capture. Ordinary tool source pointers retain
+  their absolute positions. Independent prose and search invocations remain
+  ordinary evidence; task forgetting does not claim to erase native JSONL.
+- **A restored task snapshot is historical, not a current task authority.**
+  Keyed v8-to-v9 migration is explicit; ordinary open never upgrades. Backup
+  preserves the validated source schema version and complete inventory. Restore
+  refuses mixed versions and requires matching live deletion authority, then marks
+  its output historical. Typed task bindings/operations refuse that copy. This
+  is a guard on explicit restore, not detection of arbitrary owner-level byte
+  replacement. Existing v8 recovery semantics and serialized records remain.
+- **Ordinary observations have no implicit semantic verdict.** The v8
+  `ordinary-session-observation-v1` protocol enters the same authenticated
+  host-capture transaction as checked synthetic episodes, through a separate
+  validator. It has no artifact observation or successful artifact check.
+  `capture_semantic_assessment` derives NotEvaluated from the authenticated
+  protocol, not from every historical Unavailable verdict. A completed no-tool
+  run needs no invented receipt. Invocations and receipts must still match
+  exactly, and reserved protocol labels cannot enter through a legacy producer.
+  Assistant Thinking and opaque signatures stay only in the original hash-bound
+  transcript, never imported passages or semantic projections. Skipping those
+  blocks must preserve the source indices of later text/tool fields; reasoning
+  alone cannot satisfy the final answer requirement.
+  Strict typed-record validation must use the same JSON text serialization as
+  the native writer: `to_value` widens f32 sensor readings to f64 and once refused
+  valid Linux Outcomes. Unknown, duplicate and noncanonical fields still refuse.
+- **Inline loop notes are audit data, never a second owner instruction.**
+  Ordinary capture recognizes only exact empty-retry text and canonical boredom
+  renderings for observed configured tools and bounded argument counts. The
+  frozen first owner block is matched before notice recognition, even when the
+  owner literally quotes a notice. Preserve its original pointer; skip supported
+  suffixes without renumbering evidence. Validate native Extend only at the
+  eligible current user tail; arbitrary Rewrite remains unsupported. Chat binds
+  the exact history at each request, not an earlier request reconstructed from
+  a final transcript that already contains later nudges. A transition is one
+  complete assistant/result pair or one exact empty-retry addition; final native
+  history must match the final binding. Broad prefix recognition could admit
+  arbitrary added text; substituting final transcript contents for earlier
+  bindings would rewrite historical context. These checks classify control
+  text; they do not grade task success.
+- **Oversized invocation metadata is not argument evidence.** The ordinary and
+  chat adapters share `recording::action_invocation`: hash the full native JSON
+  input, retain Complete content through 1,024 serialized bytes, otherwise retain
+  Oversized/null with the same digest, call identity and native source pointer.
+  Keep the full input in the internal call map so recall-attempt reconciliation
+  still compares exact arguments. Replacing that map value with null would make
+  tracking less strict while appearing to save memory. The existing host DTO
+  supports this representation; passage/result/capture budgets remain unchanged.
+  A receipt records tool completion, not task success or support for omitted text.
+- **A recall result is not delivered merely because a tool computed it.**
+  `memory_session` durably records attempts and reconciles exact inputs/results
+  against the native JSONL. Missing, clipped, duplicate-ambiguous or interrupted
+  tracking withholds capture. Raw evidence and native reader packets both pass
+  complete current dependency authorization; the native-only parser's early
+  return once left raw-source withdrawal detectable only at SQLite admission.
+  Legacy goal-context lessons/appraisals are refused before delivery when they
+  cannot be represented by the new store's source closure. Recalled packets are
+  dependencies, never another copy of original evidence.
+- **Recovery has storage authority, not execution authority.** An ordinary
+  finalized capture is durably sealed before admission. Retry reauthorizes that
+  seal and cannot run a provider or tool. `open_for_recovery` works without the
+  historical task directory and cannot begin a run or create a recall tool.
+  Removing the original JSONL still withholds evidence; explicit forget purges
+  the selected store's whole episode and descendants. The manifest, key, DB and
+  authority stay outside the execution workspace, and private authority files
+  reuse the key policy's macOS ACL checks. SQLCipher protects the database, not
+  external JSONL, private recovery payloads, artifacts or retained copies.
+- **Chat evidence seals a prefix, while continuation authenticates the tail.**
+  `memory_session::chat` gives each retained turn its own source length/digest,
+  ordinal and predecessor. Reading an old observation must not hash an entire
+  growing transcript: a later interrupted append does not change its evidence.
+  Resuming instead verifies the complete bounded tail and requires every prior
+  turn retained. An incomplete unsealed turn cannot be retried as execution.
+  Native `ChatMemoryMarker` remains decodable without the feature and makes the
+  ordinary execution loader refuse; explicit attach verifies its private ledger.
+  This does not detect arbitrary owner-edited copies stripped of every marker.
+  A turn handle is bound to its attachment, and a tracked reader retains the
+  same lease until dropped; store identity alone cannot authorize another
+  conversation's turn. The pre-config schema placeholder refuses dispatch.
+  Pure driven-run startup constraints precede transcript discovery, and memory
+  resume validation still precedes provider/router setup.
+- **A graph snapshot binds the admitted reader, not today's owner graph.**
+  `prepare_selected_graph` freezes effective launch configuration before spawn;
+  CLI chat compares it with authenticated V2 attachment authority, then compares
+  actual runtime descriptors before provider preparation. Only the selected
+  read-only graph tools enter this registry. `ChatGraphSurface` belongs in the
+  private attachment, never a model-authored transcript field. Capture checks
+  exact native result provenance and cumulative taint; a host refusal stays
+  nonexternal, while server errors remain external failed observations. V1 bytes
+  and the observation protocol remain unchanged. These are historical delivered
+  snapshots, not canonical graph revisions or graph-side deletion tracking.
+  Recovery uses sealed source authority and cannot reconnect to the graph.
+  Historical Stop/Error replay uses taped answers; Live divergence refuses a
+  memory marker because replay does not authenticate its executable attachment.
+- **Selected graph preflight and execution share one frozen launch policy.**
+  Ordinary bwrap clears its inner environment, so setting only the outer MCP
+  environment lost explicit server configuration. The selected-only constructor
+  clears the parent inheritance, freezes the permitted environment and uses the
+  same resolved launcher and confinement arguments for preflight and execution.
+  Neither stage puts environment values in argv. Synthetic PATH/HOME and explicit
+  sandbox overrides remain ordered, with server posture forced last. Loader
+  controls refuse before spawn because they could act before confinement. Selected
+  basename lookup rejects every relative or empty PATH component, and the
+  canonical bwrap launcher must lie outside the model workspace even when the
+  PATH entry is absolute or an outside symlink points inward. The MCP server may
+  still be an explicitly owner-chosen relative command; it is not the confinement
+  executable. Unqualified scoped resource limits also refuse. Ordinary bwrap and Landlock's
+  pre-exec enforcement stay unchanged. A passing generic backend test does not
+  establish this selected launch contract; its own required-backend test does.
+- **A recorded web source is not browser authentication.** Web chat uses its own
+  V3 attachment with the closed Web/AuthenticatedWeb ingress, and the paired V2
+  observation/recorder protocol. CLI V1/V2 attachments retain their exact bytes
+  and CLI-only doors; neither is upgraded by relabeling an observation. Each new
+  reserved label also blocks mixed-pair fallback into legacy capture. The HTTP
+  host must verify owner identity and mutation intent before calling the web
+  library door. Core then authenticates the native header, marker, prior source
+  chain, context sources and expected turn ordinal before a begin write. A browser
+  ordinal rejects delayed duplicates; it is never itself evidence of authority.
+  Recovery remains storage-only and does not need a new HTTP execution.
+- **A web memory conversation owns its runtime, and shutdown owns its reservation.**
+  `serve::memory_chat` keeps `Prepared`, the tracked reader, Conversation and lease
+  together in one `ChatSlot`; it never installs a conversation reader in the
+  shared ordinary Follower. Reserve under the sessions mutex and acquire a task
+  tracking token there, before publishing work outside the lock. Otherwise stop
+  can drain an empty tracker while an admitted start is about to spawn. Full
+  continuation authentication happens outside the shared mutex, before router
+  holds and begin writes. Resume restores Conversation only after acquiring and
+  authenticating the exclusive lease; a pre-lease read can miss a legitimate
+  writer's completed turn. Retention status precedes Done, and blocked runtimes
+  release the lease so storage-only recovery can run while the server stays up.
+- **Native memory mutation protection survives missing chat and feature-off builds.**
+  `guard_native_memory_mutation` runs after owner/intent authentication and uses
+  the archive handlers' session directory, including their no-ChatState fallback.
+  Its bounded prefix classifier denies unknown or marked sources and ambiguous
+  live/partial-forget claims. Blank lines do not consume the record budget;
+  future message blocks and positively identified ordinary torn payloads at
+  physical EOF need not block archive/delete. A byte-budget cutoff is not EOF.
+  Decode top-level tags separately from message schemas, but validate payload
+  strings with `Value` and require valid UTF-8 before ordinary classification:
+  serde's `IgnoredAny` skips string validity, and even `Value` can report EOF
+  before checking bytes in an unfinished string. A recognized memory marker
+  still refuses immediately. Strict ordinary Message/Config boundaries rely on
+  the host's fresh Meta-only attachment placement, not a claim that every
+  historical parser state rejects a later marker. Browser keys and native IDs have
+  different grammars: native IDs contain an uppercase timestamp `T`. Reusing
+  `valid_key` broke ordinary deletion; test with `Session::new_id`. Reading an
+  arbitrary byte prefix as UTF-8 also misclassified a marker when a later string
+  crossed the limit. Neither a runtime setup failure nor a parser limit is proof
+  that a saved source is ordinary.
+- **Owner context is not a confirmed success criterion.** Chat observation
+  sidecars hold sanitized versions and original owner/decision locators, mutually
+  exclusive with a confirmed criterion. Repeating identical text is still a new
+  owner occurrence. Decision bindings must cover exact native message boundaries,
+  including the current owner input and intervening tool results; matching an
+  arbitrary earlier prefix is insufficient. Native binding records are written
+  during execution, before `record_run` appends the response messages, so semantic
+  history boundaries cannot be inferred from physical JSONL order alone.
+  Stored owner DTOs remain independent of the runtime: this memory module is
+  also compiled by the standalone harness, whose crate root has no goal-context
+  subsystem. Native converters are feature-gated, with wire-equivalence checks;
+  adding unconditional runtime imports once broke that separate qualification.
+- **Stored dependency roots and delivered packets have different completeness
+  contracts.** A predecessor projection already owns the earlier source closure.
+  Chat may retain that canonical root without flattening every ancestor into its
+  bounded direct-reference list. `validate_dependency_roots` reauthorizes the
+  complete stored closure; `validate_delivered_context` still requires the full
+  manifest actually delivered on the wire. Neither recalled packets nor old
+  conversation messages become new independent originals in a later turn.
+- **Learning keeps the prepared authority across inference.** The host-only
+  `memory_session::learning` bridge selects original passages from authenticated,
+  already-retained ordinary captures. Inventory never retries admission. Native
+  concept and rumination receipts preserve their original source scopes and
+  dependencies; refreshing preparation after a model call would silently bless
+  authority that changed during the call. An opaque dispatch guard rechecks the
+  same receipt after provider discovery, and completion rechecks even a failed
+  callback before parsing or retention. Recovery handles cannot inspect sources
+  or learn. Exact quotations establish provenance, not semantic entailment;
+  concepts and their echoes cannot supply independent support for themselves.
+- **Operational feedback cannot consult semantic gold.** Native completion
+  receives a separately validated public row/key shape, never `expected_rows`
+  or an artifact verdict. It uses the existing bounded no-follow reader for
+  `workspace/output.json`; unsafe or unavailable reads cannot suggest repairs.
+  A structurally valid wrong answer is ready. A consumed failed recall cannot
+  acquire another allowance or become ready through artifact repair. The
+  task-local report survives later execution/capture errors, and its appended
+  feedback flag does not prove a provider received a subsequent request.
+- **A completed answer is not proof that its recall protocol completed.**
+  Explicit native recall uses a host-owned exact query and an atomic attempted-call
+  budget. Malformed or repeated calls cannot buy more evidence. The optional host
+  report keeps retrieval status separate from artifact correctness; absent recall
+  and lexical fallback cannot qualify as completed dense treatment. Both modes use
+  the same model-visible schema and unchanged evidence packet, preserving native
+  recapture and complete consulted-source authority. Ordinary native sessions do
+  not acquire these controls or extra report fields.
+- **Publication must still satisfy the deadline and current validity.**
+  A timeout wrapper alone can prefer a late ready future over an expired timer.
+  Controlled recall checks cancellation and an absolute deadline again before
+  publishing evidence. It releases the database during embedding, then refreshes
+  relation validity while retaining the original knowledge sequence. Review found
+  that reusing attempt-start validity could deliver a relation that expired during
+  inference; current scopes and source checks alone did not catch that case.
+- **Semantic ranks cannot preserve stale source authority.** `PreparedHybrid`
+  holds a bounded original-field corpus, policy and encoding identity, never a
+  live transaction. Finalization reconstructs the complete eligible corpus,
+  including nonmatching rows that affect BM25 statistics, before using vectors.
+  Changed identities, original/indexed bytes or effective restrictions trigger
+  fresh lexical selection with the same literal-mention constraint. Independent
+  dense candidates permit semantic-only anchors; max-per-revision collapse and
+  reciprocal-rank fusion avoid duplicate passage votes. Shared context assembly
+  retains whole dependency bundles and fresh final source checks. A dedicated v8
+  regression keeps an uncited consulted source authoritative for a recalled
+  concept. Current forgetting overrides historical snapshots. This bounded
+  invocation-local path does not introduce a persistent vector index.
+- **An encoding profile binds vectors; a model alias does not attest weights.**
+  `EncodingProfile` identifies the declared artifact, dimensions, pooling,
+  normalization and exact query/preprocessing representation. `embed_checked`
+  preserves complete inputs, requires complete indexed responses and refuses
+  malformed vectors without partial batches. Its operation deadline and attempt
+  budget span overflow splitting. Shared embedding transport disables redirects
+  and environmental proxies: a redirect-spy regression demonstrated that the old
+  client forwarded submitted text. Runtime alias checks and host artifact evidence
+  remain separate; neither a declared revision nor dimensions alone prove which
+  weights produced a vector. Legacy persona APIs and cache formats stay intact.
+- **One SQLite linkage per build; encryption dependencies follow the memory feature.**
+  Ordinary workspace builds use bundled SQLite. Core's `memory-prototype` feature
+  selects bundled SQLCipher/vendored OpenSSL and its optional direct key helpers;
+  CLI forwards that feature, and Cargo unifies the shared SQLite linkage. The
+  standalone memory harness always selects SQLCipher. Initial encryption work
+  selected the cipher engine unconditionally, imposing its native build costs on
+  a default-off prototype; the default runtime/FTS regression now prevents that.
+  Qualify both backend configurations when changing the dependency. Existing
+  unkeyed stores stay plaintext with either engine. In a memory-enabled build,
+  SQLCipher registers extra functions on plaintext handles too, so the HUD's
+  unconditional authorizer refuses `sqlcipher_export` at preparation.
+- **Decryption authority does not replace source or scope authorization.**
+  `StorageAccess` is an opaque host-only capability, separate from `Access`.
+  Every independent memory, interpretation and durable guard reopen carries it;
+  source freshness, identity, scopes and security epochs are still checked anew.
+  Plaintext fixture wrappers never discover keys or retry without encryption.
+  Native execution and separate concept appraisal take storage as a host argument,
+  not a field in model requests, checkpoints or captured memory.
+- **Inspect the opened key, not just its path or mode.** `KeyFilePolicy` excludes
+  task/output roots, including filesystem aliases, and requires owner-private
+  directory/file descriptors. On macOS it also refuses extended ACLs and volumes
+  that ignore ownership: a restrictive ACL regression showed that 0600/0700 alone
+  did not establish the advertised private-key policy. New keys are inspected
+  while empty, before secret bytes are written. Keys are zeroizing and cannot be
+  serialized; connection-local keying avoids key-bearing SQL literals. This does
+  not protect external JSONL/artifacts or revoke already loaded handles when a
+  key file is removed. Host-owned ancestry remains required; same-user ancestor
+  replacement between path operations is outside this bounded file policy.
+- **A backup is the complete database, not a filtered memory export.**
+  `backup_encrypted` pins a read transaction while a private keyed connection
+  exports every table, including FTS shadows and `sqlite_sequence`. Independent
+  verification compares typed row inventories and schema before no-clobber
+  publication. Public readers remain query-only. A file published before a
+  directory-sync error may be valid; report durability uncertainty and preserve
+  it rather than deleting or overwriting an output after publication.
+- **Restoring history must not restore old privacy decisions.**
+  `RestoreAuthority` names the current store explicitly. `restore_encrypted`
+  holds its IMMEDIATE transaction through publication, seeds the shared
+  `forget::purge_seeded` closure with both suppression digests and restricted IDs,
+  and preserves opaque restrictions for objects absent from the old snapshot.
+  Every surviving object's restored head must require all current-head scopes:
+  scope tightening does not advance the deletion epoch. Missing current heads
+  refuse. This creates an offline historical copy, not a merge of later factual
+  revisions or withdrawals. It cannot certify the latest deletion state when the
+  owner-selected authority itself is an undetectably stale copy; full disaster
+  recovery requires independent durable authority. External source guards remain
+  necessary, and future forgetting does not propagate to retained copies.
+- **A contextual interpretation is neither an observation nor a learned rule.**
+  Explicit v7 files add a guarded Interpretation record and canonical receipt.
+  Preparation authenticates the capture against its database row; a deserialized
+  receipt is not authority. Every supplied input remains a dependency, including
+  uncited inputs. Generation and admission recheck sources independently, and no
+  transaction spans inference. Retained claims carry host-resolved revision/field
+  locators as well as the model's qualified citation ID: an opaque hash alone
+  cannot tell a reopened reader which of two identical quotations was cited.
+- **Requested actions, observed artifacts and goal success are different evidence.**
+  Explicit new-file v8 capture retains bounded native ToolUse inputs and the
+  independently read artifact bytes. The checker and reader envelope share one
+  descriptor read; missing, refused, non-UTF8 and oversized content are typed
+  omissions, never an empty successful result. A successful two-byte write once
+  supported a false selection claim when readers could see only its receipt.
+  Rich capture preserves consulted-source closure and interpretation influence;
+  adding a source kind does not make model-authored content true or trusted.
+  A decoded native GoalMemory result contributes its receipt and complete
+  consulted dependencies, not another copy of its serialized memory packet.
+  Native JSONL retains that presentation. Recalled evidence is not a new
+  independent observation, and recursive packet copies would exhaust the bounds.
+- **Quote membership is not factual support.** V8 interpretation retention requires
+  a separate, fallible support assessment of every proposed statement and every
+  offered goal judgment. A true premise does not itself certify a Good or Bad
+  bearing. Host rendering includes only admitted typed units, labels speculation,
+  and excludes rejected prose and evaluator diagnostics. Known bearings require
+  their own supported assessment and every originally named factual premise;
+  dropping a premise must never silently weaken the claim being evaluated.
+  Canonical reader checks and final source authorization remain mandatory. Old
+  v7 drafts cannot acquire evaluated status through migration or metadata edits.
+- **Wire convenience must not become evidence authority.** The explicit support
+  wire-v2 catalogs all eligible exact source chunks and binds handles to the
+  opaque prepared context, phase and complete input. The host resolves those
+  handles into unchanged canonical v8 citations; a valid handle only proves
+  quotation membership. Structured output, strict decoding, expanded byte limits
+  and final source checks all remain necessary. One current-criterion assessment
+  gives consistent bearing checks, but each judgment also needs sufficient
+  original premises and the canonical all-premise admission gate. Record the
+  model's separate criterion diagnostic in the host audit, not reader memory.
+  A false Supported check is an evaluator error even when admission blocks it.
+- **Evidence context cannot silently rewrite historical identity.** Explicit
+  wire-v3 carries authenticated capture metadata beside the unchanged legacy
+  source serialization. Its request key and every support-admission recheck bind
+  that sidecar; reconstruct it only from projections already in the authorized
+  closure. A selected capture is not globally newest, and matching text does not
+  identify a shared source. Missing times remain unknown. Original citation slots
+  are evaluated independently of optional diagnostics: a correct replacement
+  quotation cannot rescue false provenance in the generated claim.
+- **Revising a judgment means evaluating all its original premises.** The explicit
+  `situated-factual-support-v2` report records each candidate's own unsupported
+  premise flag, then derives selection without trusting its reason label. The
+  first eligible known bearing wins unless eligible known bearings conflict, in
+  which case the rendered result is Unknown. Legacy reports retain their original
+  first-per-goal semantics. An earlier Unknown once hid a later supported bearing;
+  changing selection must not reinterpret old stored reports or weaken premises.
+- **A derived appraisal is not another independent fact check.** The explicit
+  v4 path first numbers observations, then checks their unchanged original
+  quotations, then appraises only accepted observation IDs. `prepare_appraisal`
+  reauthorizes the complete source closure; its opaque receipt preserves the
+  original proposal and checks. The separate v4 report labels the derived
+  judgment and binds each stage. Final retention replays both stages and checks
+  source authority again. Accepted premise membership is a structural gate,
+  not a proof of joint sufficiency or temporal applicability.
+- **Typed native facts preserve evidence, not semantic authority.**
+  `NativeEvidenceRequest` is derived from authenticated prepared sources and
+  rechecked before dispatch and after inference. Native envelopes are selected by
+  authenticated role and original field; JSON-looking prose remains attributed
+  text. Fact IDs bind complete values, original locators and metadata. A value
+  that exceeds the bounded view becomes an explicit non-citable omission; the
+  omitted source still belongs to the authorization closure. Raw and typed trial
+  arms share that closure, IDs, criterion and response contract. A valid selection
+  proves reference integrity, never premise sufficiency, temporal applicability
+  or world truth. Read-only native appraisals cannot acquire v4 support status.
+- **Checks-first is a distinct response contract, not a repaired verdict.**
+  `finish_native_checked_appraisal` binds a v2 request identity to the original
+  complete source context. Artifact selections must name authenticated observation
+  values with the declared availability; empty complete text differs from missing
+  observation. Comparison and verdict must agree or the host refuses the response.
+  No universal artifact gate applies to execution-only questions. The host cannot
+  establish premise sufficiency or causal identification from these structural
+  checks. A model once explained a mismatch while returning `met`; retaining the
+  raw reply separately from withholding prevents host checks from masquerading as
+  improved model reasoning. Literal-copy controls measure verdict reachability
+  independently of the semantic comparison and never supply its expected labels.
+- **A contextual presentation is not a canonical stored record.** Atomic-v4
+  interpretations serialize through the explicit `interpretation_reader_v1`
+  presentation only inside ContextPacket. The complete SupportReport and source
+  locators remain; repeated draft text/claims are omitted. Internal hits and
+  SQLite hashes keep the full canonical record. Native recapture decodes the
+  presentation separately and carries every consulted reference with its role
+  and taint. Five valid saved appraisals exceeded the 20 KB packet budget because
+  prose, claims and support repeated the same quotations; raising the cap or
+  dropping dependencies would hide the cause and weaken the contract.
+- **Compact native metadata is still a presentation, never new authority.**
+  `native_capture_reader_v1` is prepared from an authenticated capture projection
+  inside the read transaction. Its typed metadata removes escaped duplication;
+  original text and canonical stored records remain complete. Context budgeting
+  and serialization share the prepared representation, which rejects mutated
+  canonical hits. Final withholding also clears the private presentation cache,
+  including its Debug representation. Recapture compares new reader metadata
+  with canonical rows and requires complete authorized closure in both v7 and
+  v8 paths; otherwise deleting a dependency and its descriptor together could
+  forge a self-consistent but incomplete packet. Only rich v8 capture raises its
+  consulted-reference bound to 64; v6/v7 capture and unrelated limits stay intact.
+- **Successful storage and successful recall are separate facts.** The host-only
+  `stored_interpretation` accessor authenticates the active receipt, context,
+  canonical payload and complete current source closure, with a fresh final
+  reopened check. It does not use the model presentation budget and is not a
+  tool. The atomic trial records the write before attempting stored export and
+  ordinary recall. A later budget exclusion once hid both the retained payload
+  and database audit, making a saved wrong judgment look like unknown retention.
+- **Constrained-output schemas must fit the actual grammar compiler.** The
+  pinned llama.cpp compiler selects `oneOf` alternatives without merging sibling
+  properties. Each alternative must therefore be a complete closed object with
+  all required fields. Partial conditional branches passed a JSON Schema audit
+  and authored HTTP test while making parser-valid replies impossible under the
+  real compiler. Keep an explicit complete-branch regression alongside parser
+  tests; a mocked provider does not exercise grammar compilation.
+- **Default readers must also withhold interpreted descendants.** Merely omitting
+  Interpretation from initial search still leaks it through a recaptured episode's
+  dependency closure. The explicit contextual reader assigns every returned
+  interpretation a host-owned role: SelectedCurrent matches the complete current
+  context; HistoricalDependency is a necessary ancestor retaining its old context.
+  Historical meaning never silently becomes a recommendation for the current goal.
+  Complete authorized bundles fit together or are withheld, within the same byte
+  budget. GoalMemory retains ordinary private/untrusted taint and action guards;
+  this path never constructs Clean or promotes a lesson.
+- **V7 projections reference original text instead of duplicating it.** The projection retains original
+  descriptors and references, with text in original Evidence records. Reconstruction
+  checks those descriptors against the canonical capture and dependency graph.
+  Repeating escaped memory packets inside both originals and projection exhausted
+  the 20 KB contextual budget on a second task despite retaining few source facts.
+  Deduplication preserves original source bytes and complete lineage; v6 projection
+  bytes remain unchanged.
+- **Private needs assessment is not hidden prompt content.** Timestamped readings
+  retain missing/stale and Unread/Deferred/Nothing/Sparse/Observed distinctions,
+  including withdrawal and observed zero. An opaque random context identity binds
+  the host context; never hash low-entropy sensor values into a reader-visible key.
+  Needs-only changes leave the semantic source/criterion input identical. Wire-v2
+  request-binding keys differ when the opaque host context changes; this does not
+  expose sensor values. Current public goals
+  and evidence may change an interpretation; host needs assessment remains separate
+  from semantic support and action permission.
+- **Legacy and v2 share interpretation machinery, not historical identity.**
+  Core interpretation parsing preserves raw claim pointers until the appropriate
+  adapter resolves them; v2 IDs qualify exact source revisions and fields instead
+  of colliding session-local tool IDs. Shared grounding retains the old claim-cap
+  and support-remapping semantics. The legacy graph follow-up keeps its pinned
+  frame/prefix and complete-JSON-at-MaxTokens behavior. The new producer refuses
+  every MaxTokens reply, unexpected stop and mismatched served-model identity;
+  requested model names alone cannot certify the model that produced a record.
+
+- **Host capture has a separate reader boundary.** The opt-in v6 bridge
+  (`memory_experience_bridge::LocalAuthority`) resolves native transcript,
+  confirmed criterion, independent artifact check and existing
+  `appraisal::for_transcript` from explicit inputs. Full host audit data stays
+  outside reader SQLite and outside the task workspace. Only bounded message
+  passages, typed call receipts, the criterion and checked artifact verdict enter
+  `Memory::admit_host_capture`; no full RunStats/Appraisal or sensor rationale.
+  A successful tool call is not a successful task check. Keep those two verdicts
+  separate when extending the projection.
+  The trusted host must match recorded workspace to the actual `ToolCtx` and
+  supply no grants or alternate readers into the authority directory/transcript.
+  The synthetic example does so; metadata alone does not confine arbitrary tools.
+- **External provenance must participate in authorization.** Every bridge
+  original and projection carries an external binding; the projection also has
+  real dependency edges. `ExternalSourceGuard` checks current source authority
+  during supported read/search/recall/context eligibility and before returning
+  a bundle. Missing authority withholds bound records. Unsupported producers
+  retain guardless, conservative authorization; injecting a reader guard cannot
+  silently authorize legacy concept or durable operations. The explicit native
+  concept API separately reconstructs and checks its full source closure. Missing v6
+  schema must fail closed rather than look like an older unguarded database.
+  These are bounded point-in-time checks, not an atomic filesystem/SQLite snapshot.
+  Read phases memoize only exact external binding verdicts (authority, locator,
+  revision), not database scope/restriction checks. Selection and final return
+  validation use separate `SourceChecks` over the original guard; a transaction-
+  wide positive cache would hide source withdrawal during ranking/assembly.
+  No cache survives a public read operation. This avoids repeatedly hashing one
+  episode for each of its passages while preserving fresh final authorization.
+- **Recalled text keeps its original authority when captured again.** A native
+  memory result can copy an earlier episode into a later transcript. Capture must
+  derive or validate those returned revision references, and every separately
+  readable later passage must inherit consulted dependencies, not only the later
+  summary. Otherwise withdrawing the original hides its projection while leaving
+  a searchable transcript copy. This first bridge conservatively applies the
+  complete consulted set to all passages in a capture; finer influence tracking
+  is separate work, and dependency-changing reuse must not mutate old revisions.
+  The required v6 receipt `lineage_version=2` marker rejects intermediate files
+  produced before this invariant; silently backfilling a marker would certify
+  lineage that was never checked. Published v1–v5 files retain their own behavior.
+- **Unsupported tool composition cannot shed provenance.** A native `code`
+  program may call GoalMemory while its outer result contains copied memory.
+  Direct-tool matching alone cannot attribute that copy. This first bridge
+  refuses native `Program` records and `code` calls, including code traces with
+  missing program evidence, before persistence. The source guard applies the
+  same refusal to previously captured traces; an authentic old binding does not
+  make incomplete lineage safe. Supporting code-mode capture requires explicit
+  nested-call provenance, separately from its already-propagated taint.
+- **Retry capture, never execution.** A host capture identity binds session,
+  prefix, criterion/check and evaluator versions. Exact still-authorized retries
+  reuse the receipt; conflicts refuse. Forgetting a receipt member purges its
+  originals and projection plus dependents, and leaves an opaque suppression
+  identity so a later prefix cannot resurrect it. It does not erase the external
+  JSONL or host audit. v6 is created explicitly in a new file, with no implicit
+  upgrade or downgrade of earlier prototype stores.
+- **The first bridge is deliberately narrow.** Only explicit synthetic Test
+  sessions with one frozen, confirmed criterion are admitted. Changed or ambiguous
+  goal histories refuse capture. A later task uses a fresh session and current
+  criterion; recall does not rewrite the historical assessment or remove taint.
+  The existing Clean-only interpretation policy remains in force. The authored
+  example exercises ordinary `Agent::run_in` tools, not another action executor;
+  its assertions establish integration contracts, not a measured memory benefit.
+
+- **Compare equal task contracts, not selected successful runs.**
+  `memory_bridge_trial::run_trial` uses the ordinary executor with host-only
+  gold, authority and audit files. Both later arms register actual `GoalMemory`;
+  the control has an empty valid store. `bridge_model_trial.py` freezes inputs
+  before inference and retains capture failures, transport failures and unused
+  recall in the planned denominator. A copied source authority retains original
+  immutable evidence paths outside the workspace; never copy prior answer files
+  into that workspace. Correct abstention and completed task artifacts are
+  separate measurements. Both `LocalTrialProvider` and the experimental CLI's
+  `LocalMemoryModel` use shared model holds plus an opt-in no-autoload POST.
+  A prior residency check cannot prevent eviction before the request; the
+  request itself must refuse loading. The ordinary provider default stays
+  unchanged. Authored HTTP fixtures accept the completion URL's query while
+  preserving the recorded request body and frozen scoring contracts.
+
+- **A JSONL record is source evidence, not reconstructed conversation state.**
+  The session adapter preserves exact lines and unknown record types; only
+  original known message text is indexed. Indexing a rewrite as another
+  utterance would turn a model's compaction summary into apparent new evidence.
+- **Line identities require an append-only prefix.** A retry matches existing
+  raw bytes; edits/truncations fail the whole import. Otherwise inserting one
+  line could reassign every later source citation. Source corrections are new
+  records; a rewritten export requires a distinct source identity.
+- **Unknown message time stays unknown.** A session can span days. Using its
+  creation timestamp for every message would create false temporal precision.
+- **Eligibility governs ranking statistics as well as returned rows.** Review
+  showed a frozen query switch from beta to alpha after thirty inaccessible
+  future beta records changed global BM25 frequencies. The prototype scores
+  an eligible-only RAM index; replacing that implementation must preserve the
+  historical/scope/source contract, not just filter the final top-k.
+- **Each expanded neighbor is independently authorized.** Proximity to a
+  visible anchor cannot grant access to a restricted record. Current source
+  restrictions and forgetting override historical snapshots.
+- **Oracle coverage is not a reasoning score.** Evaluation gold IDs are used
+  after baseline recall and cannot inform the retrieval request. The oracle
+  establishes available evidence, while the original `evaluation` module measures no model reasoning.
+- **A comparison cannot grade its own answer.** `model_evaluation` checks
+  fixture-defined choices and source citations deterministically; gold never
+  enters the query planner. The oracle receives supporting records only. All
+  arms share one evidence budget and answering prompt; extra search compute
+  is reported, not hidden as a free improvement.
+- **Synthetic inference has no tool surface or implicit provider.** The
+  comparison uses explicit local-only quarantined calls and the resident
+  router model. Explicit holds coordinate with switches; no production
+  config/store is loaded and a failed call remains a failed row.
+  `OpenAiCompatible::from_local_config` and `router::local_models` opt into
+  numeric loopback HTTP with proxies/redirects disabled: validating only the
+  first URL still allowed a 307 to forward the evidence elsewhere. General
+  provider transport remains unchanged.
+
+- **Evidence-informed search is an information intervention.** The follow-up
+  comparison gives both search conditions the same initial recall, one planning
+  call, <=2 extra searches, filters and anchor-first fusion. Only one planner
+  sees the initial records; input-token costs therefore differ and are recorded.
+  Reusing the initial search avoids a hidden fourth search. Legacy protocol
+  behavior stays separate so the first measurement is not silently redefined.
+- **Citation constraints enumerate visible IDs, not correct IDs.** Follow-up
+  schemas list every returned source ID and public choice; expected support is
+  used only by host grading. Filtering the schema to gold would leak the answer.
+  Empty evidence permits only empty citations; schema membership alone cannot
+  establish semantic support or make source content trusted.
+
+- **A required mention constrains anchors before top-k, not after it.**
+  `Memory::recall_mention` shares eligibility, BM25 statistics and neighbor checks
+  with ordinary recall. A separate eligible-only unicode61 index avoids stemming
+  distinct names together; its quoted phrase is literal, never executable FTS.
+  Descriptive terms cannot exclude every record mentioning the name. Missing or
+  invalid names never silently fall back to broad search. Context neighbors may
+  omit the mention, but never their independent authorization check.
+- **A supplied entity binding is additional information.** The mention replay
+  uses explicit manual annotations from saved queries and initial visible text;
+  it measures retrieval given those bindings, not an automatic entity extractor.
+  Already-viewed cases are development data even when their source report used
+  the word holdout. Gold support only grades returned evidence.
+
+- **To measure binding enforcement, share the generated plan.** The automatic
+  binding comparison calls its source-grounded planner once per case, then
+  feeds the identical validated plan to both retrieval arms. Names require a
+  cited initially visible original text field, checked using recall's tokenizer;
+  neither a metadata match nor an invented entity is sufficient. Invalid plans
+  fail both search arms rather than quietly falling back. Planner compute is
+  recorded once, separate from per-arm answers; authored target names are
+  diagnostic labels, never planner inputs.
+
+- **Runtime context is evidence, not a new trusted lesson channel.**
+  `Memory::context` reads all stages in one transaction, with host-owned scope,
+  snapshot/source/time filters and a serialized packet budget. Relation bundles
+  include their authorized, fresh dependencies atomically; every evidence
+  dependency must also match source/time filters. Unknown times stay unknown.
+  `GoalMemory` holds a read-only connection and marks returned records external;
+  a local validation error never acquires external provenance. Agent dispatch
+  tests verify that the resulting private/untrusted taint blocks chosen egress.
+  Knowledge time and validity time are distinct: `GoalMemory` keeps its opening
+  `known_at` snapshot, but asks the host `Clock` for `valid_at` on each memory
+  call. Freezing both let an expired relation remain current in a reused tool.
+  The model cannot supply either policy clock, and current access restrictions
+  still override the historical snapshot. An empty successful packet carries
+  no source provenance; it does not clear existing conversation taint.
+- **Select original text instead of composing an entity name.** Runtime source
+  selections name a revision, original field and exact contiguous quote from the
+  initial bounded packet. The host derives byte offsets and the mention before
+  required-mention recall. This avoids accepting a plausible but absent phrase
+  such as `Ilex pipeline` from `Ilex or Quill pipeline`; invalid selections fail,
+  never silently broaden. Older experiments remain frozen under their original
+  name-validation protocol.
+- **The runtime reader is a run-local opt-in.** Its CLI flags require a confirmed
+  goal, explicit account/domain/scopes and synthetic-data acknowledgement. It
+  cannot re-enable a withheld tool. `RegistryMut` rebuilds code mode after the
+  replacement; existing subagents retain their original tool. With no opt-in,
+  the original schema/description/results are unchanged. Internal homeostat and
+  charter sensors remain harness-only; this increment does not wire those to
+  the model or promote source-derived claims into learned rules.
+
+- **A concept is a provisional hypothesis, not a trusted lesson.**
+  `prepare_concept` exposes original fields from 2–8 explicit source revisions;
+  `retain_concept` verifies exact quotes and at least two independent supporting
+  episodes. Every consulted input remains a dependency, including uncited inputs
+  and counterexamples. After inference, source freshness and unchanged scopes
+  are rechecked atomically. Otherwise omitting a citation could launder private
+  input into a less restricted abstraction. No transaction spans inference.
+- **Native episode identity comes from the capture, not the number of passages.**
+  `prepare_native_concept` resolves each selected original through its canonical
+  active capture. A native passage has no legacy transcript envelope; counting its
+  source key would mistake two passages from one session for two independent
+  experiences. Canonical domain/account/session identity supplies the episode
+  label, and original pointers and PassageKind preserve what was observed versus
+  requested or stated. Projection JSON is not an original text field.
+  The explicit native receipt retains selected originals and the complete
+  metadata-projection closure, bounded to 64 records. Every member's scopes,
+  currentness and external authority are rechecked before input release and
+  retention; a post-append failure rolls back. Legacy receipt/finish APIs cannot
+  be crossed with native ones. Filesystem checks remain point-in-time checks.
+- **Using a concept does not create independent evidence for it.** Native
+  recapture admits only a canonical provisional concept with complete native
+  dependencies and inherited restrictions. The later episode retains that
+  dependency and ordinary private/untrusted taint. Native induction refuses
+  Concept or Interpretation ancestors, preventing copied hypotheses from
+  supporting themselves. Such episodes remain recallable; legacy native appraisal
+  refuses Concept-bearing closure. The explicit `situated-native-concept-appraisal-v1`
+  path partitions canonical concepts into provisional hypotheses, with separate
+  IDs that cannot satisfy factual premise or artifact-evidence fields. Every
+  offered hypothesis requires an applicability assessment. The opaque request
+  seals the full closure, context, snapshot and exact per-member scopes; fresh
+  reconstruction and authority checks bracket inference, including failures.
+  Its 16 KiB reply bound is separate from the unchanged legacy 8 KiB bound.
+  `appraise_native_session` reuses the existing local structured pass and writes
+  nothing; accepting its shape does not establish semantic correctness or turn
+  it into a durable support report.
+- **Rumination cannot discard opposition or inherited restrictions.**
+  `prepare_concept_rumination` binds the previous revision and every consulted
+  source, then adds exact host-selected counterexamples. The union must fit the
+  existing eight-source bound. A revised draft preserves all mandatory excerpts
+  and the previous concept's own scopes as well as source scopes. Checking scope
+  equality without inheriting it would silently remove a concept-only restriction.
+  Every outcome rechecks freshness and authorization, including unchanged and
+  abstained; those outcomes write nothing and do not retain newly consulted
+  evidence. The explicit one-call operation stays provisional and cannot bypass
+  the older concept path's refusal of externally bound native sources. The explicit
+  native rumination siblings additionally recheck their canonical native closure;
+  direct native revision cannot discard previously consulted sources or opposition.
+- **A test-session adapter reuses execution and observes its actual output.**
+  `memory_situated_workflow::run_native_session` generalizes the existing situated
+  runner through a bounded host request, while the old fixture adapters preserve
+  their behavior. A synced started record precedes provider discovery; an existing
+  task root refuses execution. Agent::run_in, jailed file tools, guarded GoalMemory,
+  frozen criteria and `capture_with_evidence` supply actual action/outcome evidence.
+  The separate support-comparison fixture can replace an artifact deliberately;
+  it must not serve as proof of a real observed workflow. Execution and capture
+  errors keep their report and make the CLI fail; an independently failed artifact
+  check is a recorded task outcome, not an execution exception. Private needs remain
+  host-only and their opaque context ID does not implement automatic assessment.
+- **A concept-benefit comparison must not give one arm extra source evidence.**
+  `memory_concept_workflow::run_trial` fixes original episodes and current facts
+  within each pair; only the provisional concept differs. A counterexample is
+  supplied to both follow-up arms. All fourteen slots exist before inference,
+  and a durable started checkpoint precedes provider discovery. A failed or
+  indeterminate slot cannot be replayed or removed from the denominator. Phase
+  seals and fresh authorization bracket every call, including failures; no
+  database transaction spans inference. Successful retention is recorded before
+  derived exports. Otherwise a failed export could hide a durable concept, or
+  an extra evidence bundle could masquerade as successful abstraction. The
+  independent finite-world scorer checks choices and premise coverage, not prose
+  entailment. A two-arm follow-up cannot isolate revision's causal contribution.
+- **Concept retrieval carries its evidence with it.** `knowledge_bundle` checks
+  the complete closure against current restrictions, historical freshness and
+  source/time filters before adding it atomically under the packet budget.
+  Concepts can supply new search vocabulary, but remain untrusted/provisional.
+  Recency ordering avoids global FTS statistics leaking inaccessible/future
+  corpus changes. This bounded route makes no semantic ranking claim.
+- **New payload vocabulary needs an explicit version boundary.** The first
+  retained concept atomically advances `user_version` to 2. Existing readers
+  without the new record variant must reject the file instead of silently
+  processing an incomplete store. Ordinary version-1 fixtures remain readable.
+
+- **Plan assessment validates provenance and structure, not model entailment.**
+  `plan_assessment` requires every candidate to receive exactly one prerequisite,
+  factual-support, outcome and concept-applicability judgment. Missing prerequisites stay
+  unknown with information needs; unknown non-outcome or contradicted checks cannot produce a
+  host recommendation. Supported checks cannot simultaneously list unresolved
+  questions. Exact visible quotes and original evidence are required; a provisional
+  concept cannot alone support a fact. All semantic judgments and rankings remain
+  explicitly fallible, private and untrusted, never action authority or clean rules.
+- **Revision is another hypothesis, not evidence of improvement.** `evaluate_plans`
+  preserves an existing recommended candidate; otherwise it permits one revision
+  call and requires another full assessment, preserving the
+  original bounded source packet. Every supplied source is rechecked for current
+  authorization, revision freshness and unchanged scopes after inference and at
+  final return. No read transaction spans a model call. Exported reports are point-
+  in-time artifacts, not revocable receipts or a new persistent learning store.
+- **A run-bound tool should advertise its actual goal, not invite an invented ID.**
+  The opt-in `GoalMemory` schema enumerates the one host-confirmed `serves` value
+  and explains omission/defaulting. The guard still refuses mismatches, with a
+  host-generated repair hint. Two real-model trials previously invented goal IDs
+  and failed before retrieval; silently accepting those IDs would hide the error
+  and weaken the invocation binding. Ordinary `GoalContext` remains unchanged.
+
+- **Citation fields are a closed vocabulary of the visible packet.** Concept
+  generation enumerates the exact field pointers in its
+  response schemas. Real local-model runs dropped the leading slash when the
+  field was an unconstrained string; validation correctly refused them. Field
+  membership still does not establish source/quote binding: the host separately
+  verifies the source, field and exact quote, and does not silently repair a
+  quote borrowed from another episode.
+
+- **Assessment citations select host passages, never regenerate provenance.**
+  `passage_sources` exposes every original field byte in bounded UTF-8 passages;
+  `finish_plan_assessment` accepts only issued IDs and constructs quotes, source
+  revisions and byte ranges itself. IDs are scoped to the opaque receipt, not a
+  global citation namespace. Adjacent passages remain visible together so a split
+  does not conceal a qualification. The 2026-11-05 model trial produced an exact
+  quote under the wrong source despite enumerated fields; ID selection removes
+  that transcription failure, not the need to judge relevance and entailment.
+
+- **The host decides whether a concept check exists.** `model_dimensions` requests
+  prerequisite, factual-support and outcome checks without a retrieved concept;
+  the host appends a labelled
+  `not_applicable` result. A model cannot invent a concept from the task vocabulary
+  or author host judgments. `citations` admits original episode/situation passages;
+  `concept_citations` admits provisional concept passages. Both categories are
+  checked in code, not just enumerated in schemas. The first calibration otherwise
+  called ordinary words concepts and used concepts as sole factual support.
+- **An adequate candidate is preserved, not automatically rewritten.**
+  `RevisionStatus` distinguishes not requested, kept existing and reassessed.
+  A `consider` candidate suppresses revision even if another candidate is blocked;
+  the final all-source recheck still runs. The first calibration added redundant
+  steps to a permitted plan. Preservation follows a fallible model assessment,
+  never grants execution authority and does not itself prove that the plan is good.
+
+
+- **Requirements are source-linked interpretations; guards belong to a step.**
+  `plan_requirements::validate` rejects missing/foreign step references, invented
+  guard quotes and non-original requirement citations. Unmet unguarded conditions
+  dominate unknowns in `requirement_status`; unknown scope stays unresolved even
+  with a guard. A requirement list is model-authored and may omit a constraint;
+  host aggregation certifies neither completeness nor semantic entailment.
+- **Action validity and outcome uncertainty are different questions.**
+  `Dimension::Outcome` unknown does not by itself withhold consideration of valid
+  next steps, while a contradicted outcome still requests revision. Missing
+  permissions/resources remain prerequisite/factual unknowns, not outcome-only
+  uncertainty. The prior replay rejected a permitted question because an answer
+  was not guaranteed, while endorsing a hypothetical carrier's feasibility.
+
+- **Repair edits existing steps; it does not author new procedures.**
+  `plan_repair::apply` accepts one ordered keep/gate/defer choice per original
+  step. Host-generated gates retain every original requirement ID, condition and
+  scope description; one gate encloses the whole step, including later actions.
+  Unknown scope or excessive rendered size offers defer, never a truncated gate.
+  Requirement IDs are local to the original assessed candidate; `RepairPlan`
+  retains that identity. Reassessment can disagree but cannot rewrite the gate.
+  All-deferred repairs have no recommended revision, even if a model approves them:
+  abstention is not demonstrated goal progress. Requirement semantics remain
+  model-authored, so binding does not prove a condition is appropriate or complete.
+- **Operational identifiers are not task evidence.** Assessment excludes routing
+  goal references; the event describes task meaning. Repair consumes projected
+  original passages, steps, requirements and checks instead of serializing the
+  entire context packet. Storage scopes are access controls, not communication
+  methods; a V4 repair previously invented a channel from `fixture-mail`.
+
+- **Guard coverage is path-local, not inherited from a previous step.**
+  `guard_coverage::check` walks every feasible arm of a fixture-authored typed
+  plan, including unmet/unknown arms and paths not selected by the current
+  observation. Only a met assumption for the exact required condition covers
+  an action. Assumptions leave scope at the end of the branch; an unconditional
+  later action remains uncovered. V5 prose assessment incorrectly preserved
+  such a publication tail. Unknown rule applicability stays unresolved.
+- **A coverage contract is supplied information, not extracted truth.**
+  Action requirements live in `guard_coverage::Contract`, separately from the
+  plan's action references. Empty requirements and explicit non-applicability
+  mean only what this supplied contract states. The pure checker does not verify
+  source entailment, contract completeness, freshness or action permissions.
+  Its conditions are immutable within a plan; no action effects or live refresh
+  occur. Conflicting nested branches are unreachable under that assumption and
+  never counted as successes. Real execution will require a separate observation
+  lifecycle; no current runtime caller can use this report to authorize a tool.
+
+- **Source-linked extraction preserves the plan rather than repairing it.**
+  `plan_extraction::Prepared` owns bounded original evidence/plan passages; the
+  model selects inline host passage IDs for every condition, observation, action,
+  requirement binding and plan node. Action/node links require plan text;
+  requirements and known observations require evidence. Host citations restore
+  original text and hashes, never model-generated quotations or target pointers.
+  Duplicate JSON members fail before conversion can erase earlier content. Membership proves
+  neither entailment nor completeness: dropping an unsafe tail or a prerequisite
+  can produce a covered but false translation. The one-shot synthetic diagnostic
+  grades semantic fidelity separately; no runtime or storage authority is added.
+
+The direct coverage comparison (`Prepared::direct_request`, `finish_direct`)
+shares the same receipt projection with V2 extraction, but its `DirectReport` is
+an untrusted model judgment, not a `CoverageReport`. Preserve that distinction:
+matching a label and binding real citations do not prove source support or guard
+coverage. Both questions use immutable conditions and snapshots are not guards.
+`extraction_comparison.py` freezes the resident server's configured reasoning
+budget/settings, uses no-autoload props, rotates four arms, and records incomplete
+matrices explicitly. It forces `MECHA_LOG=warn`: inherited provider debug logging
+can include a reasoning-only reply even when JSON audit output reports only a
+character count. Never infer that reasoning was honored from the request flag;
+measure the returned channel separately and retain failed calls.
+
+**Synthetic experience observations come from the host, never the model.**
+`memory::experience` is a finite fixture simulator, not an action runtime.
+`World::prepare` seals world/store identity, state revision and the exact source
+revisions supplied to inference. `World::finish` accepts only a method/citations/
+reason response; cost, quality and feasibility are calculated by the fixture.
+`record_trace` saves event, proposal and observation in one transaction and
+inherits dependencies from **all** consulted evidence, including uncited options.
+Freshness and authorization are checked recursively inside that transaction.
+Removing a source therefore invalidates pending and persisted dependent work.
+Keeping model predictions and observed consequences distinct is what prevents
+self-confirmation when an outcome is recalled later. Frozen pre-evaluation
+snapshots prevent one comparison arm from benefiting from another's new results.
+This sealed host path does not qualify arbitrary Evidence records as observations.
+
+**Recall projections do not replace source evidence.** `experience::views` keeps
+original observation bytes/hashes while rendering measurements separately from
+historical feasibility. Scoped views read the original event from SQLite, require
+it to be an observation dependency, and add its reference to the sealed decision
+receipt and stored bindings. The model sees a view; original and view hashes are
+separate. Context changes or restrictions invalidate pending use through the same
+recursive dependency checks. Historical feasibility is not current permission.
+The unseen fixture corrects a source before its snapshot; it does not demonstrate
+online adaptation by a model that previously acted on the superseded value.
+
+
+**Evidence checks advise and withhold; they never consult hidden outcomes.**
+`experience::checks::assess` uses original supplied observations and current state,
+not `World::best` or the simulator effect table. Missing alternatives/citations
+and current infeasibility prevent this fixture's action; suboptimality only requests
+one reconsideration. A feasible suboptimal final proposal can execute and fail the
+score. `finish_with_review` retains proposed and executed choices separately and
+rechecks the sealed source receipt at commit. Host-withheld no-action is never
+counted as model abstention. The checked protocol shares one initial draft across
+policies and freezes recall before either writes outcomes; usage totals deduplicate
+that draft. These finite-fixture checks neither certify free-text explanations nor
+supply a production completeness contract or action authority.
+
+
+**Observation acquisition consumes a separate, one-use allowance.**
+`experience::observations::acquire` accepts only a missing fixture method or
+abstention, rechecks the sealed world/store/state receipt and all source dependencies,
+and consumes the allowance only after the trace commits. Unavailability consumes
+one diagnostic unit, not a task action's energy. A final decision depends on the
+acquisition outcome even when it contains no measurement. Corrections supersede
+old evidence with a host notice; new measurements depend on that fresh notice,
+never on the superseded value. The paired protocol selects explicit per-case
+sources and does not measure search ranking or detect unannounced world changes.
+
+
+**Reconsideration reuses a receipt; it cannot refresh away a changed source.**
+`experience::checks::reconsider` is shared by the checked and observation protocols.
+It returns at most one revised draft plus its before/after checks, never writes an
+outcome, and retains failed attempts in the caller's review record. The observation
+caller holds the original Prepared receipt through the await and rechecks every
+source at final commit. No second acquisition or retry loop is introduced; failed
+revisions stay errors rather than silently falling back to the original proposal.
+
+
+**Durable synthetic reads reserve before dispatch, never after an effect.**
+`memory::durable` owns a v3 operational ledger, while `memory_runtime::acquire`
+uses the existing guarded dispatcher with a host-bound `FsRead` wrapper. A live
+opaque permit may settle once; reopening an unresolved reservation cannot recover
+that permit. It remains indeterminate and spent. Settled observations are reused
+without a second read, with current evidence access and taint restoration.
+A successful read is not a semantic success verdict, and `durable_commit` stores
+an untrusted supplied proposal without granting action authority.
+
+**Lifecycle bookkeeping cannot become a second content store.** Task bindings,
+observations, proposals and decisions are revision-backed and dependency-linked.
+The operational table retains only opaque identities, access digest, phase and
+spent allowances. Forgetting invalidates the lifecycle in the same write
+transaction and suppresses its erased source keys, preventing late settlement or
+same-key recapture. Cancellation retains actual observations but prevents later
+commit; forgetting removes them. Original JSONL and exported reports are outside
+this local erasure boundary. Older stores are not silently migrated, and concept
+retention must never downgrade v3 to v2.
+
+**A stored read binding does not grant a new action surface.** The runtime builds
+one bounded read tool, preserves existing guards, and narrows grants/spill access.
+It checks the current workspace against the host-bound root and refuses live-store
+paths. No tool or path comes from model text. Saved-result reuse does not execute
+hooks or the tool again; its access checks concern the recorded evidence. Unknown
+unsettled provenance restores conservative private/untrusted taint. The adapter
+inherits the existing filesystem implementation's checks; it is not a new
+file-descriptor-based filesystem sandbox.
+
+
+**Persisted cancellation is checked again at the read boundary.** A cancellation
+from another process does not cancel the in-memory RunContext token. The bound
+read therefore checks its opaque dispatch guard after awaited hooks/approval and
+before delegating to FsRead. The guard reopens the bound store and rechecks original
+sources and lifecycle phase in a short read transaction. No transaction spans file
+I/O; cancellation racing after that final safe point can still yield an observation,
+which is retained as cancelled and cannot support a later commit. The byte limit is
+bound on the read wrapper itself because ordinary dispatch resets inherited
+`program_room` when constructing a call context.
+
+Original observation payloads are historical records: a later cancellation does
+not rewrite their embedded cancellation-at-capture field. Use `durable_status` or
+`durable_observation` for current lifecycle state; generic recall is not a current
+cancellation join or action permission check.
+
+
+**Durable model responses settle before evaluation.** Explicit v4 adds
+`memory::durable_decision` with one initial and one optional revision slot per
+successful read. The operational rows store references and spent allowances;
+source-linked revisions hold sealed contracts, exact requests, responses, checks
+and final advisory decisions. `memory_decision_runtime::advance` performs a single
+resumable step; `decide` drives the same five-step maximum. Separating raw response
+settlement from deterministic assessment prevents a crash during checking from
+requiring another model call. A reserved call with no result remains indeterminate,
+never reconstructed as a live permit.
+
+**The final preflight guard follows provider awaits.** `ModelGuard::check` runs
+again in the CLI after resident-model discovery and immediately before inference.
+No transaction spans inference. Cancellation can retain an already-started response,
+but cannot authorize assessment, retry or finalization; changed/forgotten sources
+refuse late content. Operational status remains readable when current source access
+forbids audit content. Source revocation must not reset a spent allowance.
+
+**Checking a synthetic choice does not certify source truth or execute it.**
+`memory::decision` seals a strict host-authored measurement envelope, read hash,
+contract and projection separately. Its arithmetic checker is shared with existing
+experience trials; old prompt/schema bytes are preserved. A format terminator is
+not whole-file completeness, since the guarded read may return a bounded prefix.
+Only a valid draft with reproducible findings permits the second slot. Invalid,
+refused, wrong-model and oversized results terminate without a repair call. The
+stored final decision is always private/untrusted and advisory; the next real
+outcome requires a separate host observation. Generic v3 JSON finish cannot bypass
+v4 evaluation. Earlier stores are never implicitly migrated or downgraded.
+
+**A recommendation and its execution have separate durable authority.** Explicit
+v5 adds `memory::durable_action` and the closed `memory_action_runtime` fixture.
+`authenticated_recommendation` reconstructs the saved request/response/check before
+binding or reserving an action. The host supplies only a closed fixture/version/state;
+model text cannot choose a tool or path. One reservation returns one opaque live
+permit, consumed by execution and settlement. A lost permit is never reconstructed
+from an indeterminate row. This is at-most-once dispatch, not exactly-once effects.
+The execution guard rechecks current sources and cancellation immediately before
+its finite handler, without holding a transaction over the effect.
+
+**Evaluate the actual outcome without rewriting the expectation.** Action outcome
+and deterministic feedback are separate source-linked revisions. Fixture measurements
+come from the host table, while `expected_from_evidence` preserves the original
+source claims. Refused/unknown observations carry no numeric measurements; they do
+not count as measured failures. `StepFeedback` checks resource/quality constraints
+without inventing a GoalRef or reusing model-call count fields. After outcome
+settlement, feedback can resume without another action; cancellation blocks that
+later work while permitting retention of an already-started real handler result.
+Forgetting expands any action sibling to the whole read/model/action closure and
+suppresses capture keys before clearing operational references. Ordinary recall
+returns historical untrusted evidence, never current execution permission or an
+automatically adopted lesson. Production appraisal and external actions remain
+outside this synthetic-only runtime.
+
+**Reappraisal changes current interpretation without replacing the episode.**
+The outcome-recall pair keeps identical original source expectations in both arms;
+only one receives the actual retained action observation returned by bounded recall.
+Exact operational revision/content matching prevents a lookalike Evidence record
+from acquiring host-observation provenance. Missing retrieval is an error, never a
+silent direct-lookup fallback. The explicit same-workload fixture policy lets numeric
+actuals supersede expectations for decision arithmetic while preserving both records.
+This policy is not a universal truth hierarchy or automatic semantic belief adoption.
+Unknown/refused outcomes cannot supply numeric overrides, and historical feedback
+labels never become a current plan's feasibility judgment.
+
+Outcome pairs require an authenticated retained action. Both action binding and
+`retained_outcome` reconstruct `authenticated_recommendation` from sealed evidence
+and require `Recommend`. A partial measurement packet produces `Withheld` for a
+method choice or `Abstain`; neither can reach reappraisal. The structured
+three-method schema relies on this boundary. A future path that permits actions
+from partial evidence must also define how comparison checks represent unknown
+measurements; weakening only the action guard would make the schema contradictory.
+
+**A frozen comparison is not permission to use revoked evidence.** Both arms use
+one frozen snapshot and exact auditable recall/projection; current source access,
+freshness and lifecycle eligibility are rechecked after provider discovery and after
+inference. This includes every retained raw-recall anchor/context hit, even when it
+is unrelated to the selected action; an audit can disclose revoked evidence too.
+Post-inference and final checks reopen the canonical database rather than trusting
+an old connection whose pathname may now name a different store.
+Invalidation stops the pair and returns no newly exposed source-dependent report;
+ordinary model failures remain failed rows. No transaction spans inference and no
+comparison writes a new action or changes source records. Source-supported scoring
+uses visible evidence only; hidden simulator outcomes belong to a separate offline
+score, so a missing measurement cannot masquerade as a reasoning failure.
+
+**Model-authored feasibility checks remain claims.** The opt-in v3 outcome
+response lists effective values, their source and each hard-constraint comparison.
+`PreparedPair::finish` reconstructs the effective table from original projections,
+checks exact values/provenance/Booleans, and independently assesses the choice.
+False checks only withhold; they never repair a raw choice or provide action
+permission. Empty-feasible-set abstention is explicitly requested and measured
+separately from host withholding. Legacy v1 prompt/schema/parser bytes remain
+unchanged through `prepare_pair`; diagnostic options require the new entry point.
+
+**A response bound measures the submitted response.** Diagnostic reasons use
+4,000 decoded Unicode characters, with a separate 65,536-byte JSON envelope bound
+that accommodates escaped surrogate pairs. The independent scorer checks raw
+length separately from nonblank content: trimming first incorrectly accepted a
+4,002-character padded reason during review. Requested reasoning controls and
+returned channel size are separate audit fields; authored HTTP qualification
+checks actual request bodies against the frozen schedule, not just report labels.
+
+**Test decoder order at the serialized boundary.** The first checks-first schema
+changed the `required` array but appended `candidate_checks` after `choice` in
+`properties`; actual constrained responses still chose first. `diagnostic_request`
+now constructs the properties map in generation order. Qualify actual HTTP order
+and retain explicit order arrays/raw requests: recursively sorted audit exports
+erase the very property being tested. Response order does not prove hidden
+reasoning order.
+
+**Host comparison lineage is not a model citation claim.** Opt-in outcome protocol
+v4 records the full supplied packet's revision references and original/projection
+hashes separately from the model's unchanged citation array. Its citation gate
+requires the host-derived effective measurement sources, including ruled-out
+alternatives and abstentions. Superseded expectations and non-numeric actuals stay
+in the packet/audit and all-source guards even when not required for arithmetic.
+`assess_effective_measurement_citations` shares the arithmetic checker without
+forging a model Choice or filtering the request. V1/v3 retain their all-passages
+citation rule. `ComparisonProvenance` records omitted packet IDs and missing active
+IDs independently; it never fills model citations or verifies explanation entailment.
+V4 labels the reason `unverified_model_prose`. Existing advisory findings for
+suboptimal choices and unnecessary abstentions remain separate from hard vetoes.

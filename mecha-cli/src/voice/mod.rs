@@ -2607,6 +2607,7 @@ mod tests {
 
         let results = Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -2673,6 +2674,7 @@ mod tests {
         }]));
         convo.messages.push(Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,

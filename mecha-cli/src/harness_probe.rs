@@ -26,7 +26,7 @@ use mecha_core::agent::{Agent, RunContext};
 use mecha_core::candidate::Metric;
 use mecha_core::config::{PermissionMode, ProviderConfig};
 use mecha_core::harness::ConfigChange;
-use mecha_core::replay::{extract, Trajectory};
+use mecha_core::replay::{extract_transcript, Trajectory};
 use mecha_core::replay_priority::{Priority, Ranker};
 use mecha_core::replay_run::{drive, replay_registry_reporting, OnDivergence};
 use mecha_core::session::{RunConfig, RunStats, Session, SessionMeta};
@@ -93,7 +93,16 @@ pub fn prepare_episode(
         Ok(t) => t,
         Err(e) => return Ok(Err(format!("session unreadable: {e:#}"))),
     };
-    let trajectory = extract(&read.convo.messages);
+    if read.has_dynamic_goal_context() {
+        return Ok(Err(
+            "harness candidates do not yet preserve interventions under versioned goal replay"
+                .into(),
+        ));
+    }
+    let trajectory = match extract_transcript(&read) {
+        Ok(trajectory) => trajectory,
+        Err(error) => return Ok(Err(format!("goal context is not replayable: {error:#}"))),
+    };
     let digest =
         mecha_core::diagnose::EpisodeDigest::of(id, &read.convo.messages, read.episode.as_ref());
     if let Err(error) = trajectory.ensure_replayable() {
@@ -690,6 +699,7 @@ pub(crate) fn fixture_session(dir: &Path, id: &str, n: u32, serves: Option<&str>
         Message::assistant(calls),
         Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -719,6 +729,49 @@ pub(crate) fn fixture_session(dir: &Path, id: &str, n: u32, serves: Option<&str>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dynamic_goal_recordings_cannot_erase_a_harness_intervention() {
+        use mecha_core::goal_context::{
+            CharterSnapshot, DecisionBinding, GoalContextState, OwnerInput, OwnerSource,
+        };
+        use mecha_core::session::Record;
+        let root = mecha_core::mismatch::Workspace::new().unwrap();
+        let id = "20261110T000000-dynamic";
+        fixture_session(root.path(), id, 1, None);
+        let path = Session::find(root.path(), id).unwrap();
+        assert!(prepare_episode(&path, id, None).unwrap().is_ok());
+        let read = Session::read(&path).unwrap();
+        let mut state = GoalContextState::default();
+        state
+            .transition(
+                CharterSnapshot::disabled(),
+                Some(OwnerInput::new(OwnerSource::CliChat, "do the thing".into()).unwrap()),
+            )
+            .unwrap();
+        let binding = DecisionBinding::new(
+            1,
+            state.current().unwrap().revision(),
+            &read.convo.messages,
+            None,
+            true,
+            0,
+        )
+        .unwrap();
+        Session {
+            meta: read.meta,
+            path: path.clone(),
+        }
+        .append(&Record::GoalContextDecision {
+            binding,
+            versions: state.versions().to_vec(),
+        })
+        .unwrap();
+        let Err(reason) = prepare_episode(&path, id, None).unwrap() else {
+            panic!("a harness candidate could overwrite its own context intervention")
+        };
+        assert!(reason.contains("preserve interventions"), "{reason}");
+    }
 
     #[test]
     fn missing_calls_never_enter_a_harness_pair_even_without_cancellation() {
@@ -791,6 +844,7 @@ mod tests {
                 }]),
                 Message {
                     harness: false,
+                    plan_results: Vec::new(),
                     planning: None,
                     tool_provenance: Default::default(),
                     role: mecha_core::message::Role::User,
@@ -962,6 +1016,7 @@ mod tests {
                 Message::assistant(calls),
                 Message {
                     harness: false,
+                    plan_results: Vec::new(),
                     planning: None,
                     tool_provenance: Default::default(),
                     role: mecha_core::message::Role::User,
@@ -1086,6 +1141,7 @@ mod tests {
                 }]),
                 Message {
                     harness: false,
+                    plan_results: Vec::new(),
                     planning: None,
                     tool_provenance: Default::default(),
                     role: mecha_core::message::Role::User,

@@ -55,9 +55,34 @@ pub struct OpenAiCompatible {
     /// parse, or no URL at all (which falls back to api.openai.com), is not
     /// local.
     local: bool,
+    no_autoload: bool,
 }
 
 impl OpenAiCompatible {
+    /// Refuse a routed inference if its model was unloaded after the resident
+    /// check. llama.cpp's router accepts this query for POST as well as GET.
+    /// Ordinary providers retain their existing autoload behavior.
+    pub fn without_autoload(mut self) -> Self {
+        self.no_autoload = true;
+        self
+    }
+    /// Explicit isolated local client. Unlike the general provider, this
+    /// opts out of system proxies and HTTP redirects, and requires a numeric
+    /// loopback address so hostname resolution cannot move its destination.
+    pub fn from_local_config(cfg: &ProviderConfig) -> Result<Self> {
+        anyhow::ensure!(
+            cfg.kind == "local"
+                && cfg
+                    .base_url
+                    .as_deref()
+                    .is_some_and(crate::provider::router::is_literal_loopback),
+            "strict local provider requires a literal loopback HTTP endpoint"
+        );
+        let mut provider = Self::from_config(cfg)?;
+        provider.http = crate::provider::HttpClients::loopback_only()?;
+        Ok(provider)
+    }
+
     pub fn from_config(cfg: &ProviderConfig) -> Result<Self> {
         Ok(Self {
             // Two clients, chosen per request by the body's `stream` flag —
@@ -98,6 +123,7 @@ impl OpenAiCompatible {
                     .base_url
                     .as_deref()
                     .is_some_and(crate::provider::router::is_loopback),
+            no_autoload: false,
         })
     }
 
@@ -192,6 +218,9 @@ impl OpenAiCompatible {
                 self.base_url.trim_end_matches('/')
             ))
             .header("content-type", "application/json");
+        if self.no_autoload {
+            rb = rb.query(&[("autoload", "false")]);
+        }
         if let Some(key) = &self.api_key {
             rb = rb.bearer_auth(key);
         }
@@ -228,7 +257,10 @@ impl Provider for OpenAiCompatible {
         req: &CompletionRequest,
         sink: Option<&StreamSink>,
     ) -> Result<CompletionResponse> {
-        anyhow::ensure!(req.response_schema.is_none() || self.structured_output(), "provider does not support structured output; configure structured_output after verifying endpoint support");
+        anyhow::ensure!(
+            req.response_schema.is_none() || self.structured_output(),
+            "provider does not support structured output; configure structured_output after verifying endpoint support"
+        );
         crate::provider::refuse_unless_local(self, req)?;
         let body = self.body(req, sink.is_some());
         // Retries cover the send and the status line — nothing has streamed
@@ -874,6 +906,30 @@ impl Accumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn autoload_refusal_is_opt_in_and_preserves_the_request_body() {
+        let cfg = ProviderConfig {
+            kind: "local".into(),
+            base_url: Some("http://127.0.0.1:8080".into()),
+            model: Some("m".into()),
+            ..Default::default()
+        };
+        let ordinary = OpenAiCompatible::from_local_config(&cfg).unwrap();
+        let guarded = OpenAiCompatible::from_local_config(&cfg)
+            .unwrap()
+            .without_autoload();
+        let body = ordinary.body(&plain_req(), false);
+        assert_eq!(
+            ordinary.request(&body).build().unwrap().url().as_str(),
+            "http://127.0.0.1:8080/v1/chat/completions"
+        );
+        assert_eq!(
+            guarded.request(&body).build().unwrap().url().as_str(),
+            "http://127.0.0.1:8080/v1/chat/completions?autoload=false"
+        );
+        assert_eq!(guarded.body(&plain_req(), false), body);
+    }
 
     fn provider(temperature: Option<f64>, seed: Option<u64>) -> OpenAiCompatible {
         OpenAiCompatible::from_config(&ProviderConfig {
@@ -1789,6 +1845,7 @@ mod tests {
     fn an_image_rides_as_a_parts_array_only_when_the_model_can_see() {
         let msg = Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,

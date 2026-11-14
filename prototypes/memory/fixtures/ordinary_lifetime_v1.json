@@ -1,0 +1,241 @@
+{
+  "artifact_contract": {
+    "filename": "decision.json",
+    "max_bytes": 16384,
+    "max_citations": 4,
+    "max_quote_bytes": 2048,
+    "semantic_entailment": "not_evaluated"
+  },
+  "cohort_role": "development",
+  "decision_prompt": "Read task.json. If goal_context is available, call it exactly once with {\"memory\":{\"query\":\"report-release-v1\"}} before deciding. Use available observed route behavior to choose one allowed route only when it establishes all current requirements, forbidden-column limits and deadline; otherwise abstain. Do not invent route behavior or transformations. Write decision.json, then read it back. The JSON object must have exactly status (selected or abstained), route (compact or complete when selected, null when abstained), reason (text, at most 2048 UTF-8 bytes), and citations (at most four objects with reference {object,revision}, field, and quote). Each quote must be an exact contiguous passage of at most 2048 UTF-8 bytes from an actually delivered original or concept field. Use the reference and original field pointer shown in that evidence. If no such citation is available, use an empty citations list.",
+  "episodes": [
+    {
+      "goal": "audit",
+      "id": "O1",
+      "input": {
+        "batch": "A1",
+        "batch_class": "ordinary",
+        "criterion": {
+          "forbidden": [],
+          "required": [
+            "measurement",
+            "calibration"
+          ]
+        },
+        "family": "report-release-v1",
+        "input_columns": [
+          "measurement",
+          "calibration"
+        ],
+        "observed_result": "Compact output lacks calibration; complete output retains calibration.",
+        "observed_routes": {
+          "compact": {
+            "hours": 2,
+            "output_columns": [
+              "measurement"
+            ]
+          },
+          "complete": {
+            "hours": 6,
+            "output_columns": [
+              "measurement",
+              "calibration"
+            ]
+          }
+        }
+      },
+      "kind": "observation",
+      "phase": "initial"
+    },
+    {
+      "goal": "audit",
+      "id": "O2",
+      "input": {
+        "batch": "B2",
+        "batch_class": "ordinary",
+        "criterion": {
+          "forbidden": [],
+          "required": [
+            "measurement",
+            "calibration"
+          ]
+        },
+        "family": "report-release-v1",
+        "input_columns": [
+          "measurement",
+          "calibration"
+        ],
+        "observed_result": "Compact output lacks calibration; complete output retains calibration.",
+        "observed_routes": {
+          "compact": {
+            "hours": 2,
+            "output_columns": [
+              "measurement"
+            ]
+          },
+          "complete": {
+            "hours": 6,
+            "output_columns": [
+              "measurement",
+              "calibration"
+            ]
+          }
+        }
+      },
+      "kind": "observation",
+      "phase": "initial"
+    },
+    {
+      "goal": "audit",
+      "id": "D1",
+      "input": {
+        "allowed_routes": [
+          "compact",
+          "complete"
+        ],
+        "batch": "D1-new",
+        "batch_class": "ordinary",
+        "deadline_hours": 8,
+        "family": "report-release-v1",
+        "forbidden_columns": [],
+        "input_columns": [
+          "measurement",
+          "calibration"
+        ],
+        "required_columns": [
+          "measurement",
+          "calibration"
+        ],
+        "transformations_allowed": false
+      },
+      "kind": "decision",
+      "phase": "initial"
+    },
+    {
+      "goal": "preview",
+      "id": "D2",
+      "input": {
+        "allowed_routes": [
+          "compact",
+          "complete"
+        ],
+        "batch": "D2-new",
+        "batch_class": "ordinary",
+        "deadline_hours": 3,
+        "family": "report-release-v1",
+        "forbidden_columns": [],
+        "input_columns": [
+          "measurement",
+          "calibration"
+        ],
+        "required_columns": [
+          "measurement"
+        ],
+        "transformations_allowed": false
+      },
+      "kind": "decision",
+      "phase": "initial"
+    },
+    {
+      "goal": "public-preview",
+      "id": "O3",
+      "input": {
+        "batch": "C3",
+        "batch_class": "restricted",
+        "criterion": {
+          "forbidden": [
+            "identifiers"
+          ],
+          "required": [
+            "measurement"
+          ]
+        },
+        "family": "report-release-v1",
+        "input_columns": [
+          "measurement",
+          "calibration",
+          "identifiers"
+        ],
+        "observed_result": "Complete output includes identifiers and violates this public release criterion.",
+        "observed_routes": {
+          "compact": {
+            "hours": 2,
+            "output_columns": [
+              "measurement"
+            ]
+          },
+          "complete": {
+            "hours": 6,
+            "output_columns": [
+              "measurement",
+              "calibration",
+              "identifiers"
+            ]
+          }
+        }
+      },
+      "kind": "observation",
+      "phase": "revised"
+    },
+    {
+      "goal": "public-preview",
+      "id": "D3",
+      "input": {
+        "allowed_routes": [
+          "compact",
+          "complete"
+        ],
+        "batch": "D3-new",
+        "batch_class": "restricted",
+        "deadline_hours": 8,
+        "family": "report-release-v1",
+        "forbidden_columns": [
+          "identifiers"
+        ],
+        "input_columns": [
+          "measurement",
+          "calibration",
+          "identifiers"
+        ],
+        "required_columns": [
+          "measurement"
+        ],
+        "transformations_allowed": false
+      },
+      "kind": "decision",
+      "phase": "revised"
+    },
+    {
+      "goal": "public-audit",
+      "id": "D4",
+      "input": {
+        "allowed_routes": [
+          "compact",
+          "complete"
+        ],
+        "batch": "D4-new",
+        "batch_class": "restricted",
+        "deadline_hours": 8,
+        "family": "report-release-v1",
+        "forbidden_columns": [
+          "identifiers"
+        ],
+        "input_columns": [
+          "measurement",
+          "calibration",
+          "identifiers"
+        ],
+        "required_columns": [
+          "measurement",
+          "calibration"
+        ],
+        "transformations_allowed": false
+      },
+      "kind": "decision",
+      "phase": "revised"
+    }
+  ],
+  "family": "report-release-v1",
+  "observation_prompt": "Read observation.json with fs_read. Copy its exact bytes unchanged to observation-receipt.json using fs_write, then fs_read the receipt. This is an independent observation: do not call goal_context. Finish by reporting whether the copy and read succeeded.",
+  "protocol": "ordinary-lifetime-fixture-v1"
+}

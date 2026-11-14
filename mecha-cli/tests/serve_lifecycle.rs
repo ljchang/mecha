@@ -29,14 +29,49 @@ fn two_free_ports() -> (u16, u16) {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos() as u16)
             .unwrap_or(0));
-    let mut free = (0..4000u16)
-        .map(|i| 20_000 + (seed.wrapping_add(i.wrapping_mul(7)) % 10_000))
-        .filter(|p| std::net::TcpListener::bind(("127.0.0.1", *p)).is_ok());
-    let a = free.next().expect("a free port in 20000..30000");
-    let b = free
-        .find(|p| *p != a)
-        .expect("a second free port in 20000..30000");
+    two_free_ports_from_seed(seed)
+}
+
+fn two_free_ports_from_seed(seed: u16) -> (u16, u16) {
+    // Probing drops the listener before the child binds. Keep process-wide
+    // claims so parallel fixtures cannot select the same still-unbound port.
+    static CLAIMED: std::sync::Mutex<std::collections::BTreeSet<u16>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let mut claimed = CLAIMED.lock().unwrap();
+    let (a, b) = {
+        let mut free = (0..4000u16)
+            .map(|i| 20_000 + (seed.wrapping_add(i.wrapping_mul(7)) % 10_000))
+            .filter(|p| {
+                !claimed.contains(p) && std::net::TcpListener::bind(("127.0.0.1", *p)).is_ok()
+            });
+        let a = free.next().expect("a free port in 20000..30000");
+        let b = free
+            .find(|p| *p != a)
+            .expect("a second free port in 20000..30000");
+        (a, b)
+    };
+    claimed.extend([a, b]);
     (a, b)
+}
+
+#[test]
+fn port_selection_does_not_reissue_unbound_ports_to_another_fixture() {
+    // Equal seeds reproduce overlapping choices without scheduling or starting
+    // a daemon: the first fixture has selected its pair but has not bound it.
+    let first = two_free_ports_from_seed(0x5a5a);
+    let second = two_free_ports_from_seed(0x5a5a);
+    let selected = [first.0, first.1, second.0, second.1];
+    assert_eq!(
+        selected
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        4,
+        "parallel fixtures must not receive a port already selected for startup"
+    );
+    assert!(selected
+        .into_iter()
+        .all(|port| (20_000..30_000).contains(&port)));
 }
 
 #[tokio::test]
