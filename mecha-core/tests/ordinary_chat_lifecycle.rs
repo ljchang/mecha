@@ -2200,7 +2200,7 @@ fn web_record_turn(
         .unwrap();
     let mut state = recorded_context(session);
     let version = state
-        .transition(
+        .transition_whole(
             CharterSnapshot::disabled(),
             Some(OwnerInput::new(recorded_source, text.into()).unwrap()),
         )
@@ -2286,6 +2286,36 @@ fn a_closed_chat_reads_its_whole_chain_again_at_every_turn() {
         chat.begin_authenticated_web_turn(&s, &owner, 3).is_err(),
         "the first turn's receipt is gone and the same attachment began another turn"
     );
+}
+
+/// A closed profile's recorder compares every owner line of each revision,
+/// and its host records revisions that carry them all: a conversation goes
+/// past the sixteen lines an ordinary chat's window holds, turn after turn.
+#[test]
+fn a_closed_chat_is_remembered_past_the_lines_a_window_would_hold() {
+    let f = Fixture::new();
+    let s = web_session(&f);
+    let mut chat = f
+        .memory()
+        .attach_authenticated_web_chat(&s, ChatAttachMode::Create)
+        .unwrap();
+    f.config(&s);
+    for n in 1..=20u64 {
+        let turn = web_record_turn(
+            &mut chat,
+            &s,
+            &format!("Keep synthetic folder {n} blue"),
+            n,
+            OwnerSource::AuthenticatedWeb,
+        );
+        let report = chat.finish_turn(&turn);
+        assert_eq!(
+            report.status,
+            SessionMemoryStatus::Retained,
+            "turn {n}: {report:?}"
+        );
+    }
+    assert_eq!(chat.next_turn_ordinal().unwrap(), 21);
 }
 
 #[test]

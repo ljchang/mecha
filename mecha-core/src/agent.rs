@@ -260,7 +260,11 @@ pub(crate) struct GoalIngress {
     pub(crate) task_recorder:
         Option<Arc<crate::memory_session::chat::task_host::TaskDecisionRecorder>>,
     /// Record each request's decision as digests, not as a copy of the
-    /// request and the conversation (`DecisionBinding::compact`).
+    /// request and the conversation (`DecisionBinding::compact`), and
+    /// carry a window of owner lines in each revision, not all of them
+    /// (`GoalContextState::transition`). The two go together: both are
+    /// what lets an ordinary chat be long, and both are what a closed
+    /// profile's recorder cannot read.
     compact: bool,
 }
 
@@ -2050,6 +2054,12 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         // owner correcting mecha about the date, which is the one subject on
         // which mecha is now instructed to defer to them.
         || text.starts_with(crate::date_context::REFERENCE_STEM)
+        // The owner's earlier lines, carried past a compaction
+        // (`compact::OWNER_LINES_HEADER`). Their words, the harness's
+        // block: unregistered, every compaction would hand each of them
+        // back as a line typed in the head turn, to be mined as a fresh
+        // steer and carried a second time.
+        || text.starts_with(crate::compact::OWNER_LINES_HEADER)
         // The seventh: the situation brief (`brief::render`), folded into
         // the first user turn when its delivery lever is on. A description
         // the harness wrote, never something the owner said.
@@ -5085,11 +5095,24 @@ impl Agent {
         // leaves the live version, tool snapshot and decision ordinal unchanged.
         let mut candidate = state.clone();
         let mut versions = Vec::new();
+        // The host that records compactly is the ordinary chat's, and the
+        // one whose revisions carry a window of owner lines. Every other
+        // host's recorder reads the whole list out of each revision (the
+        // closed memory profiles compare it line for line), so its
+        // revisions carry every line, as they did before windows.
+        let windowed = ingress.compact;
+        let step = |candidate: &mut crate::goal_context::GoalContextState, input| {
+            if windowed {
+                candidate.transition(charter.clone(), input)
+            } else {
+                candidate.transition_whole(charter.clone(), input)
+            }
+        };
         if inputs.is_empty() {
-            versions.extend(candidate.transition(charter, None)?);
+            versions.extend(step(&mut candidate, None)?);
         } else {
             for input in inputs.iter().cloned() {
-                versions.extend(candidate.transition(charter.clone(), Some(input))?);
+                versions.extend(step(&mut candidate, Some(input))?);
             }
         }
         let version = candidate
@@ -9062,6 +9085,39 @@ mod tests {
                 "compact = {compact}: only the call made after activation is replayed"
             );
             std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    /// The window of owner lines is the ordinary chat's host's, with its
+    /// compact records. Any other host's revisions carry every line: a
+    /// closed memory profile's recorder compares them one for one.
+    #[tokio::test]
+    async fn only_a_host_that_records_compactly_slides_its_owner_lines() {
+        use crate::goal_context::{OwnerInput, OwnerSource};
+        for compact in [false, true] {
+            let turns = (0..20)
+                .map(|n| assistant(vec![Block::text(format!("Reply {n}"))], StopReason::EndTurn))
+                .collect();
+            let (agent, _) = agent_with_tools(turns, vec![], PermissionMode::Allow);
+            let mut convo = Conversation::default();
+            for n in 0..20 {
+                let text = format!("Owner line {n}");
+                let mut cx = agent.context().as_ref().clone().with_goal_ingress(
+                    vec![OwnerInput::new(OwnerSource::CliChat, text.clone()).unwrap()],
+                    None,
+                );
+                if compact {
+                    cx = cx.with_compact_goal_records();
+                }
+                convo.messages.push(Message::user(text));
+                agent.run_in(&cx, &mut convo, None).await.unwrap();
+            }
+            let version = convo.goal_context.current().unwrap();
+            assert_eq!(
+                (version.owner_inputs().len(), version.earlier_inputs()),
+                if compact { (16, 4) } else { (20, 0) },
+                "compact = {compact}"
+            );
         }
     }
 

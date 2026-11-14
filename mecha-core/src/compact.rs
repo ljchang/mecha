@@ -317,6 +317,118 @@ pub const CARRIED_HEADER: &str =
 pub const SUMMARY_HEADER: &str =
     "[Earlier turns were compacted to fit the context window. What happened in them:]";
 
+/// Marks the block of the owner's own earlier lines [`rebuild`] carries past
+/// a compaction: a JSON object on the line after it ([`OwnerLines`]).
+///
+/// A summary is a model's account of what was cut, and an instruction the
+/// owner gave twenty turns ago is exactly what an account loses or softens
+/// (the owner's ruling of 2026-11-14: "I want the original instruction to
+/// survive compaction, that is how drift happens"). So what the owner typed
+/// in the turns being cut is not left to the summary: it is copied here,
+/// word for word, and copied again by every later compaction.
+///
+/// The words are the owner's and the block is the harness's: it is derived
+/// text in a user message, like [`SUMMARY_HEADER`]'s, and a reader of user
+/// turns that wants what the owner typed *in that turn* excludes it by this
+/// name (`agent::is_harness_voice`), or one line would be mined as a fresh
+/// steer at every compaction.
+pub const OWNER_LINES_HEADER: &str =
+    "[The owner's own earlier messages in this conversation, word for word and oldest \
+     first. The turns they were sent in were compacted; what they ask for still stands \
+     unless a later message of the owner's changed it:]";
+
+/// The most of one owner line carried past a compaction.
+pub const OWNER_LINE_BYTES: usize = 2_000;
+/// The most of all of them. Past it the earliest and the latest are kept
+/// and the middle is counted, never the first ones dropped: the first is
+/// where a conversation's standing instruction usually is.
+pub const OWNER_LINES_BYTES: usize = 16_000;
+
+/// The owner's earlier lines as a compaction carries them: the earliest,
+/// how many between were left out for room, and the latest.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OwnerLines {
+    #[serde(default)]
+    pub first: Vec<String>,
+    #[serde(default)]
+    pub left_out: usize,
+    #[serde(default)]
+    pub last: Vec<String>,
+}
+
+impl OwnerLines {
+    /// What a block [`rebuild`] wrote holds. Text that is not one, or whose
+    /// object does not parse, holds nothing.
+    pub fn parse(block: &str) -> Option<Self> {
+        let rest = block.trim_start().strip_prefix(OWNER_LINES_HEADER)?;
+        serde_json::from_str(rest.trim()).ok()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.first.is_empty() && self.last.is_empty() && self.left_out == 0
+    }
+
+    /// With `lines` after everything held, inside the bound: the earliest
+    /// stay, the latest stay, and what is between them is counted.
+    fn with(mut self, lines: impl IntoIterator<Item = String>) -> Self {
+        let size = |lines: &[String]| lines.iter().map(String::len).sum::<usize>();
+        let mut later = std::mem::take(&mut self.last);
+        later.extend(lines);
+        if self.left_out == 0 {
+            // Nothing has been left out yet: it is one run of lines.
+            let mut all = std::mem::take(&mut self.first);
+            all.append(&mut later);
+            if size(&all) <= OWNER_LINES_BYTES {
+                self.first = all;
+                return self;
+            }
+            // The first that fit in half the room are the earliest from
+            // now on, and always at least the very first.
+            let mut kept = 0;
+            let mut bytes = 0;
+            for line in &all {
+                if kept > 0 && bytes + line.len() > OWNER_LINES_BYTES / 2 {
+                    break;
+                }
+                bytes += line.len();
+                kept += 1;
+            }
+            later = all.split_off(kept);
+            self.first = all;
+        }
+        let room = OWNER_LINES_BYTES.saturating_sub(size(&self.first));
+        let mut keep = later.len();
+        let mut bytes = 0;
+        while keep > 0 && bytes + later[keep - 1].len() <= room {
+            bytes += later[keep - 1].len();
+            keep -= 1;
+        }
+        self.left_out += keep;
+        self.last = later.split_off(keep);
+        self
+    }
+
+    fn block(&self) -> String {
+        format!(
+            "\n\n{OWNER_LINES_HEADER}\n{}",
+            serde_json::to_string(self).expect("strings serialize")
+        )
+    }
+}
+
+/// One owner line as it is carried: whole, or its head with a mark.
+fn carried_line(text: &str) -> String {
+    let text = text.trim();
+    if text.len() <= OWNER_LINE_BYTES {
+        return text.to_string();
+    }
+    let mut end = OWNER_LINE_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
+}
+
 /// Rebuild the transcript around `summary`.
 ///
 /// The original task keeps its place at the top with the summary appended to
@@ -328,6 +440,11 @@ pub const SUMMARY_HEADER: &str =
 /// `Tool::carried_state`). It goes *after* the summary, because it is the one
 /// part of the rebuilt head that is known to be current rather than
 /// paraphrased, and last is where a model reads most carefully.
+///
+/// Between the two goes what the owner typed in the turns being cut, and
+/// what an earlier compaction carried of them ([`OWNER_LINES_HEADER`]): the
+/// head message keeps the first thing the owner asked, and this keeps the
+/// rest from being only what a summary says of them.
 pub fn rebuild(
     messages: &[Message],
     cut: usize,
@@ -337,6 +454,24 @@ pub fn rebuild(
     let mut out = Vec::with_capacity(messages.len() - cut + 1);
 
     let mut head = messages[0].clone();
+    // What the owner typed in the stretch being cut, after what an earlier
+    // compaction carried. The head's own words stay where they are.
+    let carried_before = head
+        .content
+        .iter()
+        .find_map(|block| match block {
+            Block::Text { text } => OwnerLines::parse(text),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let owner_lines = carried_before.with(
+        messages[1..cut.min(messages.len())]
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .map(crate::agent::owner_text)
+            .filter(|text| !text.trim().is_empty())
+            .map(|text| carried_line(&text)),
+    );
     // Drop what a previous compaction left: the carried block, because there
     // is only ever one *current* state and the old copy is a wrong one; and
     // the previous summary, because the summariser has already read it —
@@ -360,6 +495,8 @@ pub fn rebuild(
             let t = text.trim_start();
             !t.starts_with(CARRIED_HEADER)
                 && !t.starts_with(SUMMARY_HEADER)
+                // Carried again below, with this compaction's lines added.
+                && !t.starts_with(OWNER_LINES_HEADER)
                 && !t.starts_with(crate::date_context::REFERENCE_STEM)
                 // And any situation brief the head carried (3a): the brief
                 // is re-folded after the cut, and a stale head copy would
@@ -370,6 +507,9 @@ pub fn rebuild(
     });
     head.content
         .push(Block::text(format!("\n\n{SUMMARY_HEADER}\n{summary}")));
+    if !owner_lines.is_empty() {
+        head.content.push(Block::text(owner_lines.block()));
+    }
     if !carried.is_empty() {
         let mut block = format!("\n\n{CARRIED_HEADER}\n");
         for (label, body) in carried {
@@ -1434,6 +1574,112 @@ mod tests {
             );
             assert_eq!(messages[cut].role, Role::Assistant);
         }
+    }
+
+    /// What the owner typed in the turns a compaction cuts is carried word
+    /// for word, not left to the summary, and a second compaction carries
+    /// the first one's lines with its own. A steer beside tool results is
+    /// the owner's too; a result and the harness's own notices are not.
+    #[test]
+    fn the_owner_s_lines_cross_a_compaction_word_for_word_and_the_next_one_too() {
+        let reply = |text: &str| Message::assistant(vec![Block::text(text)]);
+        let mut steered = Message::tool_results(vec![Block::ToolResult {
+            tool_use_id: "t1".into(),
+            content: "forty rows".into(),
+            is_error: false,
+        }]);
+        steered
+            .content
+            .push(Block::text("and leave the archive alone"));
+        steered.content.push(Block::text(format!(
+            "{}Friday",
+            crate::date_context::REFERENCE_STEM
+        )));
+        let messages = vec![
+            Message::user("sort the trays"),
+            reply("on it"),
+            Message::user("never write to the shared drive"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "t1".into(),
+                name: "list".into(),
+                input: serde_json::json!({}),
+            }]),
+            steered,
+            reply("done so far"),
+            Message::user("now the labels"),
+            reply("labels next"),
+        ];
+        let once = rebuild(&messages, 5, "the trays were sorted", &[("todo", "1/2")]);
+        let lines = |m: &Message| {
+            m.content
+                .iter()
+                .find_map(|b| match b {
+                    Block::Text { text } => OwnerLines::parse(text),
+                    _ => None,
+                })
+                .expect("no owner lines in the head")
+        };
+        assert_eq!(
+            lines(&once[0]).first,
+            [
+                "never write to the shared drive",
+                "and leave the archive alone"
+            ]
+        );
+        // After the summary and before the live state, which stays last.
+        let heads: Vec<bool> = once[0]
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                Block::Text { text } => Some(text.trim_start().starts_with(CARRIED_HEADER)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(heads.last(), Some(&true));
+        // The head is still the owner's first ask and nothing of the
+        // block reads as a line the owner typed in it.
+        assert_eq!(
+            crate::agent::owner_text(&once[0]).split("\n\n[").next(),
+            Some("sort the trays")
+        );
+        assert!(!crate::agent::owner_text(&once[0]).contains("shared drive"));
+        // Again, later: the earlier lines are carried, the new one added,
+        // and there is one block.
+        let mut longer = once.clone();
+        longer.push(Message::user("and print them"));
+        longer.push(reply("printing"));
+        let twice = rebuild(&longer, longer.len() - 2, "labels were made", &[]);
+        assert_eq!(
+            lines(&twice[0]).first,
+            [
+                "never write to the shared drive",
+                "and leave the archive alone",
+                "now the labels"
+            ]
+        );
+        assert_eq!(twice[0].text().matches(OWNER_LINES_HEADER).count(), 1);
+    }
+
+    /// The lines carried are bounded. Past the bound the earliest stay,
+    /// the latest stay, and what is between is counted: the first thing
+    /// the owner said is never what makes room.
+    #[test]
+    fn past_the_bound_the_earliest_and_latest_lines_stay_and_the_middle_is_counted() {
+        let line = |n: usize| format!("line {n:03} {}", "x".repeat(900));
+        let mut kept = OwnerLines::default();
+        for n in 0..60 {
+            kept = kept.with([line(n)]);
+            let bytes: usize = kept.first.iter().chain(&kept.last).map(String::len).sum();
+            assert!(bytes <= OWNER_LINES_BYTES, "after {n}: {bytes}");
+            assert_eq!(kept.first.len() + kept.left_out + kept.last.len(), n + 1);
+            assert_eq!(kept.first[0], line(0));
+            assert_eq!(kept.last.last().or(kept.first.last()), Some(&line(n)));
+        }
+        assert!(kept.left_out > 0 && kept.first.len() >= 8 && kept.last.len() >= 8);
+        // One line longer than a carried line may be is its head, marked.
+        let long = carried_line(&"y".repeat(OWNER_LINE_BYTES * 3));
+        assert!(long.len() <= OWNER_LINE_BYTES + '…'.len_utf8() && long.ends_with('…'));
+        assert_eq!(OwnerLines::parse(&kept.block()), Some(kept));
     }
 
     #[test]

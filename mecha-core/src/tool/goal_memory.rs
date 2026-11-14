@@ -318,15 +318,7 @@ impl Tool for GoalMemory {
                 .owner_inputs()
                 .last()
                 .ok_or_else(|| anyhow::anyhow!("chat owner context unavailable"))?;
-            ensure!(
-                owner.text().len() <= 4096,
-                "chat retrieval context exceeds bounds"
-            );
-            Situation {
-                event: owner.text().into(),
-                goal: String::new(),
-                needs: None,
-            }
+            owner_situation(owner.text())
         } else {
             self.situation.clone()
         };
@@ -375,5 +367,32 @@ impl Tool for GoalMemory {
         } else {
             output
         })
+    }
+}
+
+/// What a recall in a chat is searched under: the owner's newest line.
+/// Contextual prose, not a confirmed criterion. A long pasted line is
+/// searched by its head, as its passage holds it: refusing it left the
+/// recall's attempt without a result and cost the whole turn its memory.
+fn owner_situation(line: &str) -> Situation {
+    Situation {
+        event: crate::memory::host_capture::excerpt(line.to_string()).0,
+        goal: String::new(),
+        needs: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_long_owner_line_is_searched_by_its_head() {
+        let short = owner_situation("where is the tray list");
+        assert_eq!(short.event, "where is the tray list");
+        let long = "a long pasted line ".repeat(600);
+        let searched = owner_situation(&long);
+        assert_eq!(searched.event.len(), 4096);
+        assert!(long.starts_with(&searched.event));
     }
 }

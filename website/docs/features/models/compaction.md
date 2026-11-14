@@ -12,6 +12,14 @@ transcript with a summary and keeps the ends: the task at the top, so the agent
 still knows what it was asked, and the most recent turns verbatim, because that
 is where the work is.
 
+Your own messages are not left to the summary. Whatever you typed in the
+turns being replaced, including a line you added while the assistant was
+working, is kept word for word at the top of the conversation, and kept again
+by every later compaction. If a very long conversation holds more of them
+than fit (about 16,000 bytes), the earliest and the most recent are kept and
+the ones between are counted, so the first thing you asked for is never what
+gets dropped.
+
 It is **on wherever the provider declares a context window**: the threshold
 derives from that window (two thirds of it) unless `compact_at_tokens` sets one
 directly, and only a provider with no declared window runs uncompacted.

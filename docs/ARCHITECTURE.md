@@ -8102,15 +8102,14 @@ and chained digest of the rest, and `accept_version` checks that the
 window slid over exactly the lines it dropped, so a revision cannot drop,
 reorder or rewrite one without the chain saying so. The newest line is
 never the one dropped. A revision whose window never slid has the bytes
-and the digest it always had. **The cost, with compaction**: before the
-window every request repeated every owner line, so an early line outlived
-a compaction cut word for word. Now a line that has left the window is in
-front of the model only as the message that held it, and a compaction
-that cuts that message leaves the summary's account of it and nothing
-else. The block says so (`owner_prompt_block`) and does not claim the
-earlier lines are above. A standing instruction that must outlive a long
-conversation belongs in the charter, which every request carries whole;
-relating the window to the cut is not built. *Every request copied the request and the
+and the digest it always had. **With compaction** (owner's ruling, 2026-11-14: the original instruction
+survives compaction, because losing it is how a conversation drifts): before
+the window every request repeated every owner line, so an early line
+outlived a compaction cut word for word, and the window alone would have
+left it to the summary. So a compaction now carries the owner's lines itself
+(§Compaction, `compact::OWNER_LINES_HEADER`), for every conversation and not
+only one with dynamic goals, and the block says where the earlier lines are
+(`owner_prompt_block`). *Every request copied the request and the
 whole conversation into the transcript*, so a transcript grew with the
 square of the conversation: an ordinary chat's host records a compact
 `DecisionBinding` (`RunContext::with_compact_goal_records`; the terminal
@@ -12938,6 +12937,22 @@ Compaction is lossy, which is why it is validated and recorded rather than
 off — for a while this section said "off by default" while the code derived a
 threshold, and a doc that contradicts the code is the shape this file exists
 to prevent.
+
+**What the owner typed is not left to the summary** (owner's ruling,
+2026-11-14: "I want the original instruction to survive compaction, that is
+how drift happens"). The head message, the owner's first ask, was always
+kept. Every later line of theirs in the stretch being cut — a new turn, or a
+steer beside tool results — is now copied word for word into a block in the
+head (`compact::OWNER_LINES_HEADER`, a JSON `OwnerLines` after it), between
+the summary and the carried state, and each later compaction reads that
+block back and carries it on with its own. It is bounded: a line past
+`OWNER_LINE_BYTES` is its head with a mark, and past `OWNER_LINES_BYTES` in
+all the earliest lines stay, the latest stay, and the middle is *counted*
+(`left_out`), never the first ones dropped. The words are the owner's and
+the block is the harness's: it is registered in `agent::is_harness_voice`,
+so `owner_text` of the head is still what the owner typed in that turn, and
+a carried line is not mined as a fresh steer at every compaction. Not
+measured: whether a model weighs a carried line as it weighed the turn.
 
 The things that decide the design:
 

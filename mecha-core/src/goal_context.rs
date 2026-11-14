@@ -293,14 +293,15 @@ impl ContextVersion {
     pub fn owner_prompt_block(&self) -> String {
         let evidence = serde_json::to_string(&self.owner_inputs).expect("owner strings serialize");
         // Said only once lines have left the window, so a short
-        // conversation's block is byte for byte what it was. It does not
-        // say the earlier lines are above: a compaction may have cut the
-        // messages that held them, and then a summary is all that is.
+        // conversation's block is byte for byte what it was. The earlier
+        // lines are in the messages that held them, or, once a compaction
+        // has cut those, in the block it carries them in at the top
+        // (`compact::OWNER_LINES_HEADER`).
         let earlier = if self.earlier.is_none() {
             String::new()
         } else {
             format!(
-                " These are the {} most recent of {}; the earlier ones are earlier in the conversation, or in a summary of it if it was compacted.",
+                " These are the {} most recent of {}; the earlier ones are earlier in the conversation, where a compaction keeps them word for word at its top.",
                 self.owner_inputs.len(),
                 self.total_inputs()
             )
@@ -705,10 +706,32 @@ impl GoalContextState {
     pub fn version(&self, revision: u64) -> Option<&ContextVersion> {
         self.versions.iter().find(|v| v.revision == revision)
     }
+    /// The next revision, for an ordinary chat: it carries a window of
+    /// the most recent owner lines and a chain over the rest.
     pub fn transition(
         &mut self,
         charter: CharterSnapshot,
         input: Option<OwnerInput>,
+    ) -> Result<Option<ContextVersion>> {
+        self.advance(charter, input, true)
+    }
+    /// The next revision, carrying every owner line, as a revision did
+    /// before windows existed. For a host whose recorder reads the whole
+    /// list out of each revision (the closed memory profiles): such a
+    /// conversation is bounded by its profile, and past 64 KiB of owner
+    /// lines the revision is refused, not slid.
+    pub fn transition_whole(
+        &mut self,
+        charter: CharterSnapshot,
+        input: Option<OwnerInput>,
+    ) -> Result<Option<ContextVersion>> {
+        self.advance(charter, input, false)
+    }
+    fn advance(
+        &mut self,
+        charter: CharterSnapshot,
+        input: Option<OwnerInput>,
+        window: bool,
     ) -> Result<Option<ContextVersion>> {
         if self.current().is_some_and(|v| v.charter == charter) && input.is_none() {
             return Ok(None);
@@ -719,7 +742,8 @@ impl GoalContextState {
         inputs.extend(input);
         // Slide the window: the oldest lines leave it, into the chain,
         // until what is carried fits. The newest line always stays.
-        while inputs.len() > 1
+        while window
+            && inputs.len() > 1
             && (inputs.len() > WINDOW_INPUTS
                 || inputs.iter().map(|i| i.text.len()).sum::<usize>() > MAX_SOURCE_BYTES)
         {
@@ -1142,6 +1166,38 @@ mod tests {
         forged.earlier.digest = "0".repeat(64);
         assert_eq!(forged.computed_digest().unwrap(), forged.content_digest);
         assert!(forged.validate().is_err());
+    }
+
+    /// A host whose recorder reads every owner line out of each revision
+    /// asks for revisions that carry them all: nothing slides, the bytes
+    /// are a pre-window revision's, and past 64 KiB the line is refused.
+    #[test]
+    fn a_whole_revision_carries_every_line_and_refuses_what_a_window_would_slide() {
+        let mut state = GoalContextState::default();
+        for n in 0..40 {
+            state
+                .transition_whole(
+                    CharterSnapshot::disabled(),
+                    Some(input(&format!("line {n}"))),
+                )
+                .unwrap()
+                .unwrap();
+        }
+        let last = state.current().unwrap();
+        assert_eq!((last.owner_inputs().len(), last.earlier_inputs()), (40, 0));
+        assert!(serde_json::to_value(last).unwrap().get("earlier").is_none());
+        let mut replayed = GoalContextState::default();
+        for version in state.versions() {
+            replayed.accept_version(version.clone()).unwrap();
+        }
+        let large = "x".repeat(MAX_SOURCE_BYTES);
+        assert!(state
+            .transition_whole(CharterSnapshot::disabled(), Some(input(&large)))
+            .is_err());
+        // The same line to a windowed host slides the rest out.
+        assert!(state
+            .transition(CharterSnapshot::disabled(), Some(input(&large)))
+            .is_ok());
     }
 
     /// One line as large as the window's byte bound stays, alone: the

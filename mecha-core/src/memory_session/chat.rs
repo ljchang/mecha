@@ -1261,7 +1261,7 @@ impl ChatMemory {
                 && session.meta.kind == Some(self.attachment.session_kind())
                 && owner.source() == self.attachment.owner_source()
                 && (self.attachment.open() || owner.text().len() <= 2048),
-            "chat owner input unavailable (maximum 2048 bytes)"
+            "chat owner input unavailable (a closed profile takes at most 2048 bytes)"
         );
         let (bytes, last) = self.continuation()?;
         let ordinal = self.ordinal_after(last.as_ref())?;
