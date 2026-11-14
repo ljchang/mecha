@@ -133,6 +133,10 @@ pub struct SampleArgs {
     /// Run the turn's recorded Nth tool call (1-based) verbatim through the
     /// real tool, with the turn's stamps and no model turn: arms then differ
     /// only in what they set, never in what the model wrote this time.
+    /// On a picture-panel turn, `1` is the change the harness drew there
+    /// (the one call such a turn has): the only thing about a panel turn a
+    /// replay redoes. A painted edit is that call with its mask or region
+    /// index, which is staged from the chat's uploads with it.
     #[arg(long, value_name = "N", requires = "persona", conflicts_with_all = ["at_call", "no_render"])]
     pub run_call: Option<usize>,
 
@@ -454,6 +458,8 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
     }
     let mut branch: Branch = match args.at_call {
         Some(call) => pr::branch_at_call(&path, &text, line, call)?,
+        // A panel turn is branched at only to run its drawn change again.
+        None if args.run_call.is_some() => pr::branch_at_panel(&path, &text, line)?,
         None => pr::branch_at(&path, &text, line)?,
     };
     // Before anything is sent or digested: every sample carries the history
@@ -901,13 +907,23 @@ impl Sampler {
         // next one's scene.
         let staged = if self.render {
             let scratch = self.work.join(format!("sample-{i:03}"));
-            Some(mecha_core::scene::stage::stage_at(
+            let mut st = mecha_core::scene::stage::stage_at(
                 &self.store,
                 &self.persona,
                 &self.chat,
                 branch.line - 1,
                 &scratch,
-            )?)
+            )?;
+            // The uploads a recorded call names, which no landed picture
+            // brings: a painted mask or region index, and a picture dropped
+            // on a region. One that is gone is the stage's `missing`, and
+            // the tool then says what it does without it.
+            if let Some((_, input)) = &self.run_call {
+                for rel in uploads_named(input) {
+                    st.bring(&rel)?;
+                }
+            }
+            Some(st)
         } else {
             None
         };
@@ -995,7 +1011,10 @@ impl Sampler {
             build_on: None,
             owner: &branch.owner,
             history: &branch.messages,
-            panel: false,
+            // As the turn ran: a panel turn had no scene reader, and a
+            // replay that stamped one would redraw the recorded change
+            // with a second reading merged in (review of #870).
+            panel: branch.panel,
             spoken: branch.spoken,
             notes: branch.notes.clone(),
             persona: self.persona.clone(),
@@ -1200,12 +1219,40 @@ fn summarise(samples: &[Sample]) -> serde_json::Value {
     })
 }
 
+/// The uploads a recorded picture call names beside its picture: a `mask`
+/// that is a file's path (words name an area instead), and each region's
+/// `reference`. Only the chat's `inbox/`, where the page puts an upload;
+/// a picture the chat drew is staged with the scene.
+fn uploads_named(input: &serde_json::Value) -> Vec<String> {
+    let regions = input["regions"].as_array().into_iter().flatten();
+    std::iter::once(&input["mask"])
+        .chain(regions.map(|r| &r["reference"]))
+        .filter_map(|v| v.as_str())
+        .filter(|p| p.starts_with("inbox/"))
+        .map(str::to_string)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn model(id: &str, status: &str) -> mecha_core::provider::router::RouterModel {
         serde_json::from_value(serde_json::json!({"id": id, "status": {"value": status}})).unwrap()
+    }
+
+    /// A recorded call's uploads are staged with it: the painted index and
+    /// a picture dropped on a region, never words in `mask` nor a picture
+    /// the chat drew.
+    #[test]
+    fn a_recorded_calls_uploads_are_the_inbox_files_it_names() {
+        let painted = serde_json::json!({"picture": "images/a.png", "mask": "inbox/r.png",
+            "regions": [{"colour": "magenta", "words": "a hat"},
+                        {"colour": "cyan", "words": "the sign", "reference": "inbox/s.png"},
+                        {"colour": "blue", "words": "as here", "reference": "images/b.png"}]});
+        assert_eq!(uploads_named(&painted), ["inbox/r.png", "inbox/s.png"]);
+        let words = serde_json::json!({"picture": "images/a.png", "mask": "the hat"});
+        assert!(uploads_named(&words).is_empty());
     }
 
     #[test]
@@ -1276,6 +1323,7 @@ mod tests {
             }),
             calendar: None,
             call: None,
+            panel: false,
         };
         let (names, got) = recorded_tools_of(&branch(Some(&hash)), Some(&hash)).unwrap();
         assert_eq!(names, ["widget"]);
@@ -1477,5 +1525,21 @@ mod tests {
         private_file(&dir.join("made").join("c3.jsonl")).unwrap();
         assert_eq!(mode(&dir.join("made")), 0o700);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+    /// A panel turn is replayed as it ran, with no scene reader: the sampler
+    /// hands the branch's `panel` to the turn. Read from the source, since
+    /// the sampler needs a provider to run and nothing else reaches this
+    /// line: with `panel: false` here every panel replay merged a second
+    /// reading into the recorded change (review of #870).
+    #[test]
+    fn a_panel_branch_is_sampled_as_a_panel_turn() {
+        let src = include_str!("replay_persona.rs");
+        let start = src.find("async fn sample(").expect("the sampler is here");
+        let body = &src[start..];
+        let body = &body[..body.find("\n    }\n").expect("the sampler ends")];
+        assert!(
+            body.contains("panel: branch.panel,"),
+            "the sampler no longer hands the branch's panel flag to the turn"
+        );
     }
 }

@@ -393,6 +393,23 @@ fn ordinal_path(a: &Authority, session: &str, ordinal: u64) -> PathBuf {
         authority::digest(session.as_bytes())
     ))
 }
+/// Whether any turn of `session` numbered above `ordinal` was begun, by
+/// the names in the authority's directory.
+fn begun_after(a: &Authority, session: &str, ordinal: u64) -> Result<bool> {
+    let prefix = format!("{}.chat-turn-", authority::digest(session.as_bytes()));
+    for entry in std::fs::read_dir(&a.root)? {
+        let name = entry?.file_name();
+        let later = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(&prefix))
+            .and_then(|n| n.parse::<u64>().ok())
+            .is_some_and(|n| n > ordinal);
+        if later {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
 fn read_private<T: serde::de::DeserializeOwned>(path: &Path, max: usize) -> Result<T> {
     authority::private(path, false)?;
     let value: crate::memory::plan_extraction::UniqueValue =
@@ -1065,12 +1082,13 @@ impl ChatMemory {
             if !path.try_exists()? {
                 // An ordinary chat's turns are numbered without a gap by
                 // construction (`ordinal_after`), and may be many: the
-                // first ordinal not begun ends the walk, once the one
-                // after it is seen not to exist either.
+                // first ordinal not begun ends the walk, once no later one
+                // is seen to have begun. One listing answers that for a
+                // gap of any width, where a probe of the next ordinal
+                // answers it for a gap of one.
                 if a.open() {
                     ensure!(
-                        !ordinal_path(&self.memory.authority, &a.session_id, ordinal + 1)
-                            .try_exists()?,
+                        !begun_after(&self.memory.authority, &a.session_id, ordinal)?,
                         "chat turn order has a gap"
                     );
                     break;
