@@ -12946,8 +12946,8 @@ steer beside tool results — is now copied word for word into a block in the
 head (`compact::OWNER_LINES_HEADER`, a JSON `OwnerLines` after it), between
 the summary and the carried state, and each later compaction reads that
 block back and carries it on with its own. It is bounded: a line past
-`OWNER_LINE_BYTES` is its head with a mark, and past the run's bound in all
-the earliest lines stay, the latest stay, and the middle is *counted*
+`OWNER_LINE_BYTES` is its head with a mark, and once they pass the run's bound
+together the earliest lines stay, the latest stay, and the middle is *counted*
 (`left_out`), never the first ones dropped. The bound is sized off the
 context window like the other compaction bounds (`owner_lines_budget`:
 about a sixteenth of it, 4 KB on a 16k-token slot, `OWNER_LINES_BYTES` from
@@ -13538,7 +13538,9 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   bound was 20,000 bytes for an output that is the goal context and then a
   memory packet of up to 20,000, so a recall that found three full
   passages left its attempt pending and the turn lost its memory for
-  having remembered something. What still bounds a remembered
+  having remembered something. It is sized for the output as written, not
+  for its parts as typed: the owner's lines are JSON inside a JSON string,
+  so a quote or a newline in a pasted line is four bytes there. What still bounds a remembered
   conversation is its transcript (`SOURCE_MAX`, 32 MiB) and
   `MAX_HISTORY_BYTES`. **On a `--chat-memory` server the recall tool is
   announced with `GoalMemory`'s capabilities** (private and untrusted)

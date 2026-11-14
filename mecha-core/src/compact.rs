@@ -190,6 +190,12 @@ pub fn render_for_summary(messages: &[Message], max_result_chars: usize) -> Stri
                 // the cut.
                 Block::Text { text } if text.trim_start().starts_with(crate::brief::BRIEF_STEM) => {
                 }
+                // The owner's carried lines, for the same reason again: the
+                // rebuild carries them on word for word whatever the summary
+                // says, so the summariser (and `render_for_distill`, which
+                // reads through here) is not handed them as a blob of JSON
+                // to paraphrase out of its budget.
+                Block::Text { text } if text.trim_start().starts_with(OWNER_LINES_HEADER) => {}
                 Block::Text { text } if !text.trim().is_empty() => {
                     // **The harness's own voice is labelled as the harness,
                     // not as the owner.** A peer's delivered message, a
@@ -395,27 +401,37 @@ impl OwnerLines {
         let size = |lines: &[String]| lines.iter().map(String::len).sum::<usize>();
         let mut later = std::mem::take(&mut self.last);
         later.extend(lines);
+        let mut all = std::mem::take(&mut self.first);
         if self.left_out == 0 {
             // Nothing has been left out yet: it is one run of lines.
-            let mut all = std::mem::take(&mut self.first);
             all.append(&mut later);
             if size(&all) <= budget {
                 self.first = all;
                 return self;
             }
-            // The first that fit in half the room are the earliest from
-            // now on, and always at least the very first.
-            let mut kept = 0;
-            let mut bytes = 0;
-            for line in &all {
-                if kept > 0 && bytes + line.len() > budget / 2 {
-                    break;
-                }
-                bytes += line.len();
-                kept += 1;
+        }
+        // The earliest are the first that fit in half the room, and always
+        // at least the very first. Asked again each time and not only when
+        // the lines first overflow: the room follows the run's context
+        // window, and a conversation resumed under a smaller one must not
+        // keep an earliest half sized for the larger and have no room left
+        // for the newest line.
+        let mut kept = 0;
+        let mut bytes = 0;
+        for line in &all {
+            if kept > 0 && bytes + line.len() > budget / 2 {
+                break;
             }
-            later = all.split_off(kept);
-            self.first = all;
+            bytes += line.len();
+            kept += 1;
+        }
+        let rest = all.split_off(kept);
+        self.first = all;
+        if self.left_out == 0 {
+            later = rest;
+        } else {
+            // They stood between the earliest and what was left out.
+            self.left_out += rest.len();
         }
         let room = budget.saturating_sub(size(&self.first));
         let mut keep = later.len();
@@ -1692,6 +1708,11 @@ mod tests {
             ]
         );
         assert_eq!(twice[0].text().matches(OWNER_LINES_HEADER).count(), 1);
+        // The summariser is not shown the block: its lines are carried on
+        // whatever it writes, and it would otherwise read them as JSON.
+        let shown = render_for_summary(&longer, 10_000);
+        assert!(!shown.contains("shared drive"), "{shown}");
+        assert!(shown.contains("sort the trays") && shown.contains("and print them"));
     }
 
     /// The lines carried are bounded. Past the bound the earliest stay,
@@ -1713,6 +1734,7 @@ mod tests {
         // One line longer than a carried line may be is its head, marked.
         let long = carried_line(&"y".repeat(OWNER_LINE_BYTES * 3));
         assert!(long.len() <= OWNER_LINE_BYTES + '…'.len_utf8() && long.ends_with('…'));
+        let kept_at_full = kept.clone();
         assert_eq!(OwnerLines::parse(&kept.block()), Some(kept));
         // The bound follows the window: a sixteenth of it, never less
         // than room for the first line and the newest at their longest.
@@ -1730,6 +1752,20 @@ mod tests {
             assert_eq!(small.first[0], longest(0));
             assert_eq!(small.last.last().or(small.first.last()), Some(&longest(n)));
         }
+        // A conversation resumed under a smaller window: the earliest half
+        // is cut to the new room, the newest line still stays, and the
+        // whole is inside the smaller bound.
+        let shrunk = kept_at_full.with([line(60)], OWNER_LINES_FLOOR);
+        let bytes: usize = shrunk
+            .first
+            .iter()
+            .chain(&shrunk.last)
+            .map(String::len)
+            .sum();
+        assert!(bytes <= OWNER_LINES_FLOOR, "{bytes}");
+        assert_eq!(shrunk.first[0], line(0));
+        assert_eq!(shrunk.last.last(), Some(&line(60)));
+        assert_eq!(shrunk.first.len() + shrunk.left_out + shrunk.last.len(), 61);
     }
 
     #[test]
