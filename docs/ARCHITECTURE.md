@@ -11657,11 +11657,17 @@ into the ordinary web chat only, in `serve/chat.rs`'s turn task.
   morning. An attempt keeps the ids of its working calls and the outbox item
   records the call that staged it, so a verdict is joined by an id against an
   id and never by an index into a transcript a compaction has since moved.
-  The join runs at the start of the next turn in any web chat.
+  The join runs at the start of the next turn in any web chat. A turn is
+  kept by where its ask was when the run began, so a run that compacted or
+  evicted its history keeps no attempt and says so (`attempts::ask_is_at`):
+  the ask is at another index by then, or gone.
 - **What is handed back is clean by construction**: the owner's own words
   (what they asked, what they said) and tool names, never a tool's input or
-  result and never a draft's text. It arms `private` and nothing else, so a
-  correction cannot take the assistant's ability to send away. Carrying the
+  result and never a draft's text. It arms `private` and nothing else, and
+  only when something is handed over (`SuccessCue::private` for the line
+  said after a call): a chat whose ask merely resembled a judged attempt's
+  and was told nothing is left as it was, so a correction cannot take the
+  assistant's ability to send away. Carrying the
   diff of an edit would change that, and is the thing not to add casually.
 - **When.** A judged attempt whose ask shares words with this one is named
   once, after the call by which this run has used every tool that attempt

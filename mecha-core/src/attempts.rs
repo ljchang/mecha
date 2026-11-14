@@ -394,12 +394,26 @@ enum Line {
     },
 }
 
+/// Whether the owner's ask, as it read when the run began, is still the
+/// message at `at`. A run that compacted or evicted its history has moved
+/// or dropped it, and an attempt read from that index would be some other
+/// message's: the host keeps none for such a run.
+pub fn ask_is_at(messages: &[Message], at: usize, asked: &str) -> bool {
+    messages
+        .get(at)
+        .is_some_and(|m| m.role == Role::User && owner_text(m) == asked)
+}
+
 /// When in a run something was handed over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Moment {
     Start,
     Retraced,
+    /// A moment this build does not know, read back from a newer one's
+    /// line: counted as a hand-over, never taken for one of the above.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Whether a line of the file is about `session`: its attempt, a verdict on
@@ -1123,6 +1137,52 @@ mod tests {
         assert_eq!(watch.after("contacts_find"), None);
         let moments: Vec<Moment> = watch.handed().iter().map(|(_, m)| *m).collect();
         assert_eq!(moments, vec![Moment::Start, Moment::Retraced]);
+    }
+
+    /// The second guard is that every hand-over is a line that can be
+    /// counted. One written by a later build, at a moment this one does not
+    /// know, is still a hand-over and not a line that cannot be read.
+    #[test]
+    fn a_hand_over_at_a_moment_this_build_does_not_know_is_still_counted() {
+        let dir = std::env::temp_dir().join(format!("attempts-moment-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::in_dir(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            store.path(),
+            concat!(
+                r#"{"handed":{"to_session":"b","session":"a","turn":0,"about":"x","at":"a_later_moment","when":"t"}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        let kept = store.load().unwrap();
+        assert_eq!((kept.handed, kept.unreadable), (1, 0), "{kept:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A run that rewrote its history leaves the ask at another index or
+    /// nowhere; a later line of the owner's at the old index is not it.
+    #[test]
+    fn an_ask_is_found_only_where_it_was_and_as_it_read() {
+        let ask = Message::user("book the harbour berth");
+        let [a, b] = call("c1", "schedule_lookup", "Tuesday", false);
+        let run = vec![Message::user("earlier"), ask.clone(), a, b];
+        assert!(ask_is_at(&run, 1, "book the harbour berth"));
+        // Compacted to a summary: the index is past the end.
+        assert!(!ask_is_at(&run[..1], 1, "book the harbour berth"));
+        // Rebuilt shorter, with a steer where the ask was.
+        let rebuilt = vec![
+            Message::user("a summary"),
+            Message::user("no, the other one"),
+        ];
+        assert!(!ask_is_at(&rebuilt, 1, "book the harbour berth"));
+        // An assistant message at the index is never the ask.
+        let shifted = vec![
+            Message::user("x"),
+            Message::assistant(vec![Block::text("book the harbour berth")]),
+        ];
+        assert!(!ask_is_at(&shifted, 1, "book the harbour berth"));
     }
 
     #[test]

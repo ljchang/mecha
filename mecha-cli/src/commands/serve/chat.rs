@@ -3971,14 +3971,17 @@ fn begin_turn(
             })
             .map(|s| (state_for_task.attempts_dir.clone(), s.meta.id.clone()));
         let mut watch: Option<mecha_core::attempts::Shared> = None;
+        // The owner's ask as the run begins, to find it by afterwards: a
+        // compaction or an eviction during the run moves every index.
+        let asked = conversation
+            .messages
+            .get(ask_at)
+            .map(mecha_core::agent::owner_text)
+            .unwrap_or_default();
         if let Some((home, _)) = &corrections {
             use mecha_core::attempts;
             let (home, outbox_root) = (home.clone(), outbox_root.clone());
-            let ask = conversation
-                .messages
-                .get(ask_at)
-                .map(mecha_core::agent::owner_text)
-                .unwrap_or_default();
+            let ask = asked.clone();
             let built = tokio::task::spawn_blocking(move || -> Result<attempts::Watch> {
                 let store = attempts::Store::in_dir(&home);
                 let mut kept = store.load()?;
@@ -4007,9 +4010,14 @@ fn begin_turn(
         }
         if let Some(watch) = &watch {
             use mecha_core::attempts;
-            conversation.taint.private = true;
+            // The conversation holds the owner's earlier words once they
+            // are handed over, and not because a judged attempt's ask
+            // resembled this one: a chat that was told nothing is left as
+            // it was. The line said after a call marks it then
+            // (`SuccessCue::private`).
             let said = watch.lock().ok().and_then(|mut w| w.start());
             if let Some(said) = said {
+                conversation.taint.private = true;
                 let text = format!("{}{said}", attempts::DELIVERY_STEM);
                 mecha_core::agent::append_user_text(&mut conversation.messages, text.clone());
                 if let Some(session) = session.kept() {
@@ -4020,15 +4028,14 @@ fn begin_turn(
                     }) {
                         tracing::warn!("a corrections hand-over was not recorded: {e:#}");
                     }
-                }
-            }
-            if let Some(session) = session.kept() {
-                if let Err(e) = session.append(&Record::Taint(conversation.taint)) {
-                    tracing::warn!("a corrections hand-over's taint was not recorded: {e:#}");
+                    if let Err(e) = session.append(&Record::Taint(conversation.taint)) {
+                        tracing::warn!("a corrections hand-over's taint was not recorded: {e:#}");
+                    }
                 }
             }
             before = conversation.messages.clone().into();
             cx.cue_on_success.push(mecha_core::agent::SuccessCue {
+                private: true,
                 text: attempts::cue(Arc::clone(watch)),
                 stem: attempts::CUE_STEM.into(),
             });
@@ -4113,7 +4120,19 @@ fn begin_turn(
         // recorded, since the model saw it.
         if let Some((home, id)) = corrections {
             use mecha_core::attempts;
-            let messages = outcome.is_ok().then(|| conversation.messages.clone());
+            // Only a transcript the run left where it was: after a
+            // compaction or an eviction the ask is at another index or
+            // gone, and an attempt read from there would be some other
+            // message's. Not keeping it is said, since nothing kept and
+            // nothing to keep are opposite findings.
+            let moved = !conversation.rewritten.is_empty()
+                || !attempts::ask_is_at(&conversation.messages, ask_at, &asked);
+            if outcome.is_ok() && moved {
+                tracing::warn!(
+                    "this turn's attempt was not kept: its transcript was rewritten during the run"
+                );
+            }
+            let messages = (outcome.is_ok() && !moved).then(|| conversation.messages.clone());
             let handed: Vec<(attempts::Failure, attempts::Moment)> = watch
                 .as_ref()
                 .and_then(|w| w.lock().ok().map(|w| w.handed().to_vec()))

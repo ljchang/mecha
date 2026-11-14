@@ -5949,9 +5949,16 @@ mod boundary_tests {
         }
     }
 
-    /// A kept chat's picture is drawn past its turn (§5.4): the turn answers
-    /// "being made" and ends, the picture lands where its call is, on file,
-    /// and the next turn takes the note that it arrived.
+    /// The most recent attempt kept, once there are `count` of them.
+    fn kept_after(
+        store: &mecha_core::attempts::Store,
+        count: usize,
+    ) -> mecha_core::attempts::Attempt {
+        let kept = store.load().unwrap();
+        assert_eq!(kept.attempts.len(), count, "{kept:?}");
+        kept.attempts.last().unwrap().clone()
+    }
+
     /// Corrections, end to end through the web chat's own turn: a turn that
     /// used a tool is kept as an attempt; once the owner has judged it, a
     /// later turn with a like ask is told when it has used the same tool,
@@ -5988,6 +5995,37 @@ mod boundary_tests {
                 .count()
         };
         assert_eq!(cues(&path), 0);
+
+        // A judged attempt whose ask is like this one, in a chat that never
+        // reaches the point it was judged at (it had also used a tool this
+        // chat does not have): the chat is told nothing, so it holds
+        // nothing of the owner's from elsewhere and is not marked private.
+        let second = kept_after(&store, 2);
+        store
+            .judge(&[attempts::Verdict {
+                session: second.session.clone(),
+                turn: second.turn,
+                good: false,
+                source: attempts::Source::Steer,
+                tool: None,
+                why: Some("radio the pilot boat first".into()),
+                before: vec!["schedule_lookup".into(), "harbour_radio".into()],
+                about: "message:6".into(),
+                when: "t".into(),
+            }])
+            .unwrap();
+        converse(&app, "side", "when does the harbour office gate open").await;
+        let side = chat::test_transcript(&chat, "side").await;
+        let side_text = std::fs::read_to_string(&side).unwrap();
+        assert!(
+            !side_text.contains("radio the pilot boat first"),
+            "{side_text}"
+        );
+        let side = mecha_core::session::Session::read(&side).unwrap();
+        assert!(
+            !side.convo.taint.private,
+            "a chat that matched and was told nothing is marked private"
+        );
 
         // The owner's verdict on the first attempt, as an act of theirs
         // would be joined: against the call that had worked by then.
@@ -6035,7 +6073,7 @@ mod boundary_tests {
         let kept = store.load().unwrap();
         assert_eq!(
             (kept.attempts.len(), kept.handed),
-            (3, 1),
+            (4, 1),
             "{kept:?}\n{text}"
         );
         assert!(kept.attempts.iter().all(|a| !a.asked.contains("harness")));
@@ -6049,6 +6087,9 @@ mod boundary_tests {
             .is_empty());
     }
 
+    /// A kept chat's picture is drawn past its turn (§5.4): the turn answers
+    /// "being made" and ends, the picture lands where its call is, on file,
+    /// and the next turn takes the note that it arrived.
     #[tokio::test]
     async fn a_kept_chats_picture_lands_after_its_turn() {
         let _home = crate::testenv::HomeGuard::new("late-picture");

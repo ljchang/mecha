@@ -478,6 +478,11 @@ pub struct SuccessCue {
     /// in a user message, so it must also be one `is_recall_delivery`
     /// knows, or its delivery is mined as the owner's steer.
     pub stem: String,
+    /// Whether what the host says is private to the owner (their words
+    /// from another conversation, say). The conversation is marked as
+    /// holding private data when such a line is delivered, and not before:
+    /// a host that was waiting and said nothing has put nothing in.
+    pub private: bool,
 }
 
 /// A failed call's tool name and error text, to the input of the harness's
@@ -4864,8 +4869,14 @@ impl Agent {
                                     (cue.text)(name, input, content)
                                 })
                                 .collect();
-                            (!said.is_empty())
-                                .then(|| Block::text(format!("{}{}", cue.stem, said.concat())))
+                            if said.is_empty() {
+                                return None;
+                            }
+                            if cue.private {
+                                taint.private = true;
+                                convo.taint = taint;
+                            }
+                            Some(Block::text(format!("{}{}", cue.stem, said.concat())))
                         })
                         .collect();
                     let mut result_message = Message::tool_results(results);
@@ -18947,6 +18958,7 @@ justification = "echo is off on this box"
         let asked = Arc::new(Mutex::new(Vec::<String>::new()));
         let mut cx = RunContext::clone(agent.context());
         cx.cue_on_success = vec![SuccessCue {
+            private: false,
             text: {
                 let asked = asked.clone();
                 Arc::new(move |tool, input, result| {
@@ -19021,6 +19033,7 @@ justification = "echo is off on this box"
             agent_with_tools(turns, vec![Arc::new(EchoTool)], PermissionMode::Allow);
         agent.cfg.force_final_answer = false;
         let host = |stem: &str, says: &'static str| SuccessCue {
+            private: false,
             text: Arc::new(move |_, _, _| Some(says.to_string())),
             stem: stem.into(),
         };
@@ -19055,6 +19068,39 @@ justification = "echo is off on this box"
             texts,
             vec!["The first host noted.\none", "The second host noted.\ntwo"]
         );
+    }
+
+    /// A host whose line is private to the owner marks the conversation
+    /// when the line is delivered, and a host that was asked and said
+    /// nothing has marked nothing.
+    #[tokio::test]
+    async fn a_private_line_marks_the_conversation_when_it_is_said_and_not_before() {
+        for says in [None, Some("the owner said otherwise")] {
+            let turns = vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t0".into(),
+                        name: "echo".into(),
+                        input: json!({"value": "one"}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("Done.")], StopReason::EndTurn),
+            ];
+            let (mut agent, _) =
+                agent_with_tools(turns, vec![Arc::new(EchoTool)], PermissionMode::Allow);
+            agent.cfg.force_final_answer = false;
+            let mut cx = RunContext::clone(agent.context());
+            cx.cue_on_success = vec![SuccessCue {
+                private: true,
+                text: Arc::new(move |_, _, _| says.map(str::to_string)),
+                stem: "The host noted.\n".into(),
+            }];
+            let mut convo = Conversation::user("do the task");
+            agent.run_in(&cx, &mut convo, None).await.unwrap();
+            assert_eq!(convo.taint.private, says.is_some(), "{says:?}");
+            assert!(!convo.taint.untrusted);
+        }
     }
 
     #[tokio::test]
