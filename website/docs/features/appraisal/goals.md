@@ -177,6 +177,10 @@ separate feature. Legacy unversioned sessions keep their existing recovery behav
 A conversation can be as long as you like. Each revision of the goal context
 carries your sixteen most recent messages (and no more than 64 KiB of them) and
 a count and digest of the earlier ones, which stay in the conversation itself.
+If the conversation is later compacted, an earlier message that has left those
+sixteen survives only as the summary describes it. An instruction that must
+hold for the whole of a long conversation belongs in the charter, which every
+request carries in full.
 An ordinary chat records each model request as digests instead of a copy of the
 request and the conversation, so its transcript grows with the conversation.
 What still refuses, instead of silently discarding context, is 8 MiB in one

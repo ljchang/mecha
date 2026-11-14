@@ -221,7 +221,14 @@ An ordinary chat can be as long as you like: every typed turn is remembered,
 and a message longer than 4,096 bytes is stored as its first 4,096. What bounds
 it is the transcript's size (32 MiB). The graph, task and web-mode profiles
 below are closed profiles and keep their own limits (256 turns, 64 owner
-messages of 2,048 bytes), restricted flags, tool lists and refusals.
+messages of 2,048 bytes), restricted flags, tool lists and refusals. In both
+one-shot and chat capture, tool arguments above 1,024 serialized JSON bytes
+retain their full-input digest, native source pointer and action receipt with
+an explicit oversized status; the memory record omits the argument content.
+This does not make omitted text factual support or prove the action achieved
+its goal. Full arguments remain in the native transcript. A tool result or
+other passage longer than 4,096 bytes is stored as its first 4,096 bytes,
+marked as an excerpt with the full length.
 
 ### Durable todos and planning in CLI memory chat
 
