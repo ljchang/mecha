@@ -4846,6 +4846,15 @@ impl Agent {
                     // the later ones from it (review of #877). A closing run
                     // is told nothing it could no longer act on, and its
                     // host is not asked.
+                    // A call staged in the outbox is not an error and did
+                    // not run: its notice is no call that worked, and the
+                    // hosts are not asked about it.
+                    let staged: std::collections::HashSet<(&str, String)> = trace
+                        [traced.min(trace.len())..]
+                        .iter()
+                        .filter(|t| t.staged)
+                        .map(|t| (t.name.as_str(), t.input.to_string()))
+                        .collect();
                     let uses = response.message.tool_uses();
                     let cued: Vec<Block> = cx
                         .cue_on_success
@@ -4866,6 +4875,9 @@ impl Agent {
                                     let (_, name, input) = uses
                                         .iter()
                                         .find(|(id, _, _)| *id == tool_use_id.as_str())?;
+                                    if staged.contains(&(*name, input.to_string())) {
+                                        return None;
+                                    }
                                     (cue.text)(name, input, content)
                                 })
                                 .collect();
@@ -21603,6 +21615,38 @@ justification = "echo is off on this box"
             ),
             assistant(vec![Block::text("drafted")], StopReason::EndTurn),
         ]
+    }
+
+    /// A staged call's notice is not an error, and the call did not run:
+    /// a host waiting on a call that worked is not asked about it.
+    #[tokio::test]
+    async fn a_staged_call_is_not_a_call_that_worked_to_a_waiting_host() {
+        let (mut agent, _) = agent_with(send_turns(), PermissionMode::ReadOnly);
+        agent.registry.insert(Arc::new(MustNotRun));
+        let (route, _root) = outbox_route("stage-cue");
+        route.set_session_id("sess-43");
+        agent.set_outbox(Arc::clone(&route));
+        let asked = Arc::new(Mutex::new(0usize));
+        let mut cx = RunContext::clone(agent.context());
+        cx.cue_on_success = vec![SuccessCue {
+            text: {
+                let asked = asked.clone();
+                Arc::new(move |_, _, _| {
+                    *asked.lock().unwrap() += 1;
+                    Some("the change has now worked".into())
+                })
+            },
+            stem: "The harness was waiting on that call.\n".into(),
+        }];
+        let mut convo = Conversation::from(vec![Message::user("send it")]);
+        convo.goal_anchor = Some(crate::goal::GoalRef::Task("confirmed".into()));
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert!(outcome.tool_calls[0].staged);
+        assert_eq!(*asked.lock().unwrap(), 0);
+        assert!(!convo.messages.iter().any(|m| m
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::Text { text } if text.contains("has now worked")))));
     }
 
     #[tokio::test]
