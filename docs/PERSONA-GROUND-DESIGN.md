@@ -176,7 +176,9 @@ is threatened (Rossignac-Milon et al. 2021) [read].
 
 ## 4. The ground
 
-One store per persona, beside `memory.db`, holding **items** and an append-only **event log**.
+Per persona, in `memory.db` itself: tables for **items** and an append-only **event log**. In
+the same database as the rows they are made from, so that a forget erases all of it in one
+transaction (§7).
 
 An item:
 
@@ -187,7 +189,7 @@ An item:
 | `meaning` | What an outsider would need to be told. Never put in a prompt as text to say |
 | `coined_by` | The owner, the persona, or both |
 | `source` | Chat and turn range, as memory rows carry it: the deletion key. One chat; see §7 on forgetting |
-| `origin` | Clean or untrusted, from the recorded taint of the stretch it came from. A turn no checkpoint covers is unknown, and unknown loads as untrusted, as memory's does |
+| `origin` | Memory's three values: the owner's (an item, meaning or form the owner wrote or edited, which no later pass may write over), model-written from a clean stretch, or model-written from an untrusted one, by the recorded taint of the stretch. A turn no checkpoint covers is unknown, and unknown loads as untrusted, as memory's does |
 | `due_at` | For a thread or a plan: the time the introducing chat gave for it, if it gave one |
 
 An event is about a **subject**: an item, or a memory record by its `uid` where no item covers
@@ -319,8 +321,14 @@ curves do.
   made from a forgotten `uid` goes with it, `meaning` and forms included, and the record's
   events are erased as D28 rules. And the erase does not fail soft: `forget_chat` reports a
   scene it could not remove and carries on, but an item that outlives its chat keeps riding in
-  prompts, so a ground erase that fails refuses the forget and says why.
-- **Incognito writes nothing.** An incognito chat reads the ground and appends no event.
+  prompts. The ground is in `memory.db`, so its erase is part of the same transaction as the
+  rows': a failure refuses the whole forget before anything is deleted, where a store erased
+  afterwards could only report an error for a forget that had already happened.
+- **Incognito writes nothing.** An incognito chat reads the ground and stores no event. It
+  still has events: they are held in process for the chat's life, folded like any others, and
+  dropped with the room, which is how `PersonaSession::told` behaves today. Without them the
+  told fold is empty on every turn and each line rides every reply, the failure the ledger was
+  built for.
 - **Taint.** An item from an untrusted stretch is a candidate, as an untrusted memory row is:
   it is stored and enters no prompt, neither as background nor as an offer, until the owner
   approves it, and an approved one rides under the untrusted stem. Its `meaning` is model-written
@@ -331,7 +339,9 @@ curves do.
   mark an item said; it cannot mark one taken up. Because that makes every tainted mark a use
   with no uptake, the folds that lengthen an item's rest, retire it or raise its activation
   ignore a `said` from a tainted chat: such a mark quiets the item in that chat and nowhere
-  else, and never moves the form it is referred to by. Marking said silences an item, so it is bounded as
+  else, and never moves the form it is referred to by. In a clean chat any item whose form the reply uses is marked
+  said, offered or not, so a spontaneous re-telling is seen. In a tainted stretch marking said
+  is a way to silence an item, so there it is bounded as
   `PERSONA-LIFE-DESIGN` §4.5 bounds `told`: only a subject this chat's notes recorded as
   offered or as background, matched against that recorded id list and never against a note's
   text, and any other id is refused.
@@ -397,7 +407,8 @@ notes at the branch point.
    is left on.
 5. **The experiment** (§8.2), if ruled in.
 
-Each step is useful alone, and step 1 changes nothing the owner can see.
+Each step is useful alone, and step 1 changes nothing a persona says. It is not invisible:
+the nightly pass writes items, and the owner sees them where memories are curated.
 
 ## 10. Decisions for the owner
 
