@@ -266,6 +266,15 @@ pub struct Scene {
     /// drawn in one pass.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layers: Option<Layers>,
+    /// Where the camera stood for this picture, as far as its calls said:
+    /// what the next camera move is counted from (`picture::Plan::reshot`).
+    /// `None` on a record from before the field, and where no call said.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_shot"
+    )]
+    pub shot: Option<Shot>,
 }
 
 /// A layered picture's build: the plate, each person's cutout and part, and
@@ -292,6 +301,173 @@ pub struct LayerPerson {
     pub seed: u64,
 }
 
+/// How high a camera sits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Height {
+    Low,
+    Eye,
+    Elevated,
+    High,
+}
+
+/// How far a camera stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Distance {
+    #[serde(rename = "close")]
+    CloseUp,
+    #[serde(rename = "medium")]
+    Medium,
+    #[serde(rename = "wide")]
+    Wide,
+}
+
+/// A camera's position as far as it is known: each part `None` where
+/// nothing says. `around` counts eighths of a turn round the subject in the
+/// order of [`Shot::AROUND`], each named by the side of the subject the
+/// camera sees: the front (0), the subject's right (2), the back (4), the
+/// subject's left (6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Shot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub around: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<Height>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance: Option<Distance>,
+}
+
+impl Height {
+    pub const ALL: [Height; 4] = [Height::Low, Height::Eye, Height::Elevated, Height::High];
+
+    /// As a call names it (`scene.view.height`).
+    pub fn id(self) -> &'static str {
+        match self {
+            Height::Low => "low",
+            Height::Eye => "eye",
+            Height::Elevated => "elevated",
+            Height::High => "high",
+        }
+    }
+}
+
+impl Distance {
+    pub const ALL: [Distance; 3] = [Distance::CloseUp, Distance::Medium, Distance::Wide];
+
+    /// As a call names it (`scene.view.distance`).
+    pub fn id(self) -> &'static str {
+        match self {
+            Distance::CloseUp => "close",
+            Distance::Medium => "medium",
+            Distance::Wide => "wide",
+        }
+    }
+}
+
+impl Shot {
+    /// The eight places round a subject as a call names them
+    /// (`scene.view.around`), by the side of the subject the camera sees.
+    pub const AROUND: [&'static str; 8] = [
+        "front",
+        "front_right",
+        "right",
+        "back_right",
+        "back",
+        "back_left",
+        "left",
+        "front_left",
+    ];
+
+    /// This position where it says, and `old` where it is silent.
+    pub fn over(self, old: Shot) -> Shot {
+        Shot {
+            around: self.around.or(old.around),
+            height: self.height.or(old.height),
+            distance: self.distance.or(old.distance),
+        }
+    }
+
+    /// A call's `view`: an object of `around`, `height` and `distance`, each
+    /// optional and each one of its closed names. A name outside them is an
+    /// error that says the names.
+    pub fn of_json(v: &serde_json::Value) -> std::result::Result<Shot, String> {
+        let obj = v
+            .as_object()
+            .ok_or("`view` is an object of `around`, `height` and `distance`")?;
+        let named = |key: &str, names: &[&str]| -> std::result::Result<Option<usize>, String> {
+            match obj.get(key) {
+                None | Some(serde_json::Value::Null) => Ok(None),
+                Some(serde_json::Value::String(t)) if t.trim().is_empty() => Ok(None),
+                Some(serde_json::Value::String(t)) => {
+                    let want = t.trim().to_lowercase().replace(['-', ' '], "_");
+                    names
+                        .iter()
+                        .position(|n| *n == want)
+                        .map(Some)
+                        .ok_or_else(|| format!("`view.{key}` is one of: {}", names.join(", ")))
+                }
+                Some(_) => Err(format!("`view.{key}` is one of: {}", names.join(", "))),
+            }
+        };
+        let heights: Vec<&str> = Height::ALL.iter().map(|h| h.id()).collect();
+        let distances: Vec<&str> = Distance::ALL.iter().map(|d| d.id()).collect();
+        Ok(Shot {
+            around: named("around", &Self::AROUND)?.map(|i| i as u8),
+            height: named("height", &heights)?.map(|i| Height::ALL[i]),
+            distance: named("distance", &distances)?.map(|i| Distance::ALL[i]),
+        })
+    }
+
+    /// Words for the record's `camera` when a call gave a `view` and no
+    /// words of its own: plain, and only what the view says.
+    pub fn said(self) -> String {
+        // Each phrase is one `picture::Shot::read` and `picture::faces_away`
+        // read back as the part it says: the planner sees only the words.
+        const AROUND_SAID: [&str; 8] = [
+            "from the front",
+            "a three quarter view from the right",
+            "a side view from the right",
+            "a rear quarter view from the right",
+            "from behind",
+            "a rear quarter view from the left",
+            "a side view from the left",
+            "a three quarter view from the left",
+        ];
+        let mut parts: Vec<&str> = Vec::new();
+        if let Some(a) = self.around {
+            parts.push(AROUND_SAID[usize::from(a % 8)]);
+        }
+        if let Some(h) = self.height {
+            parts.push(match h {
+                Height::Low => "the camera at a low angle",
+                Height::Eye => "the camera at eye level",
+                Height::Elevated => "the camera slightly above",
+                Height::High => "the camera at a high angle",
+            });
+        }
+        if let Some(d) = self.distance {
+            parts.push(match d {
+                Distance::CloseUp => "a close up",
+                Distance::Medium => "a medium shot",
+                Distance::Wide => "a wide shot",
+            });
+        }
+        parts.join(", ")
+    }
+}
+
+/// A record's camera position, read leniently: a name this build does not
+/// know reads as no position, and the rest of the record survives.
+fn lenient_shot<'de, D>(d: D) -> std::result::Result<Option<Shot>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(v.filter(|v| !v.is_null())
+        .and_then(|v| serde_json::from_value::<Shot>(v).ok())
+        .filter(|s| s.around.is_none_or(|a| a < 8)))
+}
+
 /// What a call says about a scene: only the fields it sends.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SceneChange {
@@ -302,6 +478,9 @@ pub struct SceneChange {
     pub together: Option<String>,
     pub text: Option<Vec<Words>>,
     pub people: Vec<PersonChange>,
+    /// Where the camera stands, as the call typed it (`scene.view`): read
+    /// ahead of the camera's words, which say it loosely or not at all.
+    pub view: Option<Shot>,
 }
 
 /// What a call says about one person: only the fields it sends.
@@ -386,6 +565,7 @@ impl Scene {
             seed: _,
             chat: _,
             layers,
+            shot: _,
         } = self;
         let mut o = Origin::Clean;
         if let Some(l) = layers {
@@ -461,6 +641,18 @@ impl Scene {
         }
         set_text(&mut next.light, &change.light, &mut d.light);
         set_text(&mut next.camera, &change.camera, &mut d.camera);
+        // Where the camera stands now: the call's typed view and what its
+        // camera words say of it, over what the record held. Words that say
+        // nothing of a position leave the record's as it was.
+        // The view leads the words and the words fill what it leaves out,
+        // as `camera::target` reads the same call.
+        let asked = change
+            .view
+            .unwrap_or_default()
+            .over(change.camera.as_deref().map(Shot::read).unwrap_or_default());
+        if asked != Shot::default() {
+            next.shot = Some(asked.over(prev.shot.unwrap_or_default()));
+        }
         set_text(&mut next.style, &change.style, &mut d.style);
         if let Some(t) = &change.text {
             if next.text.as_ref().is_none_or(|f| f.value != *t) {
@@ -1543,5 +1735,143 @@ mod tests {
         assert!(!spoken.contains("Continue on a picture"), "{spoken}");
         assert!(spoken.contains("call image_generate.)"), "{spoken}");
         assert!(stem_of(&n).is_some());
+    }
+    /// The record keeps where the camera stood, each call's position laid
+    /// over the last; a view is read ahead of the words; and a position
+    /// written by a later build reads as none, the record surviving.
+    #[test]
+    fn the_record_keeps_where_the_camera_stood() {
+        let change = |camera: &str, view: Option<Shot>| SceneChange {
+            camera: Some(camera.into()),
+            view,
+            ..Default::default()
+        };
+        let (first, _) = Scene::apply(
+            None,
+            &change("a wide shot from behind", None),
+            Origin::Clean,
+            true,
+        );
+        assert_eq!(
+            first.shot,
+            Some(Shot {
+                around: Some(4),
+                height: None,
+                distance: Some(Distance::Wide),
+            })
+        );
+        // Words that name no position leave it; a view fills what it says.
+        let (same, d) = Scene::apply(Some(&first), &change("softer", None), Origin::Clean, true);
+        assert!(d.camera);
+        assert_eq!(same.shot, first.shot);
+        let low = Shot {
+            height: Some(Height::Low),
+            ..Default::default()
+        };
+        let (next, _) = Scene::apply(
+            Some(&first),
+            &change("so the ceiling shows", Some(low)),
+            Origin::Clean,
+            true,
+        );
+        assert_eq!(
+            next.shot,
+            Some(Shot {
+                around: Some(4),
+                height: Some(Height::Low),
+                distance: Some(Distance::Wide),
+            })
+        );
+        // A view that names one part leaves the rest to the words beside it.
+        let side = Shot {
+            around: Some(2),
+            ..Default::default()
+        };
+        let (close, _) = Scene::apply(
+            None,
+            &change("a close up from the side", Some(side)),
+            Origin::Clean,
+            true,
+        );
+        assert_eq!(
+            close.shot,
+            Some(Shot {
+                around: Some(2),
+                height: None,
+                distance: Some(Distance::CloseUp),
+            })
+        );
+        let json = serde_json::to_value(&next).unwrap();
+        assert_eq!(
+            json["shot"],
+            serde_json::json!({"around": 4, "height": "low", "distance": "wide"})
+        );
+        let back: Scene = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(back.shot, next.shot);
+        for later in [
+            serde_json::json!({"around": 4, "height": "orbital"}),
+            serde_json::json!({"around": 9}),
+            serde_json::json!("behind"),
+        ] {
+            let mut v = json.clone();
+            v["shot"] = later;
+            let read: Scene = serde_json::from_value(v).unwrap();
+            assert_eq!(read.shot, None);
+            assert_eq!(read.camera, next.camera);
+        }
+    }
+
+    #[test]
+    fn a_view_reads_its_closed_names_and_says_itself_plainly() {
+        let v = |j: serde_json::Value| Shot::of_json(&j);
+        assert_eq!(
+            v(serde_json::json!({"around": "Back-Left", "height": "high", "distance": "close"})),
+            Ok(Shot {
+                around: Some(5),
+                height: Some(Height::High),
+                distance: Some(Distance::CloseUp),
+            })
+        );
+        assert_eq!(v(serde_json::json!({})), Ok(Shot::default()));
+        assert_eq!(
+            v(serde_json::json!({"height": null, "around": ""})),
+            Ok(Shot::default())
+        );
+        assert!(v(serde_json::json!({"around": "sideways"}))
+            .unwrap_err()
+            .contains("front, front_right"));
+        assert!(v(serde_json::json!("back")).is_err());
+        let said = Shot {
+            around: Some(4),
+            height: Some(Height::Low),
+            distance: None,
+        }
+        .said();
+        assert_eq!(said, "from behind, the camera at a low angle");
+        // What a view says of itself reads back as itself, at every
+        // position: the planner turns the cast by these words alone.
+        for around in 0..8u8 {
+            for height in Height::ALL {
+                for distance in Distance::ALL {
+                    let shot = Shot {
+                        around: Some(around),
+                        height: Some(height),
+                        distance: Some(distance),
+                    };
+                    let said = shot.said();
+                    assert_eq!(Shot::read(&said), shot, "{said}");
+                    assert_eq!(
+                        crate::picture::faces_away(&said),
+                        (3..=5).contains(&around),
+                        "{said}"
+                    );
+                }
+            }
+            let only = Shot {
+                around: Some(around),
+                ..Default::default()
+            };
+            assert_eq!(Shot::read(&only.said()), only);
+        }
     }
 }

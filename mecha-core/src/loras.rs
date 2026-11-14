@@ -243,6 +243,86 @@ pub struct Entry {
     pub trigger: Option<String>,
     /// Clips only: on every clip in a mode it has a file for, never offered.
     pub always: bool,
+    /// What the harness uses this entry for by itself, apart from any list
+    /// the owner puts it on ([`Role`]). `None` for an ordinary entry.
+    pub role: Option<Role>,
+    /// A camera entry's words for each position; `Some` exactly when `role`
+    /// is [`Role::Camera`].
+    pub camera: Option<CameraWords>,
+}
+
+/// A job the harness has for one kind of LoRA, which the owner assigns to an
+/// entry of theirs with `role = "…"`. The registry stays the owner's: code
+/// knows the job, never which file does it or the words that wake it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// Draws a finished picture again from another camera position, keeping
+    /// what is in it (`picture::Plan::reshot`). A picture entry with a
+    /// `trigger` and a `camera` table: the position is said after the
+    /// trigger, in that table's words ([`CameraWords`]).
+    Camera,
+}
+
+/// How one camera LoRA says a position: its own words for each place round
+/// the subject, each height and each distance. The owner's, from the
+/// entry's `camera` table, since a LoRA answers only to the phrases it was
+/// trained on and those are no more this code's to hold than its trigger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CameraWords {
+    /// Eight, from no turn round to seven eighths of one, to the camera's
+    /// own right (`picture::Move::turn`).
+    pub around: Vec<String>,
+    /// Four, lowest first (`picture::Height::index`).
+    pub height: Vec<String>,
+    /// Three, nearest first (`picture::Distance::index`).
+    pub distance: Vec<String>,
+}
+
+impl CameraWords {
+    /// A move, as this LoRA is asked for it: round, then height, then
+    /// distance.
+    pub fn say(&self, to: &crate::picture::Move) -> String {
+        format!(
+            "{} {} {}",
+            self.around[usize::from(to.turn % 8)],
+            self.height[to.height.index()],
+            self.distance[to.distance.index()]
+        )
+    }
+
+    fn read(t: &toml::Table) -> Result<CameraWords> {
+        let list = |key: &str, n: usize| -> Result<Vec<String>> {
+            let words: Vec<String> = t
+                .get(key)
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| anyhow!("`camera.{key}` is a list of {n} phrases"))?
+                .iter()
+                .map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .collect::<Option<_>>()
+                .ok_or_else(|| anyhow!("`camera.{key}` is a list of {n} phrases"))?;
+            if words.len() != n
+                || words
+                    .iter()
+                    .any(|w| w.is_empty() || w.chars().count() > 80 || w.contains(['\n', '\r']))
+            {
+                bail!("`camera.{key}` is a list of {n} phrases, each up to 80 characters");
+            }
+            Ok(words)
+        };
+        Ok(CameraWords {
+            around: list("around", 8)?,
+            height: list("height", 4)?,
+            distance: list("distance", 3)?,
+        })
+    }
+}
+
+impl Role {
+    pub fn id(self) -> &'static str {
+        match self {
+            Role::Camera => "camera",
+        }
+    }
 }
 
 impl Entry {
@@ -352,6 +432,32 @@ fn entry(t: &toml::Table, legacy: bool) -> Result<Entry> {
     if always && model == Family::QwenImage {
         bail!("`always` is for clips; a LoRA wanted on every picture goes on the chat's list");
     }
+    let (role, camera) = match s("role") {
+        None => {
+            if t.contains_key("camera") {
+                bail!("a `camera` table goes with `role = \"camera\"`");
+            }
+            (None, None)
+        }
+        Some("camera") => {
+            if model != Family::QwenImage {
+                bail!("`role = \"camera\"` is for a picture LoRA");
+            }
+            if trigger.is_none() {
+                bail!(
+                    "`role = \"camera\"` needs a `trigger`: the camera's position is said after it"
+                );
+            }
+            let words = t
+                .get("camera")
+                .and_then(|v| v.as_table())
+                .ok_or_else(|| {
+                    anyhow!("`role = \"camera\"` needs a `camera` table: `around` (8 phrases), `height` (4) and `distance` (3)")
+                })?;
+            (Some(Role::Camera), Some(CameraWords::read(words)?))
+        }
+        Some(other) => bail!("`role` is \"camera\" or left out, not {other:?}"),
+    };
     Ok(Entry {
         name,
         about,
@@ -362,6 +468,8 @@ fn entry(t: &toml::Table, legacy: bool) -> Result<Entry> {
         strength,
         trigger,
         always,
+        role,
+        camera,
     })
 }
 
@@ -819,6 +927,14 @@ pub fn write_entry(
             if let Some(prefix) = slot.decor().prefix().cloned() {
                 table.decor_mut().set_prefix(prefix);
             }
+            // So do its `role` and that role's words, which the page has no
+            // field for: an edit there must not quietly take the job away
+            // from the entry.
+            for kept in ["role", "camera"] {
+                if let Some(item) = slot.get(kept) {
+                    table.insert(kept, item.clone());
+                }
+            }
             *slot = table;
             i
         }
@@ -1101,6 +1217,12 @@ pub struct Picked {
     /// The registry did not read and none had been read before, so nothing
     /// applied: said as that, never as entries the owner deleted.
     pub unreadable: bool,
+    /// The list's camera entry ([`Role::Camera`]), usable: never one of
+    /// `applied`, since it rides no ordinary picture, only a re-shoot
+    /// (`picture::Plan::reshot`). On the list is how the owner switches the
+    /// re-shoot on for a chat or a persona, as any LoRA is switched; off it,
+    /// a camera-only change is restaged as if the registry held none.
+    pub camera: Option<(PictureLora, CameraWords)>,
 }
 
 /// The picture entries `names` resolve to in `loaded`, in list order.
@@ -1111,6 +1233,22 @@ pub fn for_picture(names: &[String], damaged: bool, loaded: &Loaded) -> Picked {
     };
     for n in names {
         match loaded.entries.iter().find(|(e, _)| &e.name == n) {
+            // By its role, never in the chain: the first usable one listed.
+            Some((e, st)) if e.model == Family::QwenImage && e.role == Some(Role::Camera) => {
+                match (&e.file, &e.camera, st.is_checked()) {
+                    (Some(file), Some(words), true) => {
+                        out.camera.get_or_insert((
+                            PictureLora {
+                                file: file.clone(),
+                                strength: e.strength,
+                                trigger: e.trigger.clone(),
+                            },
+                            words.clone(),
+                        ));
+                    }
+                    _ => out.refused += 1,
+                }
+            }
             Some((e, st)) if e.model == Family::QwenImage => match (&e.file, st.is_checked()) {
                 (Some(file), true) => out.applied.push(PictureLora {
                     file: file.clone(),
@@ -1123,6 +1261,30 @@ pub fn for_picture(names: &[String], damaged: bool, loaded: &Loaded) -> Picked {
         }
     }
     out
+}
+
+/// The owner's camera LoRA and its words, if the registry holds a usable
+/// one: the first picture entry with `role = "camera"` whose file checked,
+/// whatever list it is on. A replay's arm (`ToolCtx::reshoot_from`): a
+/// replay reads no chat's or persona's list, and the arm says what it
+/// measures. A live picture asks its own list ([`Picked::camera`]).
+pub fn camera(loaded: &Loaded) -> Option<(PictureLora, CameraWords)> {
+    loaded
+        .entries
+        .iter()
+        .filter(|(e, st)| {
+            e.role == Some(Role::Camera) && e.model == Family::QwenImage && st.is_checked()
+        })
+        .find_map(|(e, _)| {
+            Some((
+                PictureLora {
+                    file: e.file.clone()?,
+                    strength: e.strength,
+                    trigger: e.trigger.clone(),
+                },
+                e.camera.clone()?,
+            ))
+        })
 }
 
 /// A file with a safetensors header naming `keys` and no tensors: what a
@@ -1316,6 +1478,82 @@ model = "qwen-image"
 file = "w2.safetensors"
 "#;
 
+    /// A role is the owner's to give an entry, and held to what the job
+    /// needs: a picture LoRA with a trigger and its own words for every
+    /// position.
+    #[test]
+    fn a_camera_role_is_a_picture_entry_with_a_trigger_and_its_words() {
+        const WORDS: &str = "[lora.camera]\n\
+            around = [\"n\", \"ne\", \"e\", \"se\", \"s\", \"sw\", \"w\", \"nw\"]\n\
+            height = [\"floor\", \"level\", \"raised\", \"roof\"]\n\
+            distance = [\"near\", \"mid\", \"far\"]\n";
+        let entry = |model: &str, extra: &str| {
+            format!(
+                "[[lora]]\nname = \"orbit\"\nabout = \"a made-up camera mover\"\n\
+                 model = \"{model}\"\nfile = \"orbit.safetensors\"\n{extra}"
+            )
+        };
+        let good = entry(
+            "qwen-image",
+            &format!("trigger = \"<orbit>\"\nrole = \"camera\"\n{WORDS}"),
+        );
+        let (entries, skipped) = parse(&good, false).unwrap();
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(entries[0].role, Some(Role::Camera));
+        let words = entries[0].camera.clone().unwrap();
+        let to = crate::picture::Move {
+            turn: 4,
+            height: crate::picture::Height::Low,
+            distance: crate::picture::Distance::Wide,
+        };
+        assert_eq!(words.say(&to), "s floor far");
+        let (entries, _) = parse(&entry("qwen-image", "trigger = \"<orbit>\"\n"), false).unwrap();
+        assert_eq!((entries[0].role, entries[0].camera.clone()), (None, None));
+        // On a picture's list it is the list's camera, never one of the
+        // LoRAs the picture loads; off the list it is nothing.
+        let (entries, _) = parse(&good, false).unwrap();
+        let loaded = Loaded {
+            entries: entries.into_iter().map(|e| (e, Status::Checked)).collect(),
+            source: Source::None,
+            ignored: None,
+            skipped: Vec::new(),
+            unreadable: None,
+        };
+        let on = for_picture(&["orbit".to_string()], false, &loaded);
+        assert!(on.applied.is_empty() && on.camera.is_some(), "{on:?}");
+        assert_eq!((on.gone, on.refused), (0, 0));
+        let off = for_picture(&[], false, &loaded);
+        assert!(off.camera.is_none());
+        let short = WORDS.replace(", \"nw\"", "");
+        for (bad, why) in [
+            (format!("role = \"camera\"\n{WORDS}"), "needs a `trigger`"),
+            (
+                "trigger = \"<orbit>\"\nrole = \"camera\"\n".to_string(),
+                "needs a `camera` table",
+            ),
+            (
+                format!("trigger = \"<orbit>\"\nrole = \"camera\"\n{short}"),
+                "list of 8 phrases",
+            ),
+            (
+                format!("trigger = \"<orbit>\"\nrole = \"zoom\"\n{WORDS}"),
+                "`role` is \"camera\"",
+            ),
+            (format!("trigger = \"<orbit>\"\n{WORDS}"), "goes with `role"),
+        ] {
+            let (entries, skipped) = parse(&entry("qwen-image", &bad), false).unwrap();
+            assert!(entries.is_empty(), "{bad}");
+            assert!(skipped[0].contains(why), "{skipped:?}");
+        }
+        let clip = entry(
+            "h3",
+            &format!("trigger = \"<orbit>\"\nrole = \"camera\"\n{WORDS}"),
+        );
+        let (entries, skipped) = parse(&clip, false).unwrap();
+        assert!(entries.is_empty());
+        assert!(skipped[0].contains("picture LoRA"), "{skipped:?}");
+    }
+
     #[test]
     fn the_shared_registry_needs_a_model_and_keeps_always_to_clips() {
         let (entries, skipped) = parse(SAMPLE, false).unwrap();
@@ -1475,6 +1713,42 @@ file = "gone.safetensors"
         assert_eq!(none.entries[0].1, Status::NoFolder);
         assert!(none.problems(Family::QwenImage)[0].contains("[image] loras_dir"));
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The page has no field for an entry's role or that role's words, so
+    /// an edit from it keeps both: without them the entry stops being the
+    /// camera and every camera-only change restages with nothing said.
+    #[test]
+    fn an_edit_from_the_page_keeps_an_entrys_role_and_its_words() {
+        let home = scratch();
+        std::fs::write(
+            home.join(FILE),
+            "[[lora]]\nname = \"orbit\"\nabout = \"a made-up camera mover\"\n\
+             model = \"qwen-image\"\nfile = \"orbit.safetensors\"\ntrigger = \"<orbit>\"\n\
+             role = \"camera\"\n[lora.camera]\n\
+             around = [\"n\", \"ne\", \"e\", \"se\", \"s\", \"sw\", \"w\", \"nw\"]\n\
+             height = [\"floor\", \"level\", \"raised\", \"roof\"]\n\
+             distance = [\"near\", \"mid\", \"far\"]\n",
+        )
+        .unwrap();
+        let (before, _) = parse(&std::fs::read_to_string(home.join(FILE)).unwrap(), false).unwrap();
+        assert_eq!(before[0].role, Some(Role::Camera));
+        let edited = EntryInput {
+            name: "circle".into(),
+            about: "the same mover, renamed".into(),
+            file: Some("orbit.safetensors".into()),
+            strength: Some(serde_json::json!(0.9)),
+            trigger: Some("<orbit>".into()),
+            ..Default::default()
+        };
+        write_entry(&home, Family::QwenImage, &edited, Some("orbit")).unwrap();
+        let (after, skipped) =
+            parse(&std::fs::read_to_string(home.join(FILE)).unwrap(), false).unwrap();
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(after[0].name, "circle");
+        assert_eq!(after[0].role, Some(Role::Camera));
+        assert_eq!(after[0].camera, before[0].camera);
+        assert!(after[0].camera.is_some());
     }
 
     #[test]

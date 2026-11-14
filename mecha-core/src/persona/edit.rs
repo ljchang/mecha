@@ -298,7 +298,11 @@ in the frame; `remove` to take \
 someone out; someone new with their `who`, `wearing` and `doing`; `together` for what the people \
 in the picture do with each other, as one line naming them; `camera` for the framing, distance \
 and angle (a close up, from behind, a full body shot, from above) in the owner's own words, with \
-what the shot is meant to show when they say it; `light`, `setting` when those change; `look` \
+what the shot is meant to show when they say it, and beside it `view` for where that puts \
+the camera: `around` is the side of the subject the camera sees (back for from behind, left \
+or right for a profile, the quarters for in between), `height` is low for looking up from \
+below and high for looking down from above, `distance` is close, medium or wide, and only \
+the parts the words ask for; `light`, `setting` when those change; `look` \
 when the owner asks for a different look (a style, a medium, an era; never framing or an angle, \
 which are `camera`), copied short in the owner's own words; `retouch` for a small change to something that is not a \
 person. \
@@ -322,6 +326,11 @@ pub fn extraction_schema() -> serde_json::Value {
             }, "required": ["who"]}},
             "together": {"type": "string"},
             "camera": {"type": "string"},
+            "view": {"type": "object", "properties": {
+                "around": {"type": "string", "enum": crate::scene::Shot::AROUND},
+                "height": {"type": "string", "enum": crate::scene::Height::ALL.map(|h| h.id())},
+                "distance": {"type": "string", "enum": crate::scene::Distance::ALL.map(|d| d.id())}
+            }},
             "light": {"type": "string"},
             "setting": {"type": "string"},
             "look": {"type": "string"},
@@ -783,6 +792,13 @@ pub fn read_extraction_for(
         .map_err(|e| format!("the answer did not read as JSON: {e}"))?;
     let obj = v.as_object().ok_or("the answer was not an object")?;
     let mut scene = serde_json::Map::new();
+    // The camera's typed position rides as it was answered: the tool reads
+    // it again, and leaves out one that does not read.
+    if let Some(view) = obj.get("view").filter(|v| v.is_object()) {
+        if view.as_object().is_some_and(|o| !o.is_empty()) {
+            scene.insert("view".into(), view.clone());
+        }
+    }
     for k in ["together", "camera", "light", "setting"] {
         match obj.get(k) {
             None | Some(serde_json::Value::Null) => {}
@@ -1883,6 +1899,15 @@ mod tests {
         );
         assert_eq!(e.summary(), "drawn again");
         // Keys a schema-held model sends empty are nothing asked, too.
+        // A typed view rides to the tool as answered; an empty one does not.
+        let e = read_extraction(
+            r#"{"camera": "from under the table", "view": {"height": "low"}}"#,
+            &known,
+        )
+        .unwrap();
+        assert_eq!(e.scene["view"], serde_json::json!({"height": "low"}));
+        let e = read_extraction(r#"{"camera": "closer", "view": {}}"#, &known).unwrap();
+        assert!(e.scene.get("view").is_none());
         let e = read_extraction(r#"{"light": null, "camera": "", "people": []}"#, &known).unwrap();
         assert_eq!(e.call("p"), serde_json::json!({"picture": "p"}));
         // A newline in what the owner typed never moves the result's line.

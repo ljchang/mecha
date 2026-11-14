@@ -90,6 +90,7 @@
           onchange={() => save(false, toggled(kept, c.name, view.max))}
         />
         <span class="name">{c.name}</span>
+        {#if c.role === 'camera'}<span class="hint inline">camera: on, a change of camera alone is shot again from the picture, in two renders</span>{/if}
         <span class="hint inline" class:bad={c.status !== 'checked'}>{c.status === 'checked' ? c.about : c.reason}</span>
       </label>
     {:else}

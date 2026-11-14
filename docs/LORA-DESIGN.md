@@ -107,6 +107,26 @@ frames = "wave_fl.safetensors"
 strength = 0.8
 ```
 
+- **An entry may be given a job** (`role = "…"`, `loras::Role`). The one
+  job so far is `camera`: a picture entry that draws a finished picture
+  again from another camera position. Such an entry carries a `trigger` and
+  a `[lora.camera]` table of its own phrases, `around` (eight, from no turn
+  round to the camera's right), `height` (four, lowest first) and `distance`
+  (three, nearest first), since a LoRA answers only to the phrases it was
+  trained on (`loras::CameraWords`). It is switched as any picture LoRA is: named
+  on a chat's list or a persona's (§5), a camera-only change to a picture
+  is shot again from the picture (`picture::Plan::reshot`,
+  `loras::Picked::camera`); off the list, the change is restaged as if the
+  registry held none. Registered alone it does nothing, as a new entry never
+  does (owner, 2026-11-13: it softens skin and hair, IMAGE-DESIGN §17, so
+  it is the owner's to turn on per chat and per persona). It is never one
+  of the LoRAs an ordinary picture loads, on the list or not, and it takes
+  one of the list's places. A re-shoot is then drawn once more with no LoRA
+  at all, the owner's own included, for the fine detail the camera LoRA
+  softens (IMAGE-DESIGN §17.4), and that second pass is kept only where
+  its faces are the first pass's (§17.5). A replay reads no list: its `--reshoot` arm
+  names the registry and takes the entry by its job (`loras::camera`). An entry whose table does not read is not a
+  camera entry, said on the page like any entry that does not read.
 - **`model` is written by the owner and checked against the file.** A file
   whose keys say otherwise costs that entry, with the reason on the page and
   on stderr, never the whole registry. That is the rule `loras.rs` already
