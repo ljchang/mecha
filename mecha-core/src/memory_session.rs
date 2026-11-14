@@ -228,8 +228,9 @@ impl SessionMemory {
     ///
     /// Whether an episode quotes outside content is in its own JSON
     /// (`Episode::external`), not in the store's provenance for the record.
-    /// So only [`Self::episodes`] may read these: it hands them to
-    /// `tool::episodes`, which labels what it delivers. A reader that served
+    /// So only [`Self::episodes`] and [`Self::episodes_with_failures`] may
+    /// read these: each hands them to `tool::episodes`, which labels what
+    /// it delivers. A reader that served
     /// the record's text as evidence would serve it unlabelled.
     pub fn retain_episodes(&self, episodes: &[crate::tool::episodes::Episode]) -> Result<usize> {
         let mut memory = self.memory()?;
@@ -287,6 +288,13 @@ impl SessionMemory {
             }
         }
         Ok((episodes, unreadable))
+    }
+    /// The store's episodes with the outcomes of failed tasks kept
+    /// (`tool::episodes::fold_all`), for a reader that hands them over as
+    /// failures.
+    pub fn episodes_with_failures(&self) -> Result<(Vec<crate::tool::episodes::Episode>, usize)> {
+        let (episodes, unreadable) = self.episode_records()?;
+        Ok((crate::tool::episodes::fold_all(episodes), unreadable))
     }
     /// The store's episodes, one per finding (`tool::episodes::fold`).
     pub fn episodes(&self) -> Result<(Vec<crate::tool::episodes::Episode>, usize)> {

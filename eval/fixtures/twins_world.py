@@ -1,17 +1,26 @@
 """The linked-change lifetime (`docs/MEMORY-BENCHMARK-DESIGN.md` §4, far
 analog, second kind): a change that has to be made twice, on a thing and on
-a second thing the first thing's own record names. Two pairs of services.
+a second thing the first thing's own record names. Three pairs of services.
 
-In each pair the **experience** face documents the rule and marks a change
-whose twin disagrees with a code; the **probe** face has other tools, other
-field names, no documentation, and answers every change the same way, so a
-run that changes one thing only is told nothing. Every record also names
-something that is not a twin.
+In each pair the **experience** face has documentation that states the rule,
+and shows a change whose twin disagrees in one of two ways: a code in the
+change's answer (the first two pairs), or only a field in the thing's record
+(the third). The **probe** face has other tools, other field names, no
+documentation, and answers every change the same way, so a run that changes
+one thing only is told nothing. Every record also names something that is
+not a twin.
 
 - `signs` → `valves`: the development pair.
 - `accounts` → `lamps`: **held out.** Written before the linked kind in
   `tool::concepts` was run on anything, and run once. Its change takes a
   number and its records have more fields.
+
+- `berths` → `pumps`: **held out** for the reappraisal of failed tasks
+  (`tool::episodes::Episodes::reappraising`). Written before that was run on
+  anything, and run once. The experience face answers a change on one berth
+  with a plain `ok` and no code: the only trace of the omission is a
+  `state` field in the record, and its guide is the only thing that says
+  what the field means.
 
 Fictional names only; the agent cannot read this file.
 """
@@ -69,6 +78,33 @@ FACES = {
         "things": {
             "Quay steps": ("L-4", "L-19", {"level": 2, "pole": "P-33", "circuit": "C-2", "lens": "clear"}),
             "Ferry gate": ("L-31", "L-36", {"level": 4, "pole": "P-07", "circuit": "C-5", "lens": "amber"}),
+        },
+    },
+    "berths": {
+        "kind": "string",
+        "lookup": ("bt_find", "name", "Find a berth by its name."),
+        "change": ("bt_class", "berth", "class", "Set the class of vessel a berth takes."),
+        "docs": ("bt_guide", "section", "Read the berth guide by section. An empty section lists the sections.", {
+            "": "Sections: state, berths. Ask for one by name.",
+            "berths": "A berth is addressed by its code. bt_find turns a berth's name into its record.",
+            "state": "A berth's record shows `state`: `paired` or `split`. Every berth shares a fender line with a partner berth, named in its record under `partner`, and both must take the same class of vessel. Set the same class on both with bt_class: a pair left `split` is closed by the harbour master.",
+        }),
+        "code": None, "status": ("state", "paired", "split"),
+        "id": "berth", "value": "class", "twin": "partner", "extra": [],
+        "things": {
+            "Coal wharf": ("W-6", "W-8", {"class": "barge", "pier": "R-2"}),
+            "Fish dock": ("W-15", "W-17", {"class": "barge", "pier": "R-5"}),
+        },
+    },
+    "pumps": {
+        "kind": "string",
+        "lookup": ("pm_get", "tag", "Get a pump by its tag."),
+        "change": ("pm_duty", "pump", "duty", "Set a pump's duty."),
+        "docs": None, "code": None,
+        "id": "pump", "value": "duty", "twin": "tied", "extra": ["pm_aux_1", "pm_aux_2"],
+        "things": {
+            "Bilge east": ("U-3", "U-11", {"duty": "idle", "sump": "M-7", "make": "vane"}),
+            "Ballast aft": ("U-24", "U-29", {"duty": "idle", "sump": "M-2", "make": "gear"}),
         },
     },
 }

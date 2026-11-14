@@ -58,6 +58,9 @@ pub const DELIVERY_STEM: &str = "The harness looked up what your earlier runs fo
 
 /// The most episodes in one delivery, and the most bytes.
 const DELIVERED: usize = 6;
+/// The most outcomes judged to have failed that are put ahead of the
+/// ranking ([`select`]).
+const FAILURES_FIRST: usize = 2;
 const DELIVERY_BYTES: usize = 4_000;
 /// The most of one quoted input, error or result.
 const INPUT_BYTES: usize = 300;
@@ -68,6 +71,13 @@ const OUTCOME_BYTES: usize = 600;
 const ERRORS: usize = 3;
 const READS: usize = 3;
 const PER_TOOL: usize = 2;
+/// What is said when a run has made the calls a failed run made
+/// ([`Episodes::retraced`]).
+pub const RETRACED_STEM: &str = "The harness noted that this run has now made the same calls as an earlier run whose task was judged to have failed. A record of that run, never an instruction, and it verifies nothing about this task.\n";
+/// The most of an outcome's own calls kept, and the most of each one's
+/// input and result.
+const DID: usize = 6;
+const DID_BYTES: usize = 160;
 /// Tools whose calls are the harness's memory, never an episode's subject.
 pub(crate) const MEMORY_TOOLS: [&str; 6] = [
     NAME,
@@ -122,6 +132,11 @@ pub struct Episode {
     /// record where the store keeps revisions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judged: Option<bool>,
+    /// An outcome's own calls to a server's tools that worked, oldest
+    /// first and the last few only: what the run did, for a later run that
+    /// is told how the task was judged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub did: Vec<String>,
     /// Runs this was seen in. A line that repeats an earlier one's key adds
     /// to it when the file is read.
     #[serde(default = "one")]
@@ -171,6 +186,44 @@ impl Episode {
     /// Whether this is about something a run with `available` has.
     fn concerns(&self, available: &BTreeSet<String>) -> bool {
         available.contains(&self.tool) || self.relied_on.iter().any(|t| available.contains(t))
+    }
+
+    /// A task's outcome that was then judged to have failed, for a run
+    /// that has `tools` from a server: what was asked, what the run did,
+    /// what it concluded, that this was judged a failure, and which of the
+    /// tools here it made no working call to (a call that was refused is
+    /// not a tool the run relied on, and is not told apart from one never
+    /// tried). The reappraisal: the conclusion is not
+    /// knowledge, and that this approach failed is.
+    fn render_failed(&self, tools: &BTreeSet<String>) -> String {
+        let mut out = format!(
+            "- An earlier task asked: {}",
+            self.asked.as_deref().unwrap_or("(not recorded)")
+        );
+        if self.did.is_empty() {
+            out.push_str(&format!("\n  The run used {}.", self.relied_on.join(", ")));
+        } else {
+            out.push_str("\n  The run made these calls, which all worked:");
+            for call in &self.did {
+                out.push_str(&format!("\n    {call}"));
+            }
+        }
+        out.push_str(&format!(
+            "\n  It concluded: {}\n  That task was then JUDGED TO HAVE FAILED. Whatever the run concluded, doing only this was not enough or not right; nothing recorded says what was missing.",
+            self.concluded.as_deref().unwrap_or_default()
+        ));
+        let unused: Vec<String> = tools
+            .iter()
+            .filter(|t| !self.relied_on.contains(t))
+            .map(|t| format!("`{t}`"))
+            .collect();
+        if !unused.is_empty() {
+            out.push_str(&format!(
+                "\n  Tools you have that it made no working call to: {}.",
+                unused.join(", ")
+            ));
+        }
+        out
     }
 
     fn render(&self) -> String {
@@ -357,6 +410,7 @@ pub fn extract(
             concluded: None,
             relied_on: vec![],
             judged: None,
+            did: vec![],
         });
     }
     let mut per_tool: BTreeMap<&str, usize> = BTreeMap::new();
@@ -409,6 +463,7 @@ pub fn extract(
                 concluded: None,
                 relied_on: vec![],
                 judged: None,
+                did: vec![],
             });
         }
         at += 1;
@@ -475,6 +530,23 @@ pub fn outcome(
         concluded: Some(cut(&concluded, OUTCOME_BYTES)),
         relied_on,
         judged: None,
+        did: {
+            let worked: Vec<&Call> = calls
+                .iter()
+                .filter(|c| !c.is_error && learnable.contains(&c.name))
+                .collect();
+            worked[worked.len().saturating_sub(DID)..]
+                .iter()
+                .map(|c| {
+                    format!(
+                        "{} {} → {}",
+                        c.name,
+                        cut(&c.input, DID_BYTES),
+                        cut(c.result.trim(), DID_BYTES)
+                    )
+                })
+                .collect()
+        },
     })
 }
 
@@ -544,6 +616,14 @@ pub fn load(file: &Path) -> (Vec<Episode>, usize) {
 /// is dropped: it is not knowledge. What a call did is a fact about the
 /// tool whatever became of the task.
 pub fn fold(episodes: Vec<Episode>) -> Vec<Episode> {
+    let mut folded = fold_all(episodes);
+    folded.retain(|e| !(e.outcome() && e.judged == Some(false)));
+    folded
+}
+
+/// [`fold`], and the outcomes of tasks judged to have failed are kept: for
+/// a reader that hands them over as failures ([`Episodes::reappraising`]).
+pub fn fold_all(episodes: Vec<Episode>) -> Vec<Episode> {
     let mut folded: Vec<Episode> = Vec::new();
     for episode in episodes {
         match folded.iter_mut().find(|e| e.key() == episode.key()) {
@@ -557,7 +637,6 @@ pub fn fold(episodes: Vec<Episode>) -> Vec<Episode> {
             None => folded.push(episode),
         }
     }
-    folded.retain(|e| !(e.outcome() && e.judged == Some(false)));
     folded
 }
 
@@ -677,7 +756,26 @@ fn select<'a>(
             .then(b.seen.cmp(&a.seen))
             .then(bi.cmp(ai))
     });
-    hits.into_iter()
+    // The best-ranked few outcomes judged to have failed go first, whatever
+    // their words share with the query: a failure is what a run is least
+    // likely to find out for itself, and ranked after the cut it would be
+    // dropped with nothing saying so. A few and no more, or a home with
+    // many failed tasks would be handed nothing else, and the findings
+    // about how a tool is called would be the ones dropped in silence
+    // (review of #878, both passes). Only a reader that asked for failures
+    // is given any.
+    let failed = |e: &Episode| e.outcome() && e.judged == Some(false);
+    let front: Vec<usize> = hits
+        .iter()
+        .filter(|(_, _, e)| failed(e))
+        .take(FAILURES_FIRST)
+        .map(|(_, at, _)| *at)
+        .collect();
+    let (first, rest): (Vec<_>, Vec<_>) =
+        hits.into_iter().partition(|(_, at, _)| front.contains(at));
+    first
+        .into_iter()
+        .chain(rest)
         .take(DELIVERED)
         .map(|(_, _, e)| e)
         .collect()
@@ -692,6 +790,72 @@ pub struct Episodes {
     loader: Loader,
     /// The tools this run has, by name, when the tool was made.
     available: BTreeSet<String>,
+    /// The server tools this run has, when failed outcomes are handed over
+    /// as failures.
+    reappraising: Option<BTreeSet<String>>,
+    /// The failed outcomes handed over in this run, and the server tools
+    /// the run has called since.
+    retraced: std::sync::Arc<std::sync::Mutex<Retraced>>,
+}
+
+/// What a run's host watches so that a failed run's approach is named at
+/// the point this run has repeated it ([`Episodes::retraced`]).
+#[derive(Default)]
+struct Retraced {
+    /// The server tools this run has.
+    tools: BTreeSet<String>,
+    /// Each failed outcome handed over: its session, the tools it used,
+    /// its calls, and whether it has been named.
+    failed: Vec<(String, Vec<String>, Vec<String>, bool)>,
+    /// The server tools this run has called that worked.
+    called: BTreeSet<String>,
+}
+
+impl Retraced {
+    /// A call that worked, to what the harness says after it: once for each
+    /// failed run handed over, at the first call after which this run has
+    /// used every server tool that run used. Said then because a run that
+    /// was told at the start repeats the approach all the same, and this is
+    /// the point at which the earlier run stopped.
+    fn after(&mut self, tool: &str, result: &str) -> Option<String> {
+        if !self.tools.contains(tool) {
+            return None;
+        }
+        self.called.insert(tool.to_string());
+        let called = &self.called;
+        let (_, used, did, said) = self
+            .failed
+            .iter_mut()
+            .find(|(_, used, _, said)| !*said && used.iter().all(|t| called.contains(t)))?;
+        *said = true;
+        let mut out = format!(
+            "This run has now used {}, as that run did before it stopped:\n",
+            used.iter()
+                .map(|t| format!("`{t}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        for call in did.iter() {
+            out.push_str(&format!("    {call}\n"));
+        }
+        out.push_str(&format!(
+            "That run answered at this point, and its task was judged to have FAILED. The call just made here returned: {}\n",
+            cut(result.trim(), DID_BYTES)
+        ));
+        let unused: Vec<String> = self
+            .tools
+            .iter()
+            .filter(|t| !called.contains(*t))
+            .map(|t| format!("`{t}`"))
+            .collect();
+        if !unused.is_empty() {
+            out.push_str(&format!(
+                "Tools you have with no working call in this run: {}.\n",
+                unused.join(", ")
+            ));
+        }
+        Some(out)
+    }
 }
 
 impl Episodes {
@@ -703,7 +867,30 @@ impl Episodes {
         Episodes {
             loader,
             available: available.into_iter().collect(),
+            reappraising: None,
+            retraced: Default::default(),
         }
+    }
+
+    /// What to say after a call that worked, readable after this tool has
+    /// moved into a registry ([`Retraced::after`]); `None` for a reader
+    /// that does not hand failures over.
+    pub fn retraced(&self) -> Option<crate::agent::SuccessCueText> {
+        self.reappraising.as_ref()?;
+        let watch = self.retraced.clone();
+        Some(std::sync::Arc::new(move |tool, _input, result| {
+            watch.lock().ok()?.after(tool, result)
+        }))
+    }
+
+    /// Hand over the outcome of a task judged to have failed as a failure,
+    /// not leave it out: what the run did, that it was judged a failure,
+    /// and which of `tools` (the server tools this run has) it never
+    /// called. The loader must keep such outcomes ([`fold_all`]); one that
+    /// drops them leaves this with nothing to say.
+    pub fn reappraising(mut self, tools: impl IntoIterator<Item = String>) -> Self {
+        self.reappraising = Some(tools.into_iter().collect());
+        self
     }
 }
 
@@ -758,17 +945,48 @@ impl Tool for Episodes {
             // A store that cannot be read is a finding, never an empty one.
             Err(error) => return Ok(ToolOutput::err(format!("episodes unavailable: {error:#}"))),
         };
+        let failed = |e: &Episode| e.outcome() && e.judged == Some(false);
+        // A failed outcome reaches a reader that did not ask for failures
+        // only through a loader that kept it: left out here too.
+        let episodes: Vec<Episode> = episodes
+            .into_iter()
+            .filter(|e| self.reappraising.is_some() || !failed(e))
+            .collect();
         let hits = select(&episodes, &self.available, &query);
         let mut out = String::new();
         let mut shown = 0;
+        // Whether anything actually handed over quotes outside content:
+        // the ones passed over for length are not in the output.
+        let mut quoted_outside = false;
         for hit in &hits {
-            let rendered = hit.render();
+            let rendered = match &self.reappraising {
+                Some(tools) if failed(hit) => hit.render_failed(tools),
+                _ => hit.render(),
+            };
+            // One that does not fit is passed over, not the end of the
+            // delivery: a long record of a failed task must not keep a
+            // short finding behind it from being handed over.
             if !out.is_empty() && out.len() + rendered.len() > DELIVERY_BYTES {
-                break;
+                continue;
             }
             out.push_str(&rendered);
             out.push('\n');
             shown += 1;
+            quoted_outside |= hit.external;
+            // A failure handed over is watched for from here on.
+            if let (Some(tools), true, Ok(mut watch)) =
+                (&self.reappraising, failed(hit), self.retraced.lock())
+            {
+                watch.tools = tools.clone();
+                if !watch.failed.iter().any(|(s, ..)| *s == hit.session) {
+                    watch.failed.push((
+                        hit.session.clone(),
+                        hit.relied_on.clone(),
+                        hit.did.clone(),
+                        false,
+                    ));
+                }
+            }
         }
         if shown == 0 {
             out = "Nothing recorded about these tools.\n".to_string();
@@ -778,13 +996,11 @@ impl Tool for Episodes {
         }
         let output = ToolOutput::ok(out);
         // Outside when anything quoted was, or when a record could not say.
-        Ok(
-            if hits[..shown].iter().any(|e| e.external) || unreadable > 0 {
-                output.from_outside()
-            } else {
-                output
-            },
-        )
+        Ok(if quoted_outside || unreadable > 0 {
+            output.from_outside()
+        } else {
+            output
+        })
     }
 }
 
@@ -1098,6 +1314,134 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[tokio::test]
+    async fn a_record_too_long_to_fit_is_passed_over_and_the_label_follows_what_was_written() {
+        // Newest first at equal rank: a short clean finding, one too long
+        // to fit behind it, then a short one that quotes outside content.
+        let mut outside = episode("gate_open", "E1", Some("{\"key\":\"a\"}"));
+        outside.external = true;
+        let long = episode("gate_shut", &"x".repeat(DELIVERY_BYTES), None);
+        let short = episode("gate_lock", "E3", Some("{\"key\":\"c\"}"));
+        let kept = vec![outside, long, short];
+        let loader: Loader = std::sync::Arc::new(move || Ok((kept.clone(), 0)));
+        let tool = Episodes::from_loader(
+            loader,
+            ["gate_open", "gate_shut", "gate_lock"].map(str::to_string),
+        );
+        let out = tool.call(json!({}), &ctx()).await.unwrap();
+        // The one that did not fit is absent, and the one behind it is not.
+        assert!(
+            out.content.contains("gate_lock was refused"),
+            "{}",
+            out.content
+        );
+        assert!(!out.content.contains("gate_shut"), "{}", out.content.len());
+        assert!(
+            out.content.contains("gate_open was refused"),
+            "{}",
+            out.content
+        );
+        // What was written out quotes outside content, so the output says
+        // so: read off a prefix of the candidates, it would have counted
+        // the one passed over and missed the one handed over (review of
+        // #878).
+        assert!(out.external);
+    }
+
+    #[tokio::test]
+    async fn a_task_judged_failed_is_handed_over_as_a_failure_to_a_reader_that_asks() {
+        let mut messages = run(vec![
+            call("a", "gate_find", json!({"name": "North"}), "G-1", false),
+            call(
+                "b",
+                "gate_set",
+                json!({"gate": "G-1", "state": "shut"}),
+                "set (W4)",
+                false,
+            ),
+        ]);
+        messages.push(Message::assistant(vec![Block::text("The gate is shut.")]));
+        let learnable: BTreeSet<String> = ["gate_find", "gate_set", "gate_manual"]
+            .map(str::to_string)
+            .into();
+        let mut kept = outcome("s1", &messages, &learnable, &Refused::new()).unwrap();
+        // What the run did is kept with what it concluded.
+        assert_eq!(kept.did.len(), 2);
+        assert!(kept.did[1].contains("gate_set") && kept.did[1].contains("set (W4)"));
+        kept.judged = Some(false);
+
+        // Folded as ever, the failed conclusion is gone; kept, it is there.
+        assert!(fold(vec![kept.clone()]).is_empty());
+        let all = fold_all(vec![kept.clone()]);
+        assert_eq!(all.len(), 1);
+        let loader: Loader = std::sync::Arc::new(move || Ok((all.clone(), 0)));
+        let tools = || learnable.clone();
+
+        // A reader that did not ask for failures is not shown one, even by
+        // a loader that kept it.
+        let plain = Episodes::from_loader(loader.clone(), tools());
+        let out = plain.call(json!({}), &ctx()).await.unwrap().content;
+        assert!(out.starts_with("Nothing recorded"), "{out}");
+
+        let reader = Episodes::from_loader(loader, tools()).reappraising(tools());
+        let out = reader.call(json!({}), &ctx()).await.unwrap().content;
+        let said = |needle: &str| assert!(out.contains(needle), "{needle}: {out}");
+        said("gate_set {\"gate\":\"G-1\",\"state\":\"shut\"} → set (W4)");
+        said("It concluded: The gate is shut.");
+        said("JUDGED TO HAVE FAILED");
+        // Which of the tools here it never called, and not the ones it did.
+        said("Tools you have that it made no working call to: `gate_manual`.");
+        // Never as what a run concluded, which reads as knowledge.
+        assert!(!out.contains("The run concluded:"), "{out}");
+
+        // A failure is not ranked out by findings that share more words
+        // with the task: more than a delivery's worth of them, and it is
+        // still the first one handed over.
+        let mut crowd: Vec<Episode> = (0..DELIVERED + 2)
+            .map(|n| {
+                let mut e = episode("gate_set", &format!("shut gate error {n}"), None);
+                e.session = format!("c{n}");
+                e
+            })
+            .collect();
+        crowd.push(kept.clone());
+        let available: BTreeSet<String> = tools();
+        let picked = select(&crowd, &available, "shut the gate error");
+        assert_eq!(picked.len(), DELIVERED);
+        assert!(picked[0].outcome() && picked[0].judged == Some(false));
+        // And many failures do not crowd the findings out: a few go first
+        // and the rest take their place in the ranking.
+        for n in 0..DELIVERED {
+            let mut more = kept.clone();
+            more.session = format!("f{n}");
+            crowd.push(more);
+        }
+        let picked = select(&crowd, &available, "shut the gate error");
+        let failures = picked
+            .iter()
+            .filter(|e| e.outcome() && e.judged == Some(false))
+            .count();
+        assert_eq!((picked.len(), failures), (DELIVERED, FAILURES_FIRST));
+
+        // And named again at the point this run has repeated it: after the
+        // last of the tools that run used, once.
+        let cue = reader.retraced().unwrap();
+        assert!(plain.retraced().is_none());
+        assert_eq!(cue("gate_find", &json!({}), "G-2"), None);
+        assert_eq!(cue("fs_read", &json!({}), "text"), None);
+        let named = cue("gate_set", &json!({}), "set (W4)").unwrap();
+        for needle in [
+            "used `gate_find`, `gate_set`",
+            "→ set (W4)",
+            "judged to have FAILED",
+            "returned: set (W4)",
+            "with no working call in this run: `gate_manual`.",
+        ] {
+            assert!(named.contains(needle), "{needle}: {named}");
+        }
+        assert_eq!(cue("gate_set", &json!({}), "set (W4)"), None);
+    }
+
     #[test]
     fn what_the_run_had_read_decides_whether_its_episodes_are_outside_content() {
         let record =
@@ -1158,6 +1502,7 @@ mod tests {
             concluded: None,
             relied_on: vec![],
             judged: None,
+            did: vec![],
         }
     }
 

@@ -103,6 +103,24 @@ pairs do: the experience face marks the omission with a code and the model
 often does not look the code up, and a lifetime whose experience tasks both
 fail has no arrangement to carry.
 
+A third pair on the same server (`berths` and `pumps`,
+`eval/memory-twins-reappraised.toml`) is held out for the reappraisal of
+failed tasks and was run once. Its experience face answers a change on one
+berth with a plain `ok`: only a `state` field in the record and a guide the
+run has no prompt to open say that a partner is owed, so the first task
+fails and the question is whether that failure repairs the second.
+
+**What that run measured is the tree at `ab07a9e53`**, the commit that
+recorded its manifest and predictions, and not the tree that merged. Review
+afterwards changed what the model is handed: the wording of two sentences
+("tools … it never called" became "… it made no working call to", in the
+failure's rendering and in the line said when a run retraces it), which
+failures reach the delivery (up to `FAILURES_FIRST` are placed ahead of the
+cut), and what happens to a record too long to fit (passed over, where it
+ended the delivery). The pair was spent by its one run, so the wording as
+merged is unmeasured, on a mechanism whose own finding is that wording and
+timing decide whether a hand-over is acted on.
+
 ## 5. Controls
 
 Carried over from the prototype's harness, because `mecha exp` lacks them:

@@ -2217,6 +2217,7 @@ async fn run_one(
             mecha_core::experiment::ArmMemory::EpisodesStore
                 | mecha_core::experiment::ArmMemory::Concepts
                 | mecha_core::experiment::ArmMemory::ConceptsCued
+                | mecha_core::experiment::ArmMemory::Reappraised
         )
     );
     if in_store {
@@ -2236,6 +2237,11 @@ async fn run_one(
             }
             Some(mecha_core::experiment::ArmMemory::ConceptsCued) => {
                 cmd.arg("--concepts-deliver").arg("--concepts-cue");
+            }
+            Some(mecha_core::experiment::ArmMemory::Reappraised) => {
+                cmd.arg("--concepts-deliver")
+                    .arg("--concepts-cue")
+                    .arg("--episodes-failures");
             }
             _ => {}
         }
@@ -2278,7 +2284,8 @@ async fn run_one(
             | ArmMemory::EpisodesAppraised
             | ArmMemory::EpisodesStore
             | ArmMemory::Concepts
-            | ArmMemory::ConceptsCued => {}
+            | ArmMemory::ConceptsCued
+            | ArmMemory::Reappraised => {}
         }
     }
 
