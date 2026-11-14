@@ -586,9 +586,9 @@ kind is derived from its directory (`Entry.kind`).
 
 | Reference | `image_generate` (Qwen-Image) | `video_generate` (H3) |
 |---|---|---|
-| face | the whole portrait at 512² for a new picture (E10), its crop for an edit, as now; for a new picture, not sent when the camera sees the person from behind and they have a full body (below); an edit still sends the crop | the face crop, as now; from an attached `face` reference when there is one, else from the portrait |
+| face | for a new picture of one person, their face crop in the portrait's slot, the whole portrait when no crop can be had, said (owner, 2026-10-29: on the replay rig the whole portrait put its own top on 6 of 6 solo pictures whose outfit left the chest open or said nude, the crop 0 of 6, and ArcFace likeness rose, .58–.60 to .64–.71; video measured the same leak in V0); the whole portrait at 512² for two or more (E10); its crop for an edit, as now; for a new picture, not sent when the camera sees the person from behind and they have a full body (below); an edit still sends the crop | the face crop, as now; from an attached `face` reference when there is one, else from the portrait |
 | full_body | **sent** to a new picture of one person, bound to the portrait (E9b; owner, 2026-10-13); faces only for two or more (E14; owner, 2026-10-19), and on edits | **sent** beside the face crop to a cast of **one or two** when everyone has one, **unbound** (both pictures named as one subject, with no face-from/build-from split): "the person in `<Picture 1>` and `<Picture 2>`", not the face-from/build-from wording, the likely cause of V-B's extra person (V-B's retest passed for a cast of two; owner, 2026-10-14) |
-| detail | **sent** with its label after every face and body, while five images last (`MAX_PICTURE_IMAGES`): "<Name>'s <label> is shown close up in `<imageK>`" inside the description, the identity images then named by number, and "`<imageK>` shows only <Name>'s <label>, not a person: it is kept exactly where it is, and nowhere else" (V-D for pictures passed; owner, 2026-10-26) | **sent** with its label, "`<Subject n>`'s <label> is shown close up in `<Picture k>`", kept "exactly where it is, and nowhere else" (V-D passed; owner, 2026-10-26) |
+| detail | **sent** to a new picture of **one** person only (owner, 2026-10-29: beside two people the close-ups drew an extra person in 5 of 6 renders, 0 of 6 without, at no likeness cost; not sent is said in a count), with its label after the face and body, while five images last (`MAX_PICTURE_IMAGES`): "<Name>'s <label> is shown close up in `<imageK>`" inside the description, the identity images then named by number, and "`<imageK>` shows only <Name>'s <label>, not a person: it is kept exactly where it is, and nowhere else" (V-D for pictures passed; owner, 2026-10-26) | **sent** with its label, "`<Subject n>`'s <label> is shown close up in `<Picture k>`", kept "exactly where it is, and nowhere else" (V-D passed; owner, 2026-10-26) |
 | location | its text in the scene | its images as an environment `<Subject>`, if V-L passes |
 | outfit | its text as `wearing` | its text as `wearing` |
 
@@ -610,7 +610,7 @@ kind is derived from its directory (`Entry.kind`).
   2026-10-28). When the camera reads as from behind (`picture::faces_away`:
   behind, rear, a back view, a face turned away; never with a front, a
   shoulder looked over, or a face toward the camera), a person with a
-  `full_body` is drawn from it in both identity slots, with no portrait,
+  `full_body` is drawn from it alone, sent once, with no portrait,
   and the prompt says their face is turned away. The person's expression
   and the style's clauses about eyes are left out for that picture.
   Measured on a rear-view Continue:
@@ -620,6 +620,19 @@ kind is derived from its directory (`Entry.kind`).
     drawn 2 of 5;
   - in both slots: 4 of 5; with the expression and the eye clause gone
     too: 5 of 5, no second head, base seed included.
+
+  **One slot since 2026-11-12.** Two copies of one standing figure drew
+  the person twice: 17 of the 31 pictures recorded in that shape, 4 of the
+  8 drawn new. On the replay rig, seven recorded calls at three seeds
+  each, seed for seed: both slots 6 of 21, one slot 3 of 21, with no
+  second head and the face away as before. The earlier second head was
+  measured while the expression and the eye clause were still sent. The 3
+  left are one call whose camera asks for the figure from the waist down
+  while its pose is a bend: the image model draws a standing figure and a
+  bending one, with no reference picture at all too (2 of 3), so that one
+  is the scene's words and not the references. A person too many is
+  counted after the render (`ARCHITECTURE.md` §Image generation, "counted
+  after it is drawn").
 
   Without a `full_body` the portrait still goes, and for a cast of one a
   sentence carries the turn (a camera behind one of a group names that

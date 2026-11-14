@@ -196,7 +196,7 @@ pub fn cutout_prompt(wearing: &str, light: &str) -> String {
         "This is an RGBA image with transparency. A full-length realistic photograph of the \
          person in the image, wearing {}, standing, full length, arms relaxed, lit by {}. The \
          image has alpha channel and the background is transparent.",
-        wearing.trim().trim_end_matches('.'),
+        crate::picture::outfit_words(wearing),
         light.trim().trim_end_matches('.')
     )
 }
