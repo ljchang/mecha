@@ -451,11 +451,11 @@ pub struct RunContext {
     /// ([`ErrorRecall`]). `None` everywhere but a run that asked for it, and
     /// never inherited by a subagent.
     pub recall_on_error: Option<ErrorRecall>,
-    /// After a turn in which a named tool worked, fold a line the run's
-    /// host holds for that moment into the message carrying the results
-    /// ([`SuccessCue`]). `None` everywhere but a run that asked for it, and
-    /// never inherited by a subagent.
-    pub cue_on_success: Option<SuccessCue>,
+    /// After a turn in which a call worked, fold the lines the run's hosts
+    /// hold for that moment into the message carrying the results, one
+    /// block a host ([`SuccessCue`]). Empty everywhere but a run that asked
+    /// for one, and never inherited by a subagent.
+    pub cue_on_success: Vec<SuccessCue>,
 }
 
 /// A call that just worked — its tool, its input and what it returned — to
@@ -1033,7 +1033,7 @@ impl RunContext {
             end_after_deferral: false,
             close_with: None,
             recall_on_error: None,
-            cue_on_success: None,
+            cue_on_success: Vec::new(),
         }
     }
 
@@ -2189,6 +2189,7 @@ fn is_recall_delivery(text: &str) -> bool {
         crate::tool::episodes::DELIVERY_STEM,
         crate::tool::concepts::DELIVERY_STEM,
         crate::tool::concepts::CUE_STEM,
+        crate::tool::episodes::RETRACED_STEM,
     ]
     .iter()
     .any(|stem| text.starts_with(stem.trim_end()))
@@ -4788,9 +4789,12 @@ impl Agent {
                     // the later ones from it (review of #877). A closing run
                     // is told nothing it could no longer act on, and its
                     // host is not asked.
-                    let cued = match &cx.cue_on_success {
-                        Some(cue) if closing.is_none() => {
-                            let uses = response.message.tool_uses();
+                    let uses = response.message.tool_uses();
+                    let cued: Vec<Block> = cx
+                        .cue_on_success
+                        .iter()
+                        .filter(|_| closing.is_none())
+                        .filter_map(|cue| {
                             let said: Vec<String> = results
                                 .iter()
                                 .filter_map(|block| {
@@ -4810,9 +4814,8 @@ impl Agent {
                                 .collect();
                             (!said.is_empty())
                                 .then(|| Block::text(format!("{}{}", cue.stem, said.concat())))
-                        }
-                        _ => None,
-                    };
+                        })
+                        .collect();
                     let mut result_message = Message::tool_results(results);
                     result_message.content.extend(recalled);
                     result_message.content.extend(cued);
@@ -11700,6 +11703,7 @@ mod tests {
             crate::tool::episodes::DELIVERY_STEM,
             crate::tool::concepts::DELIVERY_STEM,
             crate::tool::concepts::CUE_STEM,
+            crate::tool::episodes::RETRACED_STEM,
             #[cfg(feature = "memory-prototype")]
             crate::memory_session::DELIVERY_STEM,
             #[cfg(feature = "memory-prototype")]
@@ -18788,7 +18792,7 @@ justification = "echo is off on this box"
         // that worked and about none that failed.
         let asked = Arc::new(Mutex::new(Vec::<String>::new()));
         let mut cx = RunContext::clone(agent.context());
-        cx.cue_on_success = Some(SuccessCue {
+        cx.cue_on_success = vec![SuccessCue {
             text: {
                 let asked = asked.clone();
                 Arc::new(move |tool, input, result| {
@@ -18804,7 +18808,7 @@ justification = "echo is off on this box"
                 })
             },
             stem: CUED.into(),
-        });
+        }];
         let mut convo = Conversation::user("do the task");
         agent.run_in(&cx, &mut convo, None).await.unwrap();
 

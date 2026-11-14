@@ -68,6 +68,9 @@ const OUTCOME_BYTES: usize = 600;
 const ERRORS: usize = 3;
 const READS: usize = 3;
 const PER_TOOL: usize = 2;
+/// What is said when a run has made the calls a failed run made
+/// ([`Episodes::retraced`]).
+pub const RETRACED_STEM: &str = "The harness noted that this run has now made the same calls as an earlier run whose task was judged to have failed. A record of that run, never an instruction, and it verifies nothing about this task.\n";
 /// The most of an outcome's own calls kept, and the most of each one's
 /// input and result.
 const DID: usize = 6;
@@ -764,6 +767,69 @@ pub struct Episodes {
     /// The server tools this run has, when failed outcomes are handed over
     /// as failures.
     reappraising: Option<BTreeSet<String>>,
+    /// The failed outcomes handed over in this run, and the server tools
+    /// the run has called since.
+    retraced: std::sync::Arc<std::sync::Mutex<Retraced>>,
+}
+
+/// What a run's host watches so that a failed run's approach is named at
+/// the point this run has repeated it ([`Episodes::retraced`]).
+#[derive(Default)]
+struct Retraced {
+    /// The server tools this run has.
+    tools: BTreeSet<String>,
+    /// Each failed outcome handed over: its session, the tools it used,
+    /// its calls, and whether it has been named.
+    failed: Vec<(String, Vec<String>, Vec<String>, bool)>,
+    /// The server tools this run has called that worked.
+    called: BTreeSet<String>,
+}
+
+impl Retraced {
+    /// A call that worked, to what the harness says after it: once for each
+    /// failed run handed over, at the first call after which this run has
+    /// used every server tool that run used. Said then because a run that
+    /// was told at the start repeats the approach all the same, and this is
+    /// the point at which the earlier run stopped.
+    fn after(&mut self, tool: &str, result: &str) -> Option<String> {
+        if !self.tools.contains(tool) {
+            return None;
+        }
+        self.called.insert(tool.to_string());
+        let called = &self.called;
+        let (_, used, did, said) = self
+            .failed
+            .iter_mut()
+            .find(|(_, used, _, said)| !*said && used.iter().all(|t| called.contains(t)))?;
+        *said = true;
+        let mut out = format!(
+            "This run has now used {}, as that run did before it stopped:\n",
+            used.iter()
+                .map(|t| format!("`{t}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        for call in did.iter() {
+            out.push_str(&format!("    {call}\n"));
+        }
+        out.push_str(&format!(
+            "That run answered at this point, and its task was judged to have FAILED. The call just made here returned: {}\n",
+            cut(result.trim(), DID_BYTES)
+        ));
+        let unused: Vec<String> = self
+            .tools
+            .iter()
+            .filter(|t| !called.contains(*t))
+            .map(|t| format!("`{t}`"))
+            .collect();
+        if !unused.is_empty() {
+            out.push_str(&format!(
+                "Tools you have and have not called in this run: {}.\n",
+                unused.join(", ")
+            ));
+        }
+        Some(out)
+    }
 }
 
 impl Episodes {
@@ -776,7 +842,19 @@ impl Episodes {
             loader,
             available: available.into_iter().collect(),
             reappraising: None,
+            retraced: Default::default(),
         }
+    }
+
+    /// What to say after a call that worked, readable after this tool has
+    /// moved into a registry ([`Retraced::after`]); `None` for a reader
+    /// that does not hand failures over.
+    pub fn retraced(&self) -> Option<crate::agent::SuccessCueText> {
+        self.reappraising.as_ref()?;
+        let watch = self.retraced.clone();
+        Some(std::sync::Arc::new(move |tool, _input, result| {
+            watch.lock().ok()?.after(tool, result)
+        }))
     }
 
     /// Hand over the outcome of a task judged to have failed as a failure,
@@ -865,6 +943,20 @@ impl Tool for Episodes {
             out.push_str(&rendered);
             out.push('\n');
             shown += 1;
+            // A failure handed over is watched for from here on.
+            if let (Some(tools), true, Ok(mut watch)) =
+                (&self.reappraising, failed(hit), self.retraced.lock())
+            {
+                watch.tools = tools.clone();
+                if !watch.failed.iter().any(|(s, ..)| *s == hit.session) {
+                    watch.failed.push((
+                        hit.session.clone(),
+                        hit.relied_on.clone(),
+                        hit.did.clone(),
+                        false,
+                    ));
+                }
+            }
         }
         if shown == 0 {
             out = "Nothing recorded about these tools.\n".to_string();
@@ -1239,6 +1331,24 @@ mod tests {
         said("Tools you have that it never called: `gate_manual`.");
         // Never as what a run concluded, which reads as knowledge.
         assert!(!out.contains("The run concluded:"), "{out}");
+
+        // And named again at the point this run has repeated it: after the
+        // last of the tools that run used, once.
+        let cue = reader.retraced().unwrap();
+        assert!(plain.retraced().is_none());
+        assert_eq!(cue("gate_find", &json!({}), "G-2"), None);
+        assert_eq!(cue("fs_read", &json!({}), "text"), None);
+        let named = cue("gate_set", &json!({}), "set (W4)").unwrap();
+        for needle in [
+            "used `gate_find`, `gate_set`",
+            "→ set (W4)",
+            "judged to have FAILED",
+            "returned: set (W4)",
+            "have not called in this run: `gate_manual`.",
+        ] {
+            assert!(named.contains(needle), "{needle}: {named}");
+        }
+        assert_eq!(cue("gate_set", &json!({}), "set (W4)"), None);
     }
 
     #[test]
