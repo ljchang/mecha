@@ -335,11 +335,16 @@ pub struct ChatMemory {
     /// How far this attachment has verified the conversation's chain of
     /// sealed turns. Each turn begins by authenticating that chain; done
     /// from the first turn every time, a conversation's cost grows with
-    /// the square of its length (ninety short turns took 285 s). The lease
-    /// makes this process the only writer, so what it has verified stays
-    /// verified while the transcript still begins with the same bytes, and
-    /// only the turns since are read. A new attachment starts from the
-    /// first turn again.
+    /// the square of its length (ninety short turns took 285 s). So an open
+    /// chat reads only the turns since, on two separate grounds. The
+    /// transcript is compared: it must still begin with the bytes that
+    /// were verified. The turn files, seals, receipts and the store's
+    /// record of each earlier turn are NOT read again: that rests on the
+    /// lease alone, which makes this process the only cooperating writer,
+    /// and a change made to them underneath a live attachment by anything
+    /// else is found by the next attachment, which starts from the first
+    /// turn, and not by this one. A closed profile is short and never
+    /// takes the shortcut.
     verified: Mutex<Option<Verified>>,
 }
 /// The last sealed turn the chain was verified through.
@@ -1061,12 +1066,15 @@ impl ChatMemory {
         let mut sealed = 0;
         let mut first = 1;
         // Picked up where this attachment left off, when the transcript
-        // still begins with the bytes that were verified.
+        // still begins with the bytes that were verified. An open chat
+        // only: a closed profile is short, and walks its whole chain at
+        // every turn as it always did.
         let known = self
             .verified
             .lock()
             .map_err(|_| anyhow::anyhow!("chat verification unavailable"))?
-            .clone();
+            .clone()
+            .filter(|_| a.open());
         if let Some(known) = known {
             let end = usize::try_from(known.turn.2)?;
             if bytes.len() >= end && authority::digest(&bytes[..end]) == known.prefix_digest {
