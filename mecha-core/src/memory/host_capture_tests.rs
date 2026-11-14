@@ -87,6 +87,7 @@ fn input() -> HostCapture {
             text: "convert synthetic CSV to JSON".into(),
             occurred_at: None,
             external: None,
+            source_bytes: None,
         }],
         receipts: vec![ToolReceipt {
             call_id: "call1".into(),
@@ -173,6 +174,7 @@ fn rich_input() -> HostCapture {
             text,
             occurred_at: None,
             external: None,
+            source_bytes: None,
         });
     }
     value

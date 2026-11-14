@@ -882,19 +882,11 @@ async fn withdrawal_after_wire_delivery_withholds_dependent_retention() {
 }
 
 #[tokio::test]
-async fn invalid_manifest_and_unsafe_profile_fail_before_any_provider_startup() {
+async fn invalid_manifest_and_session_kind_fail_before_any_provider_startup() {
     let f = Fixture::new("preflight").await;
     f.init().await;
-    // A valid local selection probes /props; checking only inference would
-    // miss a request made before the ordinary-memory preflight.
-    f.config("local", "follow_loaded = true", "");
+    f.config("local", "", "");
     let work = "work-a";
-    let mut followed = f.run(work, "task:guard", "No dispatch.");
-    followed.arg("--no-thinking");
-    failure(
-        &f.output(followed, "follows").await,
-        "explicit --provider or --model",
-    );
     let pinned = || {
         let mut cmd = f.run(work, "task:guard", "No dispatch.");
         cmd.args(["--provider", "fixture"]);
@@ -906,61 +898,9 @@ async fn invalid_manifest_and_unsafe_profile_fail_before_any_provider_startup() 
         failure(&f.output(cmd, kind).await, "session-kind override");
     }
 
-    let project = f.root.join(work).join("mecha.toml");
-    fs::write(&project, "[tools]\npermission_mode = 'read_only'\n").unwrap();
-    failure(&f.output(pinned(), "project").await, "project mecha.toml");
-    fs::remove_file(&project).unwrap();
-    std::os::unix::fs::symlink(f.root.join("dangling-target"), &project).unwrap();
-    failure(
-        &f.output(pinned(), "project-symlink").await,
-        "project mecha.toml",
-    );
-    fs::remove_file(&project).unwrap();
-
-    for (provider, extra, expected, label) in [
-        (
-            "fallbacks = ['fixture']",
-            "",
-            "no provider fallbacks",
-            "fallback",
-        ),
-        (
-            "",
-            "[[hook]]\nevent='pre_tool'\ncommand='false'",
-            "no effective hooks",
-            "hook",
-        ),
-        (
-            "",
-            "[messages]\nenabled=true",
-            "held or disabled inbound",
-            "mailbox",
-        ),
-        (
-            "",
-            "disabled=['goal_context']",
-            "all selected tools",
-            "disabled-tool",
-        ),
-    ] {
-        f.config("local", provider, extra);
-        failure(&f.output(pinned(), label).await, expected);
-    }
-    f.config("local", "", "");
-
-    for (name, expected) in [
-        ("shell", "all selected tools"),
-        ("mcp__fs_write", "all selected tools"),
-        ("fs_write", "supported tool surface"),
-    ] {
-        let mut cmd = pinned();
-        cmd.args(["--tool", name]);
-        failure(&f.output(cmd, &format!("tool-{name}")).await, expected);
-    }
-    let mut narrowed = pinned();
-    narrowed.args(["--tool-profile", "research"]);
-    failure(&f.output(narrowed, "profile").await, "all selected tools");
-
+    // What the run is configured with (a project file, a hook, a fallback,
+    // inbound messages, other tools) is no longer a condition of
+    // remembering it; `an_ordinary_configuration_is_remembered` runs one.
     let path = f.manifest();
     let raw = fs::read(&path).unwrap();
     fs::write(
@@ -1076,7 +1016,7 @@ async fn read_only_and_no_grants_are_enforced_by_native_dispatch() {
 }
 
 #[tokio::test]
-async fn cancellation_and_budget_keep_native_outcomes_without_retaining_partial_runs() {
+async fn cancellation_and_budget_keep_native_outcomes_and_remember_the_partial_run() {
     let f = Fixture::new("limits").await;
     f.init().await;
     let entered = Arc::new(Notify::new());
@@ -1106,7 +1046,8 @@ async fn cancellation_and_budget_keep_native_outcomes_without_retaining_partial_
         .unwrap();
     f.save_output("cancel", &out);
     let cancelled = success(&out);
-    assert_report(&cancelled, "unavailable");
+    // A run that was stopped is remembered as far as it got.
+    assert_report(&cancelled, "retained");
     assert_eq!(cancelled["stop_cause"], "stopped");
     assert_artifact(&f, "work-a", "before-cancel.txt", "kept before interrupt");
     let (_, transcript) = f.transcript(&cancelled);
@@ -1123,12 +1064,12 @@ async fn cancellation_and_budget_keep_native_outcomes_without_retaining_partial_
     let mut cmd = f.run("work-a", "task:budget", "Write with a turn ceiling.");
     cmd.args(["--no-thinking", "--max-turns", "1"]);
     let limited = success(&f.output(cmd, "budget").await);
-    assert_report(&limited, "unavailable");
+    assert_report(&limited, "retained");
     assert_eq!(limited["stop_cause"], "max_turns");
     assert_artifact(&f, "work-a", "before-budget.txt", "kept before ceiling");
     let (_, transcript) = f.transcript(&limited);
     assert_eq!(record(&transcript, "outcome")["stop_cause"], "max_turns");
-    assert_eq!(f.active_receipts(), 0);
+    assert_eq!(f.active_receipts(), 2);
 }
 
 #[tokio::test]
@@ -1260,15 +1201,10 @@ async fn opt_out_and_synthetic_context_keep_their_existing_json_and_tool_surface
 #[tokio::test]
 async fn ordinary_capture_flags_cannot_be_omitted_or_combined_with_other_recorders() {
     let f = Fixture::new("flags").await;
-    // Missing required flags must be refused before even reading config.
+    // A missing goal must be refused before even reading config.
     fs::write(f.root.join("mecha/config.toml"), "invalid = [").unwrap();
-    let required = [
-        &["--goal", "task:flags"][..],
-        &["--no-mcp"][..],
-        &["--no-code-tool"][..],
-        &["--no-grants"][..],
-        &["--tool", "goal_context"][..],
-    ];
+    // A confirmed goal is the one thing a remembered run must name.
+    let required = [&["--goal", "task:flags"][..]];
     let command = || {
         let mut cmd = f.command("work-a");
         cmd.args(["run", "--episodic-memory"])
@@ -1313,31 +1249,54 @@ async fn ordinary_capture_flags_cannot_be_omitted_or_combined_with_other_recorde
 }
 
 #[tokio::test]
-async fn same_name_subagent_cannot_shadow_selected_direct_tool() {
-    let f = Fixture::new("subagent-alias").await;
+async fn an_ordinary_configuration_is_remembered_and_its_outbox_route_still_holds() {
+    let f = Fixture::new("ordinary-config").await;
     f.init().await;
+    // What the closed profile refused: an outbox route over a tool the run
+    // has, inbound messages on, a project file, and no explicit tool list.
     f.config(
         "local",
         "",
-        "[[subagent]]\nname='fs_write'\ndescription='delegated alias'\ntools=[]",
+        "[outbox]\ntools=['fs_write']\n[messages]\nenabled=true",
     );
-    let mut cmd = f.run("work-a", "task:alias", "Reject the aliased tool.");
-    cmd.args(["--provider", "fixture"]);
-    failure(&f.output(cmd, "alias").await, "no effective subagents");
-    assert!(f.wire.requests().is_empty());
-    assert!(!f.root.join("mecha/sessions").exists());
-}
-
-#[tokio::test]
-async fn ordinary_memory_does_not_bypass_an_outbox_route_for_selected_tools() {
-    let f = Fixture::new("outbox").await;
-    f.init().await;
-    f.config("local", "", "[outbox]\ntools=['fs_write']");
-    let mut cmd = f.run("work-a", "task:outbox", "Reject an indirect tool.");
-    cmd.args(["--provider", "fixture"]);
-    failure(&f.output(cmd, "outbox").await, "routes a selected tool");
-    assert!(f.wire.requests().is_empty());
-    assert!(!f.root.join("mecha/outbox").exists());
+    fs::write(
+        f.root.join("work-a").join("mecha.toml"),
+        "[tools]\npermission_mode = 'allow'\n",
+    )
+    .unwrap();
+    f.wire.script([
+        Step::Reply(write("staged", "staged.txt", "held for review")),
+        Step::Reply(answer("The note is staged for review.")),
+    ]);
+    let mut cmd = f.command("work-a");
+    cmd.args(["run", "--json", "--episodic-memory"])
+        .arg(f.manifest())
+        .args([
+            "--goal",
+            "task:ordinary",
+            "--no-code-tool",
+            "--no-learned-rules",
+            "--no-past-appraisals",
+            "--no-success-examples",
+            "--provider",
+            "fixture",
+            "--no-thinking",
+            "Stage a note.",
+        ]);
+    let out = success(&f.output(cmd, "ordinary-config").await);
+    assert_report(&out, "retained");
+    // Remembering the run did not route around the outbox.
+    assert!(!f.root.join("work-a").join("staged.txt").exists());
+    let seal = f.seal(&out);
+    let invoked = seal["payload"]["originals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["kind"] == "ActionInvocation")
+        .map(|p| serde_json::from_str::<Value>(p["text"].as_str().unwrap()).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(invoked.len(), 1);
+    assert_eq!(invoked[0]["tool_name"], "fs_write");
 }
 
 #[tokio::test]

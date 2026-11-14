@@ -452,6 +452,7 @@ fn capture_impl(
                         text,
                         occurred_at: None,
                         external,
+                        source_bytes: None,
                     });
                 }
             }

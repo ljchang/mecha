@@ -83,8 +83,37 @@ pub(crate) fn validate_memory_config_with_graph(
     Ok(())
 }
 
-pub(crate) fn open_profile(global: &mut GlobalOpts, path: &Path) -> Result<SessionMemory> {
-    Ok(open_chat_profile(global, path, None, false)?.memory)
+/// A one-shot run's memory: the store named by the manifest, opened for the
+/// workspace this run will use. Which tools, servers, hooks and messages the
+/// run has is its own configuration and no condition of remembering it; the
+/// recorder stores what each tool returned beside where it came from, and
+/// leaves out what it cannot place.
+pub(crate) fn open_run_profile(global: &GlobalOpts, path: &Path) -> Result<SessionMemory> {
+    // The recorder reads a `Run` header; a session marked as a test is
+    // excluded from every corpus and is not remembered either.
+    anyhow::ensure!(
+        SessionKind::test_override().is_none(),
+        "ordinary memory requires a fresh run without a session-kind override"
+    );
+    let cwd = std::env::current_dir().context("cannot determine the working directory")?;
+    let config = if global.global_config_only {
+        Config::load_global()?
+    } else {
+        Config::load(&cwd)?
+    };
+    let workspace = global
+        .workspace
+        .as_ref()
+        .or(config.tools.workspace.as_ref())
+        .unwrap_or(&cwd);
+    let workspace = workspace
+        .canonicalize()
+        .context("ordinary memory workspace unavailable")?;
+    mecha_core::work::ensure_outside_mecha_home(&workspace)?;
+    let path = std::path::absolute(path)?;
+    SessionMemory::validate_request_path(&path, &workspace)?;
+    let request = SessionMemory::load_request(&path)?;
+    SessionMemory::open(&request, &workspace)
 }
 
 pub(crate) fn open_chat_profile(
@@ -171,7 +200,8 @@ fn open_memory_at(path: &Path, workspace: &Path, tools: &[String]) -> Result<Ses
     SessionMemory::validate_request_path(path, workspace)?;
     let request = SessionMemory::load_request(path)?;
     let memory = SessionMemory::open(&request, workspace)?;
-    memory.validate_surface(tools, workspace, &[])?;
+    // Every caller is a chat: refuse its surface before anything starts.
+    memory.validate_chat_surface(tools, workspace, &[])?;
     Ok(memory)
 }
 

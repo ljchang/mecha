@@ -2867,3 +2867,40 @@ fn native_inline_notices_cannot_rewrite_history_or_admit_arbitrary_user_text() {
         );
     }
 }
+
+/// The run recorder was opened to any tool and to grants; a chat was not.
+/// Its recorder binds each turn to the exact history every request sent,
+/// and a turn it refuses ends the chat, so the surface is refused up front.
+#[test]
+fn a_chat_keeps_the_closed_tool_surface_and_refuses_grants() {
+    let f = Fixture::new();
+    let s = f.session();
+    let chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+    chat.validate_surface(
+        &["goal_context".into(), "fs_read".into()],
+        &f.workspace,
+        &[],
+    )
+    .unwrap();
+    for other in ["shell", "notes__search", "fs_edit"] {
+        assert!(
+            chat.validate_surface(&["goal_context".into(), other.into()], &f.workspace, &[])
+                .is_err(),
+            "{other}"
+        );
+    }
+    let elsewhere = f.root.join("elsewhere");
+    fs::create_dir(&elsewhere).unwrap();
+    let grant = mecha_core::grant::Grant {
+        path: elsewhere.canonicalize().unwrap(),
+        access: mecha_core::grant::Access::Read,
+        source: mecha_core::grant::Source::Owner,
+    };
+    assert!(chat
+        .validate_surface(
+            &["goal_context".into(), "fs_read".into()],
+            &f.workspace,
+            &[grant]
+        )
+        .is_err());
+}

@@ -13300,6 +13300,62 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   own record is trusted only when every passage it admitted was. The field is absent
   from the wire when unknown, so earlier captures keep their digests and
   read as untrusted.
+- **A one-shot run's recorder leaves out what it cannot place; it does not
+  refuse the run** (`memory_session::recording::capture`). Two kinds of
+  check, kept apart: one on *whose run this is* (the header, the workspace,
+  the goal, a recall that does not reconcile with what the tool returned)
+  still refuses the capture; one on a record's or block's *shape* does
+  not. Three things happen to a shape. A tool the recorder has no list
+  for, a cancelled run and a compaction's rewrite cost nothing: the calls
+  and results are passages like any other, and the walk has already read
+  the rewritten history line by line. A late result is classified exactly,
+  from the provenance its record carries (`Intake::result`). And content
+  the walk can neither place nor classify (a delivered inter-agent
+  message, a notice it has no exact text for, an image, a record kind it
+  has no reading for) is left out and reported to `Intake::unplaced`,
+  which the recorded taint settles once the whole transcript is read:
+  under a taint recorded clean nothing outside entered by any route, and
+  otherwise everything the model wrote in that capture is stored as
+  outside. So a restriction that used to cost the whole memory now costs
+  at most the "local" label. **A grant may not reach the store**
+  (`authority::exclude_grants`): one that contains the database, the key,
+  the authority directory or the transcript, or sits inside the store, is
+  refused at the start (`validate_surface` for the store,
+  `validate_session_grants` for the transcript once the session exists),
+  at every recall and when the transcript records it, because `grant::admit` protects the mecha home and a manifest may
+  place a store elsewhere (review of #864). The recorder used to admit `fs_read`, `fs_write`,
+  `fs_list` and `goal_context` and refuse any run with a hook, a server, a
+  grant, a subagent, an inbound message or a compaction (owner's rulings,
+  2026-11-11). **The chat recorder is still the closed profile**
+  (`recording::chat_surface`): it binds each turn to the exact history every
+  request sent, and a refused chat turn ends the chat.
+- **A capture's bounds are constants in one place** (`host_capture`):
+  `MAX_ORIGINALS` and `MAX_RECEIPTS` (256), `MAX_CAPTURE_BYTES` (1 MiB),
+  `MAX_PASSAGE_BYTES` (4,096). A field longer than a passage is stored as
+  its head, cut on a character boundary, with the whole length beside it
+  (`OriginalPassage::source_bytes`, `excerpt`); the transcript line keeps
+  the rest. A run larger than a capture keeps the owner's request, the
+  model's last text and as many passages from the start as fit, cut on
+  whole calls, because admission requires a receipt for every invocation and
+  an invocation for every receipt (`recording::fit`). The bounds were 16
+  passages and 32 KiB, which refused any run of more than about seven
+  calls. `host_capture::validate` and `validate_ordinary` are shared, so a
+  chat turn's capture moved in all four dimensions too (passages 16 to 256,
+  receipts 32 to 256, payload 32 KiB to 1 MiB, dependencies 64 to
+  `MAX_CONSULTED`), and the trial paths' admission got the payload
+  ceiling. The chat recorder's own walk still stops at 128 messages and
+  32 calls and stores whole passages only, and the trial bridge keeps its
+  sixteen-passage check. **These bounds are larger than dense recall's
+  corpus.** `hybrid` embeds the whole eligible store per invocation and
+  refuses past 256 records or 256 KiB (`HybridFallback::CorpusBounds`),
+  falling back to lexical ranking; one large run now exceeds that, where
+  it used to take about sixteen. Only the trial workflow and the native
+  recall route (`goal_memory_recall`) have a dense half; an ordinary
+  session's `goal_context` ranks lexically whatever the store's size. A
+  `CorpusBounds` fallback is therefore a property of that design, not a
+  symptom of a damaged store, and lifting it means a stored index rather
+  than a larger constant. The learning inventory (`learning_run_sources`) still lists at
+  most sixteen passages of a run.
 
 - **Operational tasks have a typed authority boundary inside the memory store.**
   `memory::task` reuses object/revision/scopes and erasure, but `TaskSession` binds

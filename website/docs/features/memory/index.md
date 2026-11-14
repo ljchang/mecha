@@ -67,15 +67,33 @@ optional JSON `memory` report identifies retained, pending or unavailable captur
 with `semantic_assessment: "not_evaluated"`. The task's ordinary answer and outcome
 remain separate.
 
-This first profile supports fresh, bounded, text-only one-shot sessions with
-explicitly selected `fs_read`, `fs_write`, `fs_list` and `goal_context` tools.
-It requires a confirmed goal, no MCP, code tools or grants, and refuses project
-configuration instead of silently discarding its restrictions. Hooks, provider
-fallbacks and unapproved inbound-message profiles are refused. Existing approval
-rules still apply. Configured subagents and active outbox routes intersecting the
-selected tools are refused. One-shot resume, images, delegated/program traces and
-compaction rewrites are not supported for retention. An unsupported recording
-can leave a completed action intact while its memory report is unavailable.
+A one-shot run is remembered with whatever tools, servers, hooks, grants and
+inbound messages it is configured with. It needs a confirmed goal, a fresh
+session, and `goal_context` among its tools; mecha installs the recall tool
+under that name. The recorder stores the owner's request, what the model
+wrote, each tool call and each result, with where each came from. What it has
+no passage for is left out and never refuses the run: an image, a late result
+from a deferred tool, a message delivered from another agent, a notice from
+the harness, the rewrite a compaction makes. A run that was cancelled or ran
+out of turns is remembered as far as it got.
+
+A grant is the one configuration memory checks. A grant that contains the
+store, its key, its authority directory or the session's transcript is
+refused, at the start and again whenever the run recalls, because the jail
+is what keeps those out of a tool's reach.
+
+Leaving something out has one cost. When the run's recorded taint says
+untrusted content entered and the recorder met something it could not place,
+everything the model wrote in that run is stored as outside content, so
+recalling it later arms the interlock. A run whose recorded taint is clean
+keeps its passages local.
+
+One run is one capture of at most 256 passages and 1 MiB. A longer run keeps
+the request, the model's last text and as many calls from the start as fit; the
+transcript still holds every line. A chat still uses the restricted profile
+below: the tools `fs_read`, `fs_write`, `fs_list` and `goal_context`, no MCP,
+code tool, grants, hooks, fallbacks, subagents or outbox routes, and held or
+disabled inbound messages.
 Assistant reasoning stays in the original transcript, covered by its source
 digest, but is never imported as memory evidence. Reasoning is never silently
 disabled; `--no-thinking` remains a provider-dependent explicit control.
@@ -109,10 +127,8 @@ request.chmod(0o600)
 PY
 "$MECHA_MEMORY_BIN" memory-session --request "$MECHA_MEMORY_ROOT/memory.json" init
 cd "$MECHA_MEMORY_ROOT/work-a"
-"$MECHA_MEMORY_BIN" --no-mcp --no-code-tool --no-grants --no-messages \
-  --no-hooks --no-fallback --no-learned-rules --no-past-appraisals \
-  --no-success-examples --no-thinking \
-  --tool fs_read --tool fs_write --tool fs_list --tool goal_context \
+"$MECHA_MEMORY_BIN" --no-learned-rules --no-past-appraisals \
+  --no-success-examples \
   --workspace "$MECHA_MEMORY_ROOT/work-a" \
   run --episodic-memory "$MECHA_MEMORY_ROOT/memory.json" \
   --goal project:memory-demo "Remember that this demo uses a blue indicator."
@@ -188,13 +204,14 @@ compaction, context-overflow recovery and unfinished or noncompleted capture.
 A failed or oversized capture can follow an executed action; its report is
 unavailable and further memory-enabled turns stop. Only complete seals can be
 retried; an ambiguous unsealed turn requires a fresh chat. Native transcripts
-are limited to 4 MiB, and the inherited passage and context limits
+are limited to 32 MiB, and the inherited passage and context limits
 can be reached sooner. In both one-shot and chat capture, tool arguments above
 1,024 serialized JSON bytes retain their full-input digest, native source pointer
 and action receipt with an explicit oversized status; the memory record omits
 the argument content. This does not make omitted text factual support or prove
 the action achieved its goal. Full arguments remain in the native transcript.
-Tool results and other original passages still have a 4,096-byte limit.
+A tool result or other passage longer than 4,096 bytes is stored as its first
+4,096 bytes, marked as an excerpt with the full length.
 TUI memory attachment and automatic learning remain separate work. The distinct
 authenticated web profile is described below. SQLCipher does not encrypt the native transcript, terminal history
 or private recovery files.

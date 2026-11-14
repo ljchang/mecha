@@ -130,7 +130,7 @@ impl Attachment {
         }
         match &self.graph_surface {
             Some(graph) => graph.validate_tools(names),
-            None => recording::surface(names),
+            None => recording::chat_surface(names),
         }
     }
     fn owner_source(&self) -> OwnerSource {
@@ -850,7 +850,7 @@ impl ChatMemory {
             authority::exclude_workspace(&self.memory.request, workspace)?;
             Ok(())
         } else {
-            self.memory.validate_surface(names, workspace, grants)
+            self.memory.validate_chat_surface(names, workspace, grants)
         }
     }
     /// Authenticates immutable private attachment bytes, without runtime I/O.

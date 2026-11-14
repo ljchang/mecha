@@ -90,6 +90,7 @@ fn input(session: &str, id: &str, text: &str, consulted: Vec<RevisionRef>) -> Ho
             text: text.into(),
             occurred_at: None,
             external: None,
+            source_bytes: None,
         }],
         receipts: vec![ToolReceipt {
             call_id: "call1".into(),

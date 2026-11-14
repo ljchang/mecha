@@ -109,6 +109,7 @@ impl LearningGuard {
         }
     }
 }
+const DESCRIPTORS_OVERSIZED: &str = "ordinary learning descriptors exceed 32 KiB";
 impl SessionMemory {
     pub fn load_learning_input(path: &Path, workspace: &Path) -> Result<LearningInput> {
         load_input(path, workspace)
@@ -119,22 +120,37 @@ impl SessionMemory {
     ) -> Result<Vec<OriginalSelection>> {
         load_input(path, workspace)
     }
-    /// Bounded inventory for host selection. Includes original tool call binding.
-    pub fn learning_run_sources(&self, run_id: &str) -> Result<Vec<OriginalDescriptor>> {
+    /// One page of a run's originals for host selection, with each tool
+    /// call's binding: up to sixteen from `offset`, fewer when that many
+    /// would not fit the descriptor bound, none once `offset` is past the
+    /// last. A caller reads the whole inventory by asking again from the
+    /// index after the last one it was given. A capture holds up to 256
+    /// originals; the inventory used to refuse any run over sixteen.
+    pub fn learning_run_sources(
+        &self,
+        run_id: &str,
+        offset: usize,
+    ) -> Result<Vec<OriginalDescriptor>> {
         self.execution_workspace()?;
         let (seal, _) = self.authority.seal(run_id)?;
-        ensure!(
-            seal.payload.originals.len() <= 16,
-            "ordinary learning inventory exceeds sixteen originals"
-        );
-        self.learning_sources(
-            &(0..seal.payload.originals.len())
+        let total = seal.payload.originals.len();
+        if offset >= total {
+            return Ok(vec![]);
+        }
+        let mut count = (total - offset).min(16);
+        loop {
+            let page: Vec<_> = (offset..offset + count)
                 .map(|original_index| OriginalSelection {
                     run_id: run_id.into(),
                     original_index,
                 })
-                .collect::<Vec<_>>(),
-        )
+                .collect();
+            match self.learning_sources(&page) {
+                // Sixteen passages of four kilobytes are twice the bound.
+                Err(error) if count > 1 && error.to_string() == DESCRIPTORS_OVERSIZED => count /= 2,
+                other => return other,
+            }
+        }
     }
     pub fn learning_sources(
         &self,
@@ -182,7 +198,7 @@ impl SessionMemory {
         }
         ensure!(
             serde_json::to_vec(&descriptors)?.len() <= 32_768,
-            "ordinary learning descriptors exceed 32 KiB"
+            DESCRIPTORS_OVERSIZED
         );
         // Selected originals are an inventory, not a complete recall packet.
         // Reauthorize each canonical receipt and its full dependency closure

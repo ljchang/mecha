@@ -400,6 +400,7 @@ mod tests {
                     text: text.clone(),
                     occurred_at: None,
                     external: None,
+                    source_bytes: None,
                 })
                 .collect(),
             receipts: vec![ToolReceipt {

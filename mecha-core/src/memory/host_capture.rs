@@ -113,6 +113,43 @@ pub struct OriginalPassage {
     /// field existed keeps its digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external: Option<bool>,
+    /// Set when `text` is only the head of the field at `pointer`: the
+    /// field's whole length in bytes. A result longer than
+    /// [`MAX_PASSAGE_BYTES`] is stored as an excerpt cut on a character
+    /// boundary, and the transcript line keeps the rest. Absent from the
+    /// wire when the passage is whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_bytes: Option<u64>,
+}
+/// The most passages one capture admits: one run or one chat turn.
+pub const MAX_ORIGINALS: usize = 256;
+/// The most tool receipts one capture admits.
+pub const MAX_RECEIPTS: usize = 256;
+/// The most records one ordinary capture may depend on: thirty-two recalls
+/// (the most a session's authority tracks) of sixty-four records each. A
+/// dependency is never dropped to fit, because forgetting a record purges
+/// what was derived from it by following this list.
+pub const MAX_CONSULTED: usize = 32 * 64;
+/// The most bytes one passage holds; a longer field is stored as its head
+/// ([`excerpt`]).
+pub const MAX_PASSAGE_BYTES: usize = 4096;
+/// The most bytes one capture's payload may serialize to.
+pub const MAX_CAPTURE_BYTES: usize = 1 << 20;
+
+/// The head of `text` that fits a passage, and the whole length when that
+/// is less than all of it. Cut on a character boundary, never mid-scalar.
+pub fn excerpt(text: String) -> (String, Option<u64>) {
+    if text.len() <= MAX_PASSAGE_BYTES {
+        return (text, None);
+    }
+    let whole = text.len() as u64;
+    let mut end = MAX_PASSAGE_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut head = text;
+    head.truncate(end);
+    (head, Some(whole))
 }
 /// What a conversation has taken in so far, as a recorder walks its
 /// transcript: the one place that decides [`OriginalPassage::external`], so
@@ -126,6 +163,7 @@ pub struct OriginalPassage {
 pub struct Intake {
     outside: bool,
     ambient: bool,
+    unplaced: bool,
 }
 impl Intake {
     /// A conversation that begins here. Pass what the earlier turns already
@@ -134,6 +172,7 @@ impl Intake {
         Self {
             outside,
             ambient: false,
+            unplaced: false,
         }
     }
     /// The owner's own words.
@@ -164,6 +203,18 @@ impl Intake {
         self.ambient = true;
         self.outside = true;
     }
+    /// The recorder met a record or block it does not place and cannot
+    /// classify: a delivered inter-agent message, a notice it has no exact
+    /// text for, an image, a record kind it has no reading for. (A late
+    /// result is not one of these: its record carries its provenance, and
+    /// it goes through [`Intake::result`].) Whether that was outside content is the
+    /// recorded taint's to say, so this only remembers that it happened and
+    /// [`Intake::settle`] decides: under a taint recorded clean, nothing
+    /// outside entered by any route; otherwise it is read as
+    /// [`Intake::ambient`] would have been.
+    pub fn unplaced(&mut self) {
+        self.unplaced = true;
+    }
     /// Reconcile the walk with the transcript's own recorded taint, the
     /// harness's verdict on everything that entered the conversation.
     ///
@@ -176,6 +227,9 @@ impl Intake {
     /// no passage is sealed as local, each becomes unknown, and unknown
     /// reads as outside.
     pub fn settle(&mut self, recorded_untrusted: Option<bool>, originals: &mut [OriginalPassage]) {
+        if self.unplaced && recorded_untrusted != Some(false) {
+            self.ambient();
+        }
         if self.ambient {
             for passage in originals.iter_mut() {
                 if matches!(
@@ -268,6 +322,9 @@ pub(crate) struct OriginalDescriptor {
     /// evidence row stores the bytes and nothing about where they came from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) external: Option<bool>,
+    /// [`OriginalPassage::source_bytes`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source_bytes: Option<u64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -309,6 +366,7 @@ fn projection_text(input: &HostCapture, originals: &[RevisionRef], version: i64)
                 pointer: p.pointer.clone(),
                 occurred_at: p.occurred_at.clone(),
                 external: p.external,
+                source_bytes: p.source_bytes,
             })
             .collect(),
         receipts: input.receipts.clone(),
@@ -393,6 +451,7 @@ fn projection_input_for_receipt(
                     text: original.text,
                     occurred_at: d.occurred_at,
                     external: d.external,
+                    source_bytes: d.source_bytes,
                 });
             }
             HostCapture {
@@ -1168,8 +1227,8 @@ pub(super) fn validate(
         "invalid host capture identifiers"
     );
     ensure!(
-        (1..=16).contains(&input.originals.len())
-            && (min_receipts..=32).contains(&input.receipts.len())
+        (1..=MAX_ORIGINALS).contains(&input.originals.len())
+            && (min_receipts..=MAX_RECEIPTS).contains(&input.receipts.len())
             && input.consulted.len() <= max_consulted,
         "invalid host capture bounds"
     );
@@ -1202,8 +1261,10 @@ pub(super) fn validate(
                     <= if p.kind == PassageKind::ArtifactObservation {
                         16_384
                     } else {
-                        4096
-                    },
+                        MAX_PASSAGE_BYTES
+                    }
+                && p.source_bytes
+                    .is_none_or(|whole| whole > p.text.len() as u64),
             "invalid host passage"
         );
         ensure!(
@@ -1239,7 +1300,7 @@ pub(super) fn validate(
     }
     validate_scopes(&input.scopes)?;
     ensure!(
-        serde_json::to_vec(input)?.len() <= 32768,
+        serde_json::to_vec(input)?.len() <= MAX_CAPTURE_BYTES,
         "oversized host projection"
     );
     Ok(())

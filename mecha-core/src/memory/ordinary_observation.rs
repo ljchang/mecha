@@ -66,7 +66,7 @@ pub(super) fn validate_ordinary(input: &HostCapture) -> Result<()> {
             && input.artifact.artifact_digest.is_none(),
         "ordinary observation cannot supply an artifact check"
     );
-    validate(input, 64, 0)?;
+    validate(input, super::host_capture::MAX_CONSULTED, 0)?;
 
     let mut receipts = BTreeMap::new();
     for receipt in &input.receipts {

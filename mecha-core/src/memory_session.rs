@@ -150,7 +150,10 @@ impl SessionMemory {
         workspace: &Path,
         grants: &[crate::grant::Grant],
     ) -> Result<()> {
-        ensure!(grants.is_empty(), "ordinary memory does not support grants");
+        // A grant is the owner's exception to the jail; what a tool reads
+        // under one is recorded with the result like any other. One that
+        // reaches the store itself is refused.
+        authority::exclude_grants(&self.request, None, grants)?;
         recording::surface(names)?;
         ensure!(
             workspace.canonicalize()? == self.execution_workspace()?,
@@ -159,6 +162,34 @@ impl SessionMemory {
         self.authority.validate()?;
         authority::exclude_workspace(&self.request, workspace)?;
         Ok(())
+    }
+    /// The grants a run starts with, against the transcript it is about to
+    /// record: one that reaches the session file would let a tool rewrite
+    /// what is sealed. `validate_surface` runs before the session exists
+    /// and can only check the store; this is the other half, so a grant
+    /// that would cost the run its memory at the first recall is refused
+    /// before the run starts. `grant::admit` covers a session directory
+    /// under the mecha home, and `MECHA_SESSION_DIR` may place one
+    /// elsewhere.
+    pub fn validate_session_grants(
+        &self,
+        session: &Session,
+        grants: &[crate::grant::Grant],
+    ) -> Result<()> {
+        authority::exclude_grants(&self.request, Some(&session.path), grants)
+    }
+    /// A chat's surface before it is attached: the closed tool set and no
+    /// grants, refused here so nothing is started for a chat that could
+    /// not record its first turn.
+    pub fn validate_chat_surface(
+        &self,
+        names: &[String],
+        workspace: &Path,
+        grants: &[crate::grant::Grant],
+    ) -> Result<()> {
+        ensure!(grants.is_empty(), "ordinary memory does not support grants");
+        recording::chat_surface(names)?;
+        self.validate_surface(names, workspace, grants)
     }
     fn access(&self) -> Access {
         Access {
@@ -186,7 +217,7 @@ impl SessionMemory {
         let workspace = self.execution_workspace()?;
         self.authority.validate()?;
         ensure!(
-            !prompt.trim().is_empty() && prompt.len() <= 2048,
+            !prompt.trim().is_empty() && prompt.len() <= 65_536,
             "ordinary memory prompt unavailable"
         );
         let bytes = authority::read(&session.path, authority::SOURCE_MAX)?;

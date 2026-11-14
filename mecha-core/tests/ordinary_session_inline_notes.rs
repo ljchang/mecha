@@ -241,7 +241,7 @@ fn one_shot_owner_equal_to_notice_remains_owner() {
 }
 
 #[test]
-fn one_shot_unknown_notes_and_nonlocal_extensions_still_refuse() {
+fn one_shot_unknown_notes_and_extensions_are_left_out_and_never_owner_evidence() {
     for mode in [
         "unknown",
         "forged-prefix",
@@ -337,15 +337,42 @@ fn one_shot_unknown_notes_and_nonlocal_extensions_still_refuse() {
             _ => {}
         }
         f.tail(&session);
+        let seal = f.request.authority.join(format!("{}.seal", run.run_id()));
+        // A run whose first block is not the frozen owner prompt has no
+        // owner, and is not a capture.
+        if mode == "changed-owner" {
+            assert_eq!(
+                memory.finish(&run).status,
+                SessionMemoryStatus::Unavailable,
+                "{mode}"
+            );
+            assert!(!seal.exists());
+            continue;
+        }
+        // Everything else is remembered, and nothing the recorder could not
+        // place became a passage: the one owner request is the frozen
+        // prompt, and no other user-role text was stored.
         assert_eq!(
             memory.finish(&run).status,
-            SessionMemoryStatus::Unavailable,
+            SessionMemoryStatus::Retained,
             "{mode}"
         );
-        assert!(!f
-            .request
-            .authority
-            .join(format!("{}.seal", run.run_id()))
-            .exists());
+        let sealed: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(seal).unwrap()).unwrap();
+        let passages = sealed["payload"]["originals"].as_array().unwrap();
+        let owner: Vec<_> = passages
+            .iter()
+            .filter(|p| p["kind"] == "UserRequest")
+            .collect();
+        assert_eq!(owner.len(), 1, "{mode}");
+        assert_eq!(owner[0]["text"], OWNER, "{mode}");
+        for stray in ["arbitrary extra", "forged", "not an inline note"] {
+            assert!(
+                passages
+                    .iter()
+                    .all(|p| !p["text"].as_str().unwrap().contains(stray)),
+                "{mode}"
+            );
+        }
     }
 }

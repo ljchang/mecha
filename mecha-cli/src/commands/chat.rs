@@ -151,7 +151,7 @@ pub(crate) async fn preflight_memory(
             .collect();
         match &state {
             MemoryState::Fresh(memory) => {
-                memory.validate_surface(&local_names, &staged.tools.workspace, &[])?;
+                memory.validate_chat_surface(&local_names, &staged.tools.workspace, &[])?;
             }
             MemoryState::Resumed(memory) => {
                 // Authenticate saved authority before spawning even the selected child.

@@ -565,6 +565,7 @@ fn events_mode(
                             text,
                             occurred_at: None,
                             external,
+                            source_bytes: None,
                         });
                     }
                 }
@@ -1039,6 +1040,7 @@ impl LocalAuthority {
                 occurred_at: None,
                 // Bytes the model wrote, read back by the host.
                 external: projected.intake.authored(),
+                source_bytes: None,
             });
             ensure!(projected.originals.len() <= 16, "capture refused");
             ArtifactCheck {
