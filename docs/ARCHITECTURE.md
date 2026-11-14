@@ -828,8 +828,9 @@ The routes, in the result's own words and the manifest's `route`:
   names (`camera::read_answer`; a part left out is a failure, never a
   default). The record's camera words are what was once asked: counted from
   them, a picture already seen from behind was turned half-way round again
-  (replay, 2026-11-12). A read that fails restages and says so; with no
-  reader (a replay with readers off) the record is the start. A move said
+  (replay, 2026-11-12). A read that fails restages and says so, and so does a
+  surface with no reader (the assistant's own chat, a replay with readers
+  off): the record's words are never the start. A move said
   against the picture ("the other side", "closer") has a place only against
   that start (`camera::relative`, `camera::target`), and of a camera a panel
   joined to the recorded one only the tail is the ask (`camera::asked`). The

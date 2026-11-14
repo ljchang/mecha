@@ -293,7 +293,7 @@ const UPSCALE_PROMPT: &str = "Recreate this exact photograph at high resolution.
 /// A re-shoot's second pass (`picture::Plan::reshot`): the picture the
 /// camera LoRA drew, drawn once more without it. That LoRA holds the face
 /// and softens it: skin, hair and cloth lost fine detail in every render
-/// measured (a face's Laplacian variance 0.55 to 0.85 of the original's,
+/// measured (a face's Laplacian variance against the original's,
 /// 2026-11-13), and this pass at the reference sampling brought it back to
 /// about the original's with the camera where the re-shoot put it
 /// (IMAGE-DESIGN §17.4). The words are what was measured.
@@ -5477,7 +5477,22 @@ impl Tool for ImageGenerate {
         };
         let (mut shot_was, mut shot_unread) = (None::<crate::scene::Shot>, None::<String>);
         let plan = match (&camera_lora, &call.picture) {
-            (Some(_), Some(path)) if plan.camera_only() => {
+            // Only an ask that names a place or a move: whether it does is
+            // the same from any start, so it is asked before the read. An
+            // ask about the camera's look alone was read, restaged as it
+            // always would be, and a failed read blamed for it.
+            (Some(_), Some(path))
+                if plan.camera_only()
+                    && crate::camera::moved_to(
+                        call.change.view,
+                        call.change.camera.as_deref().unwrap_or_default(),
+                        base.as_ref()
+                            .and_then(|b| b.camera.as_ref())
+                            .map(|c| c.value.as_str()),
+                        crate::scene::Shot::default(),
+                    )
+                    .is_some() =>
+            {
                 let recorded = base.as_ref().and_then(|b| b.camera.as_ref());
                 // Where the picture has the camera: read from the picture
                 // (`camera::ShotReader`), since the record's words are what
@@ -15779,6 +15794,21 @@ mod tests {
             none.content.contains("could not be read (no camera reader"),
             "{}",
             none.content
+        );
+        // An ask that names no place is not a re-shoot with any reader, so
+        // none is asked for and none is blamed.
+        let look = t
+            .call(
+                json!({"picture": p1, "scene": {"camera": "a dreamier feel"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!look.is_error, "{}", look.content);
+        assert!(
+            !look.content.contains("could not be read"),
+            "{}",
+            look.content
         );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(store).ok();
