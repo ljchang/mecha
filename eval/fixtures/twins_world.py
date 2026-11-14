@@ -1,12 +1,14 @@
 """The linked-change lifetime (`docs/MEMORY-BENCHMARK-DESIGN.md` §4, far
 analog, second kind): a change that has to be made twice, on a thing and on
-a second thing the first thing's own record names. Two pairs of services.
+a second thing the first thing's own record names. Three pairs of services.
 
-In each pair the **experience** face documents the rule and marks a change
-whose twin disagrees with a code; the **probe** face has other tools, other
-field names, no documentation, and answers every change the same way, so a
-run that changes one thing only is told nothing. Every record also names
-something that is not a twin.
+In each pair the **experience** face has documentation that states the rule,
+and shows a change whose twin disagrees in one of two ways: a code in the
+change's answer (the first two pairs), or only a field in the thing's record
+(the third). The **probe** face has other tools, other field names, no
+documentation, and answers every change the same way, so a run that changes
+one thing only is told nothing. Every record also names something that is
+not a twin.
 
 - `signs` → `valves`: the development pair.
 - `accounts` → `lamps`: **held out.** Written before the linked kind in

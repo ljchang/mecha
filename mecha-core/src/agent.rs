@@ -18851,6 +18851,59 @@ justification = "echo is off on this box"
     }
 
     #[tokio::test]
+    async fn two_hosts_that_both_answer_are_two_blocks_each_under_its_own_line() {
+        let turns = vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t0".into(),
+                    name: "echo".into(),
+                    input: json!({"value": "x"}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("Done.")], StopReason::EndTurn),
+        ];
+        let (mut agent, _) =
+            agent_with_tools(turns, vec![Arc::new(EchoTool)], PermissionMode::Allow);
+        agent.cfg.force_final_answer = false;
+        let host = |stem: &str, says: &'static str| SuccessCue {
+            text: Arc::new(move |_, _, _| Some(says.to_string())),
+            stem: stem.into(),
+        };
+        let mut cx = RunContext::clone(agent.context());
+        cx.cue_on_success = vec![
+            host("The first host noted.\n", "one"),
+            host("The second host noted.\n", "two"),
+        ];
+        let mut convo = Conversation::user("do the task");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        let results = convo
+            .messages
+            .iter()
+            .find(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, Block::ToolResult { .. }))
+            })
+            .unwrap();
+        let texts: Vec<&str> = results
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                Block::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        // One block a host, in the order they were added, each opening
+        // with its own line: a reader that knows the harness's voice by
+        // how a block starts must find every host's (review of #878).
+        assert_eq!(
+            texts,
+            vec!["The first host noted.\none", "The second host noted.\ntwo"]
+        );
+    }
+
+    #[tokio::test]
     async fn a_run_that_answers_straight_after_a_failed_call_says_so() {
         // The silent-failure shape: the edit failed, the model stopped on its
         // own, and the answer reads like a success. Nothing in the text or the

@@ -188,7 +188,9 @@ impl Episode {
     /// A task's outcome that was then judged to have failed, for a run
     /// that has `tools` from a server: what was asked, what the run did,
     /// what it concluded, that this was judged a failure, and which of the
-    /// tools here it never called. The reappraisal: the conclusion is not
+    /// tools here it made no working call to (a call that was refused is
+    /// not a tool the run relied on, and is not told apart from one never
+    /// tried). The reappraisal: the conclusion is not
     /// knowledge, and that this approach failed is.
     fn render_failed(&self, tools: &BTreeSet<String>) -> String {
         let mut out = format!(
@@ -214,7 +216,7 @@ impl Episode {
             .collect();
         if !unused.is_empty() {
             out.push_str(&format!(
-                "\n  Tools you have that it never called: {}.",
+                "\n  Tools you have that it made no working call to: {}.",
                 unused.join(", ")
             ));
         }
@@ -743,8 +745,15 @@ fn select<'a>(
         .filter(|(_, e)| e.concerns(available))
         .map(|(at, e)| (overlap(e), at, e))
         .collect();
+    // An outcome judged to have failed first, whatever its words share with
+    // the query: it is what a run is least likely to find out for itself,
+    // and ranked after the cut it would be dropped with nothing saying so
+    // (review of #878). Only a reader that asked for failures is given any.
+    let failed = |e: &Episode| e.outcome() && e.judged == Some(false);
     hits.sort_by(|(ao, ai, a), (bo, bi, b)| {
-        bo.cmp(ao)
+        failed(b)
+            .cmp(&failed(a))
+            .then(bo.cmp(ao))
             .then(a.first_use().cmp(&b.first_use()))
             .then(b.seen.cmp(&a.seen))
             .then(bi.cmp(ai))
@@ -824,7 +833,7 @@ impl Retraced {
             .collect();
         if !unused.is_empty() {
             out.push_str(&format!(
-                "Tools you have and have not called in this run: {}.\n",
+                "Tools you have with no working call in this run: {}.\n",
                 unused.join(", ")
             ));
         }
@@ -926,10 +935,7 @@ impl Tool for Episodes {
             .into_iter()
             .filter(|e| self.reappraising.is_some() || !failed(e))
             .collect();
-        let mut hits = select(&episodes, &self.available, &query);
-        // What was judged a failure first: it is what a run is least
-        // likely to find out for itself.
-        hits.sort_by_key(|e| !failed(e));
+        let hits = select(&episodes, &self.available, &query);
         let mut out = String::new();
         let mut shown = 0;
         for hit in &hits {
@@ -1328,9 +1334,25 @@ mod tests {
         said("It concluded: The gate is shut.");
         said("JUDGED TO HAVE FAILED");
         // Which of the tools here it never called, and not the ones it did.
-        said("Tools you have that it never called: `gate_manual`.");
+        said("Tools you have that it made no working call to: `gate_manual`.");
         // Never as what a run concluded, which reads as knowledge.
         assert!(!out.contains("The run concluded:"), "{out}");
+
+        // A failure is not ranked out by findings that share more words
+        // with the task: more than a delivery's worth of them, and it is
+        // still the first one handed over.
+        let mut crowd: Vec<Episode> = (0..DELIVERED + 2)
+            .map(|n| {
+                let mut e = episode("gate_set", &format!("shut gate error {n}"), None);
+                e.session = format!("c{n}");
+                e
+            })
+            .collect();
+        crowd.push(kept.clone());
+        let available: BTreeSet<String> = tools();
+        let picked = select(&crowd, &available, "shut the gate error");
+        assert_eq!(picked.len(), DELIVERED);
+        assert!(picked[0].outcome() && picked[0].judged == Some(false));
 
         // And named again at the point this run has repeated it: after the
         // last of the tools that run used, once.
@@ -1344,7 +1366,7 @@ mod tests {
             "→ set (W4)",
             "judged to have FAILED",
             "returned: set (W4)",
-            "have not called in this run: `gate_manual`.",
+            "with no working call in this run: `gate_manual`.",
         ] {
             assert!(named.contains(needle), "{needle}: {named}");
         }
