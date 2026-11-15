@@ -2167,6 +2167,11 @@ impl Tool for VideoGenerate {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+        // A persona films when the owner asks and not otherwise
+        // (`persona::ask`), as it draws.
+        if let Some(no) = crate::persona::ask::refusal(ctx.picture_ask.as_ref(), NAME).await {
+            return Ok(no);
+        }
         let plan = match self.plan(&input, ctx) {
             Ok(plan) => plan,
             Err(e) => return Ok(ToolOutput::err(format!("Not made: {e:#}"))),

@@ -4992,6 +4992,13 @@ impl Tool for ImageGenerate {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+        // A persona draws when the owner asks and not otherwise, read from
+        // the owner's own words before anything is queued (`persona::ask`).
+        if let Some(no) =
+            crate::persona::ask::refusal(ctx.picture_ask.as_ref(), "image_generate").await
+        {
+            return Ok(no);
+        }
         let lib = self
             .library_dir
             .as_ref()
@@ -16686,6 +16693,47 @@ mod tests {
             .contains("Only when the user asks to continue, build on, edit or change a picture (in a chat, by its Continue button"));
         assert!(PICTURE_DESC
             .contains("only when the user asks to continue, build on, edit or change it"));
+    }
+
+    /// A persona draws when the owner asks and not otherwise
+    /// (`persona::ask`): a call on a turn whose reader says no sends the
+    /// image server nothing, and one it cannot read is drawn as sent. Fails
+    /// where the call is drawn whatever the owner said.
+    #[tokio::test]
+    async fn a_picture_the_owner_did_not_ask_for_is_not_drawn() {
+        #[derive(Debug)]
+        struct Says(Result<bool, String>);
+        #[async_trait::async_trait]
+        impl crate::persona::ask::AskReader for Says {
+            async fn asked(&self) -> Result<bool, String> {
+                self.0.clone()
+            }
+        }
+        let (url, seen) = distinct(7).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let call = json!({"scene": {"setting": "a quiet reading room",
+            "people": [{"who": "maya", "wearing": "a green coat", "doing": "reading a book"}]}});
+        let drawn = || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.starts_with("POST /prompt"))
+                .count()
+        };
+        cx.picture_ask = Some(Arc::new(Says(Ok(false))));
+        let no = t.call(call.clone(), &cx).await.unwrap();
+        assert!(no.is_error, "{}", no.content);
+        assert_eq!(no.content, crate::persona::ask::NOT_ASKED);
+        assert_eq!(drawn(), 0, "a picture nobody asked for rendered");
+        for says in [Ok(true), Err("no answer".to_string())] {
+            let before = drawn();
+            cx.picture_ask = Some(Arc::new(Says(says)));
+            let yes = t.call(call.clone(), &cx).await.unwrap();
+            assert!(!yes.is_error, "{}", yes.content);
+            assert_eq!(drawn(), before + 1);
+        }
     }
 
     /// The owner's button decides what a picture builds on, never the call

@@ -1274,6 +1274,8 @@ impl McpClient {
                 self.trust_result_claims,
                 is_error,
             ),
+            // Never a server's to say: only an in-process guard closes a run.
+            closes: None,
             // A server's `image` content is not taken: those would be a third
             // party's pixels, and only a builtin earns the fold.
             image: None,
