@@ -186,6 +186,11 @@ pub fn read(text: &str) -> Result<bool, String> {
     let (Some(from), Some(to)) = (text.find('{'), text.rfind('}')) else {
         return Err("the reader's answer held no JSON object".into());
     };
+    // A `}` before the first `{` is no object, and a slice of it would
+    // panic rather than fail open (review of #883, pass 3).
+    if to < from {
+        return Err("the reader's answer held no JSON object".into());
+    }
     serde_json::from_str::<serde_json::Value>(&text[from..=to])
         .ok()
         .and_then(|v| v.get("asked").and_then(serde_json::Value::as_bool))
@@ -404,6 +409,7 @@ mod tests {
         assert_eq!(read(r#"{"asked": true}"#), Ok(true));
         assert_eq!(read("```json\n{\"asked\": false}\n```"), Ok(false));
         assert!(read("no").is_err());
+        assert!(read("} then {").is_err());
         assert!(read(r#"{"asked": "no"}"#).is_err());
         assert!(read(r#"{"answer": false}"#).is_err());
     }

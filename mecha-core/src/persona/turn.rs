@@ -223,6 +223,11 @@ pub fn context(agent: &Agent, turn: Turn<'_>) -> RunContext {
                 None
             }
         };
+    } else {
+        // Cleared, never inherited: `for_session` clones the agent's
+        // context, and a reader carried onto a press would refuse the
+        // picture the press asks for (review of #883, pass 3).
+        tools.picture_ask = None;
     }
     cx.tools = Arc::new(tools);
     if cx.budget.max_turns.is_none() {
