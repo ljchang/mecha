@@ -1115,7 +1115,7 @@ advances it.
   saying none was asked for, 4 to 8 in 10. The reader missed no ask on
   335 of the owner's real messages (123 labelled by hand, 212 held out)
   and said yes to 6 that were none; through the built tool, 37 of 37
-  unasked calls on that chat's turns were refused and 3 of 3 asked were
+  unasked calls on that chat's turns were refused and 6 of 6 asked were
   drawn.
 - **What a picture builds on is the owner's press** (R11, 2026-10-27):
   a persona chat stamps `ToolCtx::build_on` on every typed turn

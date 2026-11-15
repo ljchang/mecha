@@ -20,6 +20,13 @@
 //! It fails open: a reader that cannot be reached, times out or answers
 //! badly leaves the call drawn as sent. This is the owner's comfort, not a
 //! guard, and a picture they asked for and did not get is the worse failure.
+//!
+//! The persona's reply is withheld from it on purpose, unlike the scene
+//! reader's (`persona::edit::ModelReader`): a persona that offers a picture
+//! would otherwise write its own permission, the habit this exists to
+//! break. The cost is an owner's bare yes to an offered picture, which
+//! reads as conversation unless their earlier messages show pictures being
+//! directed; none of the 335 measured messages was missed that way.
 
 use crate::tool::ToolOutput;
 use std::sync::Arc;
@@ -74,6 +81,9 @@ pub struct ModelAsk {
     pub latest: String,
     /// The owner's messages before it, oldest first, at most [`EARLIER`].
     pub earlier: Vec<String>,
+    /// The turn's one answer: an image call and a video call in one batch
+    /// ask once and get the same verdict (review of #883).
+    pub answer: tokio::sync::OnceCell<Result<bool, String>>,
 }
 
 impl std::fmt::Debug for ModelAsk {
@@ -86,9 +96,21 @@ impl std::fmt::Debug for ModelAsk {
 
 /// The owner's messages before this turn's, oldest first: the last
 /// [`EARLIER`] of `history`, whose final owner turn is this one.
-pub fn earlier(history: &[crate::message::Message]) -> Vec<String> {
+///
+/// A turn that died before any reply has the next one folded into its
+/// message, so the last entry can hold more than this turn's words: what
+/// came before `latest` in it is still something the owner said earlier
+/// (review of #883).
+pub fn earlier(history: &[crate::message::Message], latest: &str) -> Vec<String> {
     let mut said = crate::title::owner_turns(history);
-    said.pop();
+    if let Some(last) = said.pop() {
+        let before = last
+            .trim_end()
+            .strip_suffix(latest.trim())
+            .map(str::trim)
+            .filter(|b| !b.is_empty());
+        said.extend(before.map(str::to_string));
+    }
     let from = said.len().saturating_sub(EARLIER);
     said.split_off(from)
 }
@@ -118,7 +140,10 @@ pub fn request(
         "earlier": earlier.iter().map(|e| clip(e, EARLIER_CHARS)).collect::<Vec<_>>(),
         "latest": clip(latest, LATEST_CHARS),
     });
-    crate::quarantine::QuarantinedPass::new(model, 256)
+    // The local readers' one allowance: `no_thinking` cannot be proved
+    // honoured from here, and reasoning that ate a small one would fail
+    // every answer open, unseen (review of #883).
+    crate::quarantine::QuarantinedPass::new(model, crate::provider::LOCAL_MAX_TOKENS)
         .system(SYSTEM)
         .no_thinking()
         .response_schema(structured.then(schema))
@@ -140,6 +165,12 @@ pub fn read(text: &str) -> Result<bool, String> {
 #[async_trait::async_trait]
 impl AskReader for ModelAsk {
     async fn asked(&self) -> Result<bool, String> {
+        self.answer.get_or_init(|| self.ask()).await.clone()
+    }
+}
+
+impl ModelAsk {
+    async fn ask(&self) -> Result<bool, String> {
         let request = request(
             &self.model,
             &self.latest,
@@ -218,6 +249,84 @@ mod tests {
         assert_eq!(out.closes, Some(&CLOSING), "the run closes in words");
     }
 
+    /// A provider that says no, counting how often it is asked.
+    struct Counted(std::sync::atomic::AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for Counted {
+        fn local(&self) -> bool {
+            true
+        }
+        fn id(&self) -> &str {
+            "test"
+        }
+        fn default_model(&self) -> &str {
+            "test"
+        }
+        async fn complete(
+            &self,
+            req: &crate::message::CompletionRequest,
+            _: Option<&crate::provider::StreamSink>,
+        ) -> anyhow::Result<crate::message::CompletionResponse> {
+            // Quarantined, with room to answer past a thinking budget.
+            assert!(req.tools.is_empty());
+            assert_eq!(req.messages.len(), 1);
+            assert!(req.max_tokens >= crate::provider::LOCAL_MAX_TOKENS);
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(crate::message::CompletionResponse {
+                message: Message::assistant(vec![crate::message::Block::text(
+                    r#"{"asked": false}"#,
+                )]),
+                stop_reason: crate::message::StopReason::EndTurn,
+                usage: crate::message::Usage::default(),
+                refusal: None,
+                model: "test".into(),
+                malformed_tool_args: 0,
+            })
+        }
+    }
+
+    /// One turn, one answer: a picture call and a video call in one batch
+    /// ask the model once and are refused alike. Fails where each call asks
+    /// for itself, and two samples could split the turn.
+    #[tokio::test]
+    async fn a_turn_asks_its_reader_once() {
+        let counted = Arc::new(Counted(Default::default()));
+        struct Shared(Arc<Counted>);
+        #[async_trait::async_trait]
+        impl crate::provider::Provider for Shared {
+            fn local(&self) -> bool {
+                true
+            }
+            fn id(&self) -> &str {
+                "test"
+            }
+            fn default_model(&self) -> &str {
+                "test"
+            }
+            async fn complete(
+                &self,
+                req: &crate::message::CompletionRequest,
+                sink: Option<&crate::provider::StreamSink>,
+            ) -> anyhow::Result<crate::message::CompletionResponse> {
+                self.0.complete(req, sink).await
+            }
+        }
+        let reader: Arc<dyn AskReader> = Arc::new(ModelAsk {
+            provider: Box::new(Shared(Arc::clone(&counted))),
+            model: "test".into(),
+            latest: "how was the lake".into(),
+            earlier: vec![],
+            answer: tokio::sync::OnceCell::new(),
+        });
+        let (image, video) = tokio::join!(
+            refusal(Some(&reader), "image_generate"),
+            refusal(Some(&reader), "video_generate")
+        );
+        assert!(image.is_some() && video.is_some());
+        assert_eq!(counted.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn an_answer_is_its_asked_and_anything_else_is_a_failure() {
         assert_eq!(read(r#"{"asked": true}"#), Ok(true));
@@ -237,8 +346,25 @@ mod tests {
             )]));
         }
         history.pop();
-        assert_eq!(earlier(&history), ["owner 2", "owner 3", "owner 4"]);
-        assert!(earlier(&[Message::user("the first")]).is_empty());
+        assert_eq!(
+            earlier(&history, "owner 5"),
+            ["owner 2", "owner 3", "owner 4"]
+        );
+        assert!(earlier(&[Message::user("the first")], "the first").is_empty());
+        // A turn that died before its reply is folded into the next one's
+        // message: its words are still earlier ones.
+        let folded = vec![
+            Message::user("owner 1"),
+            Message::assistant(vec![crate::message::Block::text("reply 1")]),
+            crate::message::Message {
+                content: vec![
+                    crate::message::Block::text("now from the side"),
+                    crate::message::Block::text("do it"),
+                ],
+                ..Message::user("")
+            },
+        ];
+        assert_eq!(earlier(&folded, "do it"), ["owner 1", "now from the side"]);
     }
 
     #[test]
