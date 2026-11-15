@@ -1,6 +1,6 @@
 # Persona common ground: what the two of them share, and how it is said
 
-**Status:** proposal, 2026-11-14. Nothing here is built. §10 lists the eight decisions that are
+**Status:** proposal, 2026-11-14. Nothing here is built. §10 lists the nine decisions that are
 the owner's; §9 is a build order that measures before it fits.
 
 **The question:** a persona chat still reads as talking with a machine. It repeats what it has
@@ -36,7 +36,7 @@ Read from the tree at `b0995402e` and unchanged at `b3b6e2c78` (one visibility c
 | Chat-start memory block | `recall::chat_start` | Chosen by budget and recency, not by what the chat turns out to be about |
 | Episodes carry `open_threads` | `persona::memory`, written nightly by `persona::writer`; `recall::chat_start` and `Memory::recall_search` append them to an episode's line | They ride in every chat-start block and in per-turn recall as text. Nothing gives a thread a time it falls due, records whether it was raised, or closes it when the owner passes |
 | A record of when a memory was used | Ruled as D28 (`PERSONA-DESIGN` §9.13), unbuilt | There is no record anywhere of a memory being recalled, offered or said |
-| The typed "shown set" beside `Record::Notes` | Designed in `PERSONA-LIFE-DESIGN` §4.5, unbuilt | A transcript says what text the model was told, not which items rode in it |
+| The typed "shown set" beside `Record::Notes` | Designed in `PERSONA-LIFE-DESIGN` §4.5, unbuilt | A transcript says what text the model was told, not which items rode in it. This proposal builds the like record for its own subjects only (§6); §4.5's list of world event ids stays owed |
 | Memory v2 | `memory_session`, feature `memory-prototype` | Not wired to persona chats ("a persona chat has its own routes and its own memory"); pulled by the model through a tool, with no notion of a cue |
 | Repetition readouts | `persona::echo`, `persona::initiative`, `mecha persona measures` | Offline counts of repeated wording and of who raises people; nothing about items |
 
@@ -201,17 +201,37 @@ Each event carries chat, turn ordinal and time:
   the same cue reached.
 - `offered`: it rode in a note to the model, and in what form.
 - `said`: the persona's reply referred to it, the form used and its length in words.
-- `taken_up` / `passed` / `repaired`: what the owner's next turn did with it.
+- `taken_up` / `passed` / `repaired`: what the owner did with it. How each is detected is
+  below; they are the events the behaviours lean on hardest.
 - `withheld`: it was eligible and deliberately not offered (§8.2).
 
 **What changes is derived, never stored.** How far an item is shared (said, acknowledged, taken
 up by the owner), whether a thread has been raised or closed and whose move it is, and an
-item's activation are all folds over the event log; none needs a model. So when a chat is
+item's activation are all folds over the event log; no fold needs a model. So when a chat is
 forgotten and its events go, nothing an erased event justified is left standing on the item.
 Activation is a pure function of the event log and the clock:
 it rises with a mention or a cue and falls with turns and with days. Because it is a function,
 changing its shape re-reads the same log rather than migrating a store, and a replay can compare
 two shapes on one recorded chat.
+
+**How uptake is read.** Evidence that something was understood comes as an acknowledgement,
+the relevant next turn, or continued attention (§2.1), and only the plainest of those is a
+match code can make. A wrong `taken_up` is the costly mistake: it shortens a reference and
+makes the item open to a callback, durably and across chats, and so produces the reference the
+owner cannot unpack. So the two sources are kept apart:
+
+- *In the chat, by code:* `taken_up` only when the owner themselves uses a distinctive form of
+  the item (the floor of §7), in a clean stretch. Nothing else is read as uptake in the chat,
+  and nothing is read as `passed` or `repaired` there.
+- *Nightly, by the writer's pass:* for each item a chat offered, one label from a closed set
+  (taken up, acknowledged, passed, repaired, unclear), returned as typed values against the
+  recorded ids and never as prose. Unclear changes nothing. A reference shortens on a
+  `taken_up` from either source and lengthens on `repaired`, so the durable record moves a day
+  behind the chat, which is the conservative side: within a chat the persona's own reply
+  handles a request to explain.
+
+Whether a model may judge uptake at all is the owner's (§10, decision 9); without it, only the
+owner's own use of a form ever counts.
 
 **A turn's events land with its reply.** A persona turn can fail after its notes were built,
 and today the ledger is put back (`told_before`) so that an offer nobody read is not an offer
@@ -293,7 +313,8 @@ curves do.
 ### 5.4 Returned to
 
 - **Threads** (§2.5). An unfinished thread or a stated plan may carry a `due_at`; whether it has been raised or closed is derived (§4). It is offered once, at a
-  chat's opening or a change of topic, never across what the owner is in the middle of saying.
+  chat's opening. Raising one at a change of topic within a chat needs code to tell that the
+  topic changed, and is left out of the first build.
   If the owner passes it, it closes.
 - **Callbacks.** A callback is an item reused in a new context: the owner's current words cue
   it, it is not what the reply is otherwise about, and it has been taken up before. Items the
@@ -316,8 +337,12 @@ curves do.
   turn. The ground makes it up to four. The offer is present only on a turn that has one, the
   background only on a turn where the owner used a handle, and step 2 measures the added
   prefill on the local model before it is left on.
-- **The typed shown set.** The `offered` event is the record `PERSONA-LIFE-DESIGN` §4.5 already
-  asked for beside `Record::Notes`: which items rode, not only which text.
+- **The typed shown set, in part.** `PERSONA-LIFE-DESIGN` §4.5 asked for a typed list of the
+  *world event ids* a today-block or recall fold carried, kept in the session beside
+  `Record::Notes`, to bound a tainted `told`. The `offered` event is that kind of record for
+  the ground's own subjects, items and memory `uid`s, and it lives in `memory.db` so that it is
+  erased with the rows. It does not cover world events, which are neither. §4.5's list stays
+  unbuilt and owed after step 1, and nothing here lets the tainted-`told` path ship without it.
 - **D28.** Step 1 builds D28's log as ruled, and the ground's events are rows in it: every
   access to a memory record at chat start, per turn, by `memory_search` and by `memory_read`,
   keyed by `uid`, with the harness's doors counted apart from the persona's own calls, beside
@@ -419,7 +444,9 @@ curves do.
 
 Offline, through `mecha persona measures`, as counts and distributions and never as text:
 
-- **Re-telling:** how often an item is said again after it was acknowledged, by lag.
+- **Re-telling:** how often an item is said again after it was acknowledged, by lag. A known
+  bias: an unoffered mention counts only on a longer form (§7), so a spontaneous re-telling in
+  the shortest form goes unrecorded, and the measure undercounts the most compressed items.
 - **Compression:** an item's reference length over its mentions, against the human curves
   (the released repeated-reference corpus of Hawkins et al. 2020 gives a reference shape).
 - **Insider rate:** the share of turns that use a handle, by how long the pair has talked, and
@@ -503,12 +530,15 @@ the nightly pass writes items, and the owner sees them where memories are curate
    more briefly, and a mention raises its activation, which is strengthening-shaped and is the
    half of the exception D28's wording touches. Needed from step 2 of §9 (the gate) and step 3
    (the form); step 1 needs none.
+9. **Who judges uptake.** Code alone, counting only the owner's own use of an item's form, or
+   also the nightly writer's pass labelling each offered item from a closed set (proposed: the
+   strict code rule misses most real uptake, and compression would rarely be earned).
 
 ### Ruled
 
 - **A persona's ground is its own** (owner, 2026-11-15: this kind of memory stays independent
   per persona; no case for sharing it). Nothing in one persona's ground reaches another's, and
-  the item pass makes nothing from a fact shared across personas (§7). This was decision 9.
+  the item pass makes nothing from a fact shared across personas (§7). This settled the earlier draft's question about shared facts.
 
 ## Sources
 
