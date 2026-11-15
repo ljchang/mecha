@@ -2191,6 +2191,7 @@ mod tests {
                     external: true,
                     refusal: false,
                     not_dispatched: self.0,
+                    closes: None,
                     image: None,
                     deferred: None,
                     program: None,

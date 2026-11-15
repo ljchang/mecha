@@ -637,6 +637,10 @@ pub(crate) struct RunPictures {
     /// The same, for a job refused busy.
     busy_closing: Option<Closing>,
     busy_picture: bool,
+    /// Set this turn: a result asked for the run to close on its own line
+    /// (`ToolOutput::closes`), a guard's refusal of a call the model would
+    /// make again.
+    closed_by: Option<Closing>,
 }
 
 impl RunPictures {
@@ -2113,6 +2117,7 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         || text == PICTURE_STILL_BEING_MADE
         || text == WORK_STARTED
         || text == WORK_STILL_BEING_MADE
+        || text == crate::persona::ask::CLOSING.line
         || text == crate::planning::CRITERION_OBSERVATION
         || text == "A declared plan check was not run; completion remains unverified."
         || text == "The declared plan check did not establish completion. Review its result before claiming the step is verified."
@@ -4931,7 +4936,7 @@ impl Agent {
                         } else if pictures.busy_again || (cx.end_after_deferral && pictures.busy) {
                             Some(pictures.still_running())
                         } else {
-                            None
+                            pictures.closed_by
                         };
                     // A turn with no calls at all is not an unreadable one
                     // (`all` over nothing is true; review of #611, pass 5).
@@ -4955,6 +4960,7 @@ impl Agent {
                     pictures.started_picture = false;
                     pictures.busy_closing = None;
                     pictures.busy_picture = false;
+                    pictures.closed_by = None;
                     // Finish the original tool batch before dispatching checks. This
                     // preserves tool-use/result pairing and serializes verification
                     // after every sibling's work, through the same guards as any call.
@@ -6641,6 +6647,9 @@ impl Agent {
             // cancellation, so the call behaves as it did before it deferred
             // (`docs/BACKGROUND-JOBS-DESIGN.md` §2.1–2.2).
             let terms = self.terms(cx, &name, result_cap);
+            if let Some(closing) = out.closes.take() {
+                run_pictures.closed_by = Some(*closing);
+            }
             if let Some(job) = out.deferred.take() {
                 job.set_terms(terms.clone());
                 // **A sender is never deferred.** The interlock cleared this
@@ -11799,6 +11808,58 @@ mod tests {
         go.notify_one();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(got.lock().unwrap().len(), 1, "one picture made, not two");
+    }
+
+    /// A result that asks for it closes the run (`ToolOutput::closes`): the
+    /// next request carries no tools and ends on the result's own line, so a
+    /// picture refused because the owner asked for none is answered in words
+    /// and not called again. Fails where the run goes on with its tools.
+    #[tokio::test]
+    async fn a_result_that_closes_the_run_is_answered_in_words() {
+        struct Unasked;
+        #[async_trait]
+        impl Tool for Unasked {
+            fn name(&self) -> &str {
+                "draw"
+            }
+            fn description(&self) -> &str {
+                "Draw something."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::refusal(crate::persona::ask::NOT_ASKED)
+                    .closing_with(&crate::persona::ask::CLOSING))
+            }
+        }
+        let (agent, provider) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "d1".into(),
+                        name: "draw".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("Words, then.")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(Unasked)],
+            PermissionMode::Allow,
+        );
+        let cx = agent.context().as_ref().clone();
+        let mut convo = Conversation::user("tell me about the lake");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1].tool_choice, crate::message::ToolChoice::None);
+        assert!(tail_text(&seen[1]).ends_with(crate::persona::ask::CLOSING.line));
+        assert!(is_harness_voice(crate::persona::ask::CLOSING.line));
+        assert_eq!(outcome.text, "Words, then.");
     }
 
     /// In a run set to end on its picture, a call refused because an earlier

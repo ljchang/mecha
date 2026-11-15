@@ -110,6 +110,15 @@ pub fn latest_reply(history: &[Message]) -> Option<String> {
         .map(|m| m.text())
 }
 
+/// Whether this turn's picture calls wait on the ask reader
+/// (`persona::ask`): a turn the owner typed or spoke. One started from a
+/// picture's button or its edit panel is the ask itself, and a turn with no
+/// words of the owner's has nothing to read.
+fn ask_is_read(panel: bool, build_on: Option<&crate::imagegen::BuildOn>, owner: &str) -> bool {
+    let pressed = panel || matches!(build_on, Some(crate::imagegen::BuildOn::Picture(_)));
+    !pressed && !owner.trim().is_empty()
+}
+
 /// The run context a persona turn runs under: the agent's own, jailed to the
 /// chat's workspace, with the turn's stamps, notes and budgets. No brief,
 /// homeostat, outbox or hooks: each is the owner's.
@@ -137,6 +146,7 @@ pub fn context(agent: &Agent, turn: Turn<'_>) -> RunContext {
         tools.role_split = None;
         tools.scene_reader = None;
         tools.shot_reader = None;
+        tools.picture_ask = None;
     }
     if let Readers::From(provider) = turn.readers {
         // Each person's part of a scene's `together`, read on the persona's
@@ -192,6 +202,28 @@ pub fn context(agent: &Agent, turn: Turn<'_>) -> RunContext {
             };
         }
     }
+    // The ask reader for this turn's picture calls (`persona::ask`), on the
+    // persona's model, over what the owner wrote: a chat that has drawn
+    // a few goes on drawing whatever it is told. Not on a turn the owner
+    // started from a picture's button or its edit panel, which is the ask,
+    // nor where there are no words of theirs to read.
+    if let (Readers::From(provider), true) = (
+        turn.readers,
+        ask_is_read(turn.panel, tools.build_on.as_ref(), turn.owner),
+    ) {
+        tools.picture_ask = match provider() {
+            Ok(provider) => Some(Arc::new(crate::persona::ask::ModelAsk {
+                provider,
+                model: turn.model.clone(),
+                latest: turn.owner.to_string(),
+                earlier: crate::persona::ask::earlier(turn.history),
+            }) as Arc<dyn crate::persona::ask::AskReader>),
+            Err(e) => {
+                tracing::warn!("persona chat: no ask reader this turn: {e:#}");
+                None
+            }
+        };
+    }
     cx.tools = Arc::new(tools);
     if cx.budget.max_turns.is_none() {
         cx.budget.max_turns = Some(MAX_TURNS);
@@ -222,5 +254,17 @@ mod tests {
         ];
         assert_eq!(latest_reply(&history).as_deref(), Some("an answer"));
         assert_eq!(latest_reply(&history[..1]), None);
+    }
+
+    #[test]
+    fn the_ask_is_read_on_a_typed_or_spoken_turn_and_never_on_a_press() {
+        use crate::imagegen::BuildOn;
+        let typed = BuildOn::Nothing;
+        let pressed = BuildOn::Picture("images/a.png".into());
+        assert!(ask_is_read(false, Some(&typed), "tell me about the lake"));
+        assert!(ask_is_read(false, None, "a spoken turn"));
+        assert!(!ask_is_read(false, Some(&pressed), "Continue: turn around"));
+        assert!(!ask_is_read(true, Some(&typed), "the panel's change"));
+        assert!(!ask_is_read(false, Some(&typed), "  "));
     }
 }

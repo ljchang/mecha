@@ -519,6 +519,7 @@ impl Tool for ReplayTool {
                 external: external.unwrap_or(true),
                 refusal: false,
                 not_dispatched: false,
+                closes: None,
                 // The recorded pixels are not re-sent; `mecha replay` counts
                 // and discloses them (`tool_pictures_without_pixels`).
                 image: None,

@@ -1095,6 +1095,28 @@ advances it.
   this chat last drew them in from the chat's copy (G1b), since the picture
   built on cannot hold them; a new picture asks nothing of it. A fresh
   chat had drawn a place and a person from another chat's last picture.
+- **A persona draws when the owner asks, and not otherwise**
+  (`persona::ask`). On a persona turn the host stamps
+  `ToolCtx::picture_ask`: a one-shot reader on the persona's model, with
+  no tools and none of the chat, given the owner's words this turn and
+  their three messages before it. `image_generate` and `video_generate`
+  ask it before anything is queued; a no answers the call with
+  `ask::NOT_ASKED` (a `refusal`, the harness working rather than the tool
+  failing) and closes the run (`ToolOutput::closes`, `ask::CLOSING`), so
+  the reply is words and the call is not made again. Not stamped on a turn
+  started from a picture's button or its edit panel, which is the ask, nor
+  where the owner said nothing; `--no-readers` leaves it off. It fails
+  open: a reader that cannot be reached, is slow or answers badly leaves
+  the call drawn as sent, since a picture asked for and not drawn is the
+  worse failure. On 2026-11-15 one chat made 27 picture calls, 25 on
+  turns that asked for none, and drew through 5 of the owner's 13
+  requests to stop; replayed, rewording the tool description and the
+  notes left it drawing 3 to 8 times in 10, and a note on the turn itself
+  saying none was asked for, 4 to 8 in 10. The reader missed no ask on
+  335 of the owner's real messages (123 labelled by hand, 212 held out)
+  and said yes to 6 that were none; through the built tool, 37 of 37
+  unasked calls on that chat's turns were refused and 3 of 3 asked were
+  drawn.
 - **What a picture builds on is the owner's press** (R11, 2026-10-27):
   a persona chat stamps `ToolCtx::build_on` on every typed turn
   (`imagegen::BuildOn`). `Nothing` on a typed turn: a call whose

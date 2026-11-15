@@ -74,6 +74,12 @@ pub struct ToolOutput {
     /// delivery the owner reconciles by hand. Its one reader is the outbox's
     /// release path, which resolves the attempt as not delivered instead.
     pub not_dispatched: bool,
+    /// This result closes the run: its next request is the closing one,
+    /// with no tools, ending on this line (`agent::Closing`). For a guard
+    /// that refuses a call the model would otherwise make again, as the
+    /// queue's busy refusal is closed; set by trusted in-process tools only,
+    /// never from an MCP wire.
+    pub closes: Option<&'static crate::agent::Closing>,
     /// A picture the tool made, for the model to look at.
     ///
     /// Never rendered *inside* the result: the OpenAI dialect's
@@ -118,6 +124,7 @@ impl ToolOutput {
             external: false,
             refusal: false,
             not_dispatched: false,
+            closes: None,
             image: None,
             deferred: None,
             program: None,
@@ -133,6 +140,7 @@ impl ToolOutput {
             external: false,
             refusal: false,
             not_dispatched: false,
+            closes: None,
             image: None,
             deferred: None,
             program: None,
@@ -150,11 +158,18 @@ impl ToolOutput {
             external: false,
             refusal: true,
             not_dispatched: false,
+            closes: None,
             image: None,
             deferred: None,
             program: None,
             reads: Vec::new(),
         }
+    }
+
+    /// Close the run on `closing` after this result — see the `closes` field.
+    pub fn closing_with(mut self, closing: &'static crate::agent::Closing) -> Self {
+        self.closes = Some(closing);
+        self
     }
 
     /// Hand the model a picture beside this result — see the `image` field.
@@ -998,6 +1013,11 @@ pub struct ToolCtx {
     /// reply) for what a picture call left out, in a persona chat; `None`
     /// everywhere else (`persona::edit::SceneReader`).
     pub scene_reader: Option<std::sync::Arc<dyn crate::persona::edit::SceneReader>>,
+    /// Who answers whether this turn's owner asked for a picture, in a
+    /// persona chat: a picture or video call on a turn that asked for none
+    /// is not drawn (`persona::ask`). `None` everywhere else, and on a turn
+    /// started from a picture's own button.
+    pub picture_ask: Option<std::sync::Arc<dyn crate::persona::ask::AskReader>>,
     /// Who reads where a picture's camera stood, for a camera move counted
     /// from it (`camera::ShotReader`); with `None` the move is restaged, and said.
     pub shot_reader: Option<std::sync::Arc<dyn crate::camera::ShotReader>>,
@@ -1264,6 +1284,7 @@ impl Default for ToolCtx {
             scene: None,
             role_split: None,
             scene_reader: None,
+            picture_ask: None,
             shot_reader: None,
             prompt_log: None,
             image_seeds: None,
