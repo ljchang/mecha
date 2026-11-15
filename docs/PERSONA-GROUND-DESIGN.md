@@ -1,6 +1,6 @@
 # Persona common ground: what the two of them share, and how it is said
 
-**Status:** proposal, 2026-11-14. Nothing here is built. §10 lists the nine decisions that are
+**Status:** proposal, 2026-11-14. Nothing here is built. §10 lists the eight decisions that are
 the owner's; §9 is a build order that measures before it fits.
 
 **The question:** a persona chat still reads as talking with a machine. It repeats what it has
@@ -394,9 +394,8 @@ curves do.
   to that chat and cites no row. The alternative ties an item to the shared copy and cascades
   the copy's erase into every persona's ground; those are separate `memory.db` files beside
   `shared.db`, which cannot share one commit, so a failed cascade would leave exactly the item
-  that outlives its row. It would need an idempotent erase retried until it completes, with
-  the item ineligible meanwhile under the withdrawal rule above. That cost is why the simpler
-  rule is proposed; the choice is the owner's (§10, decision 9).
+  that outlives its row. The owner ruled for the simpler rule (§10, 2026-11-15): a
+  persona's ground is its own.
 - **Lock is `PERSONA-DESIGN` §9.9's, unchanged.** Locking hides the chat; the writer still
   reads it, and its items behave in other chats as its memory rows do.
 
@@ -498,11 +497,12 @@ the nightly pass writes items, and the owner sees them where memories are curate
    more briefly, and a mention raises its activation, which is strengthening-shaped and is the
    half of the exception D28's wording touches. Needed from step 2 of §9 (the gate) and step 3
    (the form); step 1 needs none.
-9. **Items from shared facts.** The item pass makes nothing from a fact the owner shared across
-   personas (proposed: no erase then has to reach another persona's store), or such a fact can
-   become an item in each persona's ground, tied to the shared copy, with the retried erase §7
-   describes. The first loses the pair's shorthand for a shared fact until they talk about it
-   themselves.
+
+### Ruled
+
+- **A persona's ground is its own** (owner, 2026-11-15: this kind of memory stays independent
+  per persona; no case for sharing it). Nothing in one persona's ground reaches another's, and
+  the item pass makes nothing from a fact shared across personas (§7). This was decision 9.
 
 ## Sources
 
