@@ -1,6 +1,6 @@
 # Persona common ground: what the two of them share, and how it is said
 
-**Status:** proposal, 2026-11-14. Nothing here is built. §10 lists the eight decisions that are
+**Status:** proposal, 2026-11-14. Nothing here is built. §10 lists the nine decisions that are
 the owner's; §9 is a build order that measures before it fits.
 
 **The question:** a persona chat still reads as talking with a machine. It repeats what it has
@@ -216,7 +216,9 @@ two shapes on one recorded chat.
 **A turn's events land with its reply.** A persona turn can fail after its notes were built,
 and today the ledger is put back (`told_before`) so that an offer nobody read is not an offer
 spent. A durable log cannot be put back, so a turn's `cued` and `offered` are appended only
-once its reply is recorded, in the same write. A turn that is rolled back leaves no event, and
+once its reply is recorded. The transcript and `memory.db` are two stores, so this is an
+order and not one write: reply first, then events, and a crash between the two loses that
+turn's events, which is the safe side. A turn that is rolled back leaves no event, and
 no fold or readout counts an offer nobody saw.
 
 **A closed set on an append-only store is a wire format.** An item kind or an event the code
@@ -330,7 +332,14 @@ curves do.
   (the owner's single-record `persona::memory::forget`), since an item sourced to one chat may
   cite a row written from another. The match is over every `uid` in the record's lineage
   (`Memory::lineage`), so an item made before a row was corrected is found; and the record's
-  events are erased as D28 rules. And the erase does not fail soft: `forget_chat` reports a
+  events are erased as D28 rules. `Memory::lineage` is private to `persona::memory`, which is
+  where the ground's erase lives.
+- **Withdrawing is honoured, not only deleting.** A row can leave recall without being
+  deleted: invalidated (`Memory::invalidate`), unshared (`Shared::unshare`), or no longer
+  visible to this persona after its groups or the row's audience narrowed. Recall honours each
+  at once, so the ground does: an item is ineligible, as background and as an offer, while
+  every row it was made from is invalidated or not visible. That is derived at the time of
+  use, so it needs no migration and a row shared again brings its item back. And the erase does not fail soft: `forget_chat` reports a
   scene it could not remove and carries on, but an item that outlives its chat keeps riding in
   prompts. The ground is in `memory.db`, so its erase is part of the same transaction as the
   rows': a failure refuses the whole forget before anything is deleted, where a store erased
@@ -361,7 +370,14 @@ curves do.
   offered or as background, matched against that recorded id list and never against a note's
   text, and any other id is refused.
 - **Recall stays keyed to the owner's words**, never the persona's.
-- **Nothing crosses personas**, and nothing reaches the knowledge graph.
+- **Nothing crosses personas**, and nothing reaches the knowledge graph. One existing route
+  does carry another persona's row into a chat: a fact the owner shared rides in the chat-start
+  block (`Shared::visible_to`), stays in the history, and is read by the writer. An item made
+  there cites the shared copy's `uid` as it would any row, so the withdrawal rule above covers
+  it, and the shared copy's erase (`Shared::forget_chat`, `Shared::unshare_from`) cascades into
+  the ground of every persona that could see it. The alternative, that the item pass makes
+  nothing from a shared row at all, is simpler and loses the pair's shorthand for things the
+  owner chose to share; it is the owner's choice (§10, decision 9).
 - **Lock is `PERSONA-DESIGN` §9.9's, unchanged.** Locking hides the chat; the writer still
   reads it, and its items behave in other chats as its memory rows do.
 
@@ -462,6 +478,9 @@ the nightly pass writes items, and the owner sees them where memories are curate
    more briefly, and a mention raises its activation, which is strengthening-shaped and is the
    half of the exception D28's wording touches. Needed from step 2 of §9 (the gate) and step 3
    (the form); step 1 needs none.
+9. **Items from shared facts.** A fact the owner shared across personas can become an item in
+   each persona's ground, tied to the shared copy so that unsharing or forgetting it removes
+   the item everywhere (proposed), or the item pass makes nothing from a shared fact.
 
 ## Sources
 
