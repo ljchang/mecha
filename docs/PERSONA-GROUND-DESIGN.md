@@ -352,9 +352,11 @@ curves do.
   report reads off the same log and the ground adds what was said and how it was received. D28 also ruled that by default nothing in the log changes what is
   recalled, "because use-driven strengthening is how a persona fixates". Memory ranking keeps
   that. **The gate of §5.2 and the form of §5.3 are a departure from it**: they read the log to
-  decide what is offered and how. The direction is the opposite of the one D28 feared, since a
-  use makes an item rest and never makes it likelier, but it is an exception to a recorded
-  ruling and is the owner's to make (§10, decision 8). Step 1 of §9 records only and needs no
+  decide what is offered and how. For what is offered, the direction is the opposite of the one D28 feared: a
+  use makes an item rest and never makes it likelier. For the form it is not: a mention raises
+  activation and an item used more is referred to more briefly, which is a use feeding back on
+  how the item surfaces, and is the half D28's wording touches. Both are an exception to a
+  recorded ruling and the owner's to make (§10, decision 8). Step 1 of §9 records only and needs no
   exception.
 - **Memory v2.** Not a dependency. The ground reads persona memory as it is. If personas later
   move onto memory v2, items map onto its objects and the event log onto its exposure record;
@@ -403,7 +405,9 @@ curves do.
   untrusted stretch is a candidate form on a clean item. Until the owner approves it, it counts
   for nothing: it enters no prompt, and it is not one of the forms a reply is matched against
   to mark an item said, since an outside party chose the span and could choose one the persona
-  would say anyway. An approved one makes the offer that names it ride the untrusted stem. A tainted stretch can
+  would say anyway. Nor is it a form the owner's own words are matched against to read uptake,
+  and that holds after approval too: approval makes a form usable, not clean, so the owner
+  typing an outside party's span never shortens a reference. An approved one makes the offer that names it ride the untrusted stem. A tainted stretch can
   mark an item said; it cannot mark one taken up. Because that makes every tainted mark a use
   with no uptake, the folds that lengthen an item's rest, retire it or raise its activation
   ignore a `said` from a tainted chat: such a mark quiets the item in that chat and nowhere
