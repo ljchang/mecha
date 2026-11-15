@@ -3737,6 +3737,12 @@ impl Agent {
                 .flatten()
             {
                 emit(&events, AgentEvent::QueuedInput(queued.clone()));
+                // A steer is the owner's latest message to a reader of
+                // their words too (`persona::ask`), which was built at the
+                // turn's start and would refuse a picture the steer asks for.
+                if let Some(reader) = &cx.tools.picture_ask {
+                    reader.said_more(&queued);
+                }
                 fold_steer(messages, queued);
             }
 

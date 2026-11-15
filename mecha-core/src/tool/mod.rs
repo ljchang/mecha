@@ -78,7 +78,9 @@ pub struct ToolOutput {
     /// with no tools, ending on this line (`agent::Closing`). For a guard
     /// that refuses a call the model would otherwise make again, as the
     /// queue's busy refusal is closed; set by trusted in-process tools only,
-    /// never from an MCP wire.
+    /// never from an MCP wire. Read on the loop's own dispatch only: a call a
+    /// program makes (`serve_host_calls`) drops it, which no tool that sets
+    /// it can reach today, since code mode admits no picture tool.
     pub closes: Option<&'static crate::agent::Closing>,
     /// A picture the tool made, for the model to look at.
     ///

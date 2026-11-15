@@ -212,13 +212,12 @@ pub fn context(agent: &Agent, turn: Turn<'_>) -> RunContext {
         ask_is_read(turn.panel, tools.build_on.as_ref(), turn.owner),
     ) {
         tools.picture_ask = match provider() {
-            Ok(provider) => Some(Arc::new(crate::persona::ask::ModelAsk {
+            Ok(provider) => Some(Arc::new(crate::persona::ask::ModelAsk::new(
                 provider,
-                model: turn.model.clone(),
-                latest: turn.owner.to_string(),
-                earlier: crate::persona::ask::earlier(turn.history, turn.owner),
-                answer: tokio::sync::OnceCell::new(),
-            }) as Arc<dyn crate::persona::ask::AskReader>),
+                turn.model.clone(),
+                turn.owner.to_string(),
+                crate::persona::ask::earlier(turn.history, turn.owner),
+            )) as Arc<dyn crate::persona::ask::AskReader>),
             Err(e) => {
                 tracing::warn!("persona chat: no ask reader this turn: {e:#}");
                 None
