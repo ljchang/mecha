@@ -32,7 +32,7 @@ Read from the tree at `b0995402e` and unchanged at `b3b6e2c78` (one visibility c
 | What | Where | Limit |
 |---|---|---|
 | Told-ledger for three teller lines | `persona::today::Ledger`, held in `PersonaSession::told` | Word match on closed English lists; in process memory only, so a restart re-offers every line; covers events, feeling and weather and nothing else |
-| Per-turn recall | `persona::recall::per_turn`, keyed by the owner's words | Whatever is retrieved is put in the prompt; the only filter is `already`, a 60-character prefix match against the conversation |
+| Per-turn recall | `persona::recall::per_turn`, keyed by the owner's words | What passes retrieval is put in the prompt. Retrieval has a floor of its own (`Memory::recall_search`: active rows only, and a meaning-only hit needs `MIN_COSINE`; the word arm has none), and after it the only filter is `already`, a 60-character prefix match against the conversation. Nothing asks whether the row has been said, or whether now is the moment |
 | Chat-start memory block | `recall::chat_start` | Chosen by budget and recency, not by what the chat turns out to be about |
 | Episodes carry `open_threads` | `persona::memory`, written nightly by `persona::writer`; `recall::chat_start` and `Memory::recall_search` append them to an episode's line | They ride in every chat-start block and in per-turn recall as text. Nothing gives a thread a time it falls due, records whether it was raised, or closes it when the owner passes |
 | A record of when a memory was used | Ruled as D28 (`PERSONA-DESIGN` §9.13), unbuilt | There is no record anywhere of a memory being recalled, offered or said |
@@ -218,7 +218,10 @@ and today the ledger is put back (`told_before`) so that an offer nobody read is
 spent. A durable log cannot be put back, so a turn's `cued` and `offered` are appended only
 once its reply is recorded. The transcript and `memory.db` are two stores, so this is an
 order and not one write: reply first, then events, and a crash between the two loses that
-turn's events, which is the safe side. A turn that is rolled back leaves no event, and
+turn's events. That is a choice between two failures, not a safe side: a lost event costs one
+re-telling of something the owner already heard, and an event stored for a reply that never
+went out costs a silence that cannot be undone, an item wrongly rested or retired. The
+re-telling is the one accepted, and the window is kept as narrow as the two writes allow. A turn that is rolled back leaves no event, and
 no fold or readout counts an offer nobody saw.
 
 **A closed set on an append-only store is a wire format.** An item kind or an event the code
@@ -262,7 +265,9 @@ with a fall it only half produced. And when threads are switched on (§9, step 4
 passed cannot also ride as text at every chat's opening. Whether chat-start rows already said
 and acknowledged should be thinned is left until that readout exists.
 
-- **Distinctive.** A cue that reaches many items offers none (§2.4).
+- **Distinctive.** A cue that reaches many items offers none (§2.4). This is a test of the
+  cue's ambiguity, and is not retrieval's own floor (`MIN_COSINE`), which asks how like the
+  query a row is; a row can clear that and still be one of many the cue reached.
 - **One.** At most one item is offered for a reply.
 - **Rested.** An item said recently is not offered again until it has rested; the rest
   lengthens with each use that got no uptake, and an item passed over repeatedly is retired.
@@ -300,7 +305,9 @@ curves do.
   anchor, call_note, today_note, variety_note, scene_note]`. The ground adds two: the
   background note and the offer. Each is its own note with its own clean and untrusted stems,
   registered where the others are (`Taint::arm_for_content`, `message::is_recorded_note`,
-  `agent::is_harness_voice`). The computation lives in a core module beside `persona::today`.
+  `agent::is_harness_voice`). Both stems of both notes arm `private`, since each carries what
+  the pair has said to each other, and only the untrusted stem arms `untrusted`, as recall's
+  stems do: one stem arming both would make every chat with a ground untrusted. The computation lives in a core module beside `persona::today`.
 - **The cached prefix is untouched**, and the turn is not free. Nothing per chat enters the
   system prompt, but a per-turn note makes the last turn re-prefill once it is projected off
   the wire, which `PERSONA-LIFE-DESIGN` §4.5 costed when the today-block made it two notes a
@@ -412,7 +419,7 @@ Offline, through `mecha persona measures`, as counts and distributions and never
   (the released repeated-reference corpus of Hawkins et al. 2020 gives a reference shape).
 - **Insider rate:** the share of turns that use a handle, by how long the pair has talked, and
   the spread of item kinds (the entropy measure of §2.3).
-- **Unsaid:** the words of `meaning` behind the handles a turn used: how much went without
+- **Unsaid:** how many words of `meaning` lie behind the handles a turn used: how much went without
   saying.
 - **Cue to mention:** how often a cued item was offered, said, and taken up; the distance in
   turns and days between an item's introduction and each return to it.
@@ -443,7 +450,8 @@ notes at the branch point.
    from chats as they happen, and the nightly item pass. No prompt changes. Read the baseline:
    today's re-telling rate, reference lengths, insider rate, and how often the open threads
    that already ride in recall are raised. This is D28 as ruled (§6) and the typed shown set,
-   built once.
+   built once. `passed` and `repaired` are read from the owner's next turn and recorded from
+   step 1 as well; `withheld` exists only from step 5.
 2. **Told and the gate.** `today::Ledger` moves onto the store; the whole per-turn fold goes
    through the gate, rows and items alike; background and offer become separate notes. This is
    the largest change to what a persona is told, since most of today's per-turn rows will not
