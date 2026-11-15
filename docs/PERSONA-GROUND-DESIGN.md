@@ -260,7 +260,8 @@ are curated.
 ### 5.1 Told
 
 `today::Ledger` generalised and made durable: any item the persona has said is known to be
-said, across restarts and chats, from the `said` events. An item already said and acknowledged
+said, across restarts and chats, from the `said` events of clean chats (a mark from a tainted
+chat quiets the item in that chat only, §7). An item already said and acknowledged
 is not offered as news again. Where the record is uncertain (said, and no sign it was taken
 in), the persona may ask whether it has mentioned it, which is what people do with their own
 poor memory for whom they told (§2.1). That question reads only `said` events from clean
@@ -313,7 +314,8 @@ curves do.
 ### 5.4 Returned to
 
 - **Threads** (§2.5). An unfinished thread or a stated plan may carry a `due_at`; whether it has been raised or closed is derived (§4). It is offered once, at a
-  chat's opening. Raising one at a change of topic within a chat needs code to tell that the
+  chat's opening, and it is that reply's one offer: a thread and a cued item never ride
+  together (§5.2). Raising one at a change of topic within a chat needs code to tell that the
   topic changed, and is left out of the first build.
   If the owner passes it, it closes.
 - **Callbacks.** A callback is an item reused in a new context: the owner's current words cue
@@ -333,8 +335,8 @@ curves do.
   stems do: one stem arming both would make every chat with a ground untrusted. The computation lives in a core module beside `persona::today`.
 - **The cached prefix is untouched**, and the turn is not free. Nothing per chat enters the
   system prompt, but a per-turn note makes the last turn re-prefill once it is projected off
-  the wire, which `PERSONA-LIFE-DESIGN` §4.5 costed when the today-block made it two notes a
-  turn. The ground makes it up to four. The offer is present only on a turn that has one, the
+  the wire, which `PERSONA-LIFE-DESIGN` §4.5 costed when the today-block was added. The array above is
+  already up to seven notes a turn; the ground makes it up to nine. The offer is present only on a turn that has one, the
   background only on a turn where the owner used a handle, and step 2 measures the added
   prefill on the local model before it is left on.
 - **The typed shown set, in part.** `PERSONA-LIFE-DESIGN` §4.5 asked for a typed list of the
@@ -482,8 +484,9 @@ notes at the branch point.
    from chats as they happen, and the nightly item pass. No prompt changes. Read the baseline:
    today's re-telling rate, reference lengths, insider rate, and how often the open threads
    that already ride in recall are raised. This is D28 as ruled (§6) and the typed shown set,
-   built once. `passed` and `repaired` are read from the owner's next turn and recorded from
-   step 1 as well; `withheld` exists only from step 5.
+   built once. `passed` and `repaired` come from the nightly pass only (§4), so step 1
+   records them only if decision 9 is ruled for the pass; ruled for code alone, neither event
+   exists and step 1 needs no ruling at all. `withheld` exists only from step 5.
 2. **Told and the gate.** `today::Ledger` moves onto the store; the whole per-turn fold goes
    through the gate, rows and items alike; background and offer become separate notes. This is
    the largest change to what a persona is told, since most of today's per-turn rows will not
