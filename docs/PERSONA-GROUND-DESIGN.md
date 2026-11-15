@@ -18,7 +18,7 @@ behaviours built on it, and the log that makes it an instrument for studying con
 conversation, and asked that the system "track the graph dependencies and when and where they
 are referenced and the timescale". Every mechanism below is a typed event with a time, so the
 record of a chat can be read back as a graph of items, cues and mentions (§8). Where the
-literature has no answer (§2.6), the system can run the experiment.
+literature has no answer (§2.7), the system can run the experiment.
 
 Privacy: this document carries no conversation text, no persona names and no session ids. Its
 examples are made up or quoted from published papers.
@@ -261,8 +261,10 @@ material, stored once: what the persona needs to know going in, chosen by budget
 It stays that, with two changes. Its rows are recorded as events with their door named, so
 step 2's readout counts chat start apart from the per-turn fold and does not credit the gate
 with a fall it only half produced. And when threads are switched on (§9, step 4) the
-`(Left open: …)` text leaves the chat-start block, since a thread offered once and closed when
-passed cannot also ride as text at every chat's opening. Whether chat-start rows already said
+`(Left open: …)` text leaves both places that append it: the chat-start block, and the
+episode line `Memory::recall_search` builds, which the gate cannot reach because the text is
+already inside the row it passes. A thread offered once and closed when passed cannot also
+ride as prose through either door. Whether chat-start rows already said
 and acknowledged should be thinned is left until that readout exists.
 
 - **Distinctive.** A cue that reaches many items offers none (§2.4). This is a test of the
@@ -350,16 +352,17 @@ curves do.
   (`Memory::lineage`), so an item made before a row was corrected is found; and the record's
   events are erased as D28 rules. `Memory::lineage` is private to `persona::memory`, which is
   where the ground's erase lives.
+- **The erase does not fail soft.** `forget_chat` reports a scene it could not remove and
+  carries on, but an item that outlives its chat keeps riding in prompts. The ground is in
+  `memory.db`, so its erase is part of the same transaction as the rows': a failure refuses
+  the whole forget before anything is deleted, where a store erased afterwards could only
+  report an error for a forget that had already happened.
 - **Withdrawing is honoured, not only deleting.** A row can leave recall without being
-  deleted: invalidated (`Memory::invalidate`), unshared (`Shared::unshare`), or no longer
-  visible to this persona after its groups or the row's audience narrowed. Recall honours each
-  at once, so the ground does: an item is ineligible, as background and as an offer, while
-  every row it was made from is invalidated, not visible, or gone. That is derived at the time of
-  use, so it needs no migration and a row shared again brings its item back. And the erase does not fail soft: `forget_chat` reports a
-  scene it could not remove and carries on, but an item that outlives its chat keeps riding in
-  prompts. The ground is in `memory.db`, so its erase is part of the same transaction as the
-  rows': a failure refuses the whole forget before anything is deleted, where a store erased
-  afterwards could only report an error for a forget that had already happened.
+  deleted: `Memory::invalidate` takes it out, and recall honours that at once. So does the
+  ground: an item is ineligible, as background and as an offer, while every row it was made
+  from is invalidated or gone. That is derived at the time of use, so it needs no migration.
+  The other ways a row is withdrawn, unsharing and a narrowed audience, act on shared copies,
+  and no item is made from one (below), so they cannot reach the ground.
 - **Incognito writes nothing.** An incognito chat reads the ground and stores no event. It
   still has events: they are held in process for the chat's life, folded like any others, and
   dropped with the room, which is how `PersonaSession::told` behaves today. Without them the
@@ -370,8 +373,10 @@ curves do.
   approves it, and an approved one rides under the untrusted stem. Its `meaning` is model-written
   prose about outside content, and the ground is per persona, so it would otherwise surface in a
   chat that never saw the stretch it came from. Origin is per form as well as per item: a form picked from an
-  untrusted stretch is a candidate form on a clean item, entering no prompt until approved, and
-  an approved one makes the offer that names it ride the untrusted stem. A tainted stretch can
+  untrusted stretch is a candidate form on a clean item. Until the owner approves it, it counts
+  for nothing: it enters no prompt, and it is not one of the forms a reply is matched against
+  to mark an item said, since an outside party chose the span and could choose one the persona
+  would say anyway. An approved one makes the offer that names it ride the untrusted stem. A tainted stretch can
   mark an item said; it cannot mark one taken up. Because that makes every tainted mark a use
   with no uptake, the folds that lengthen an item's rest, retire it or raise its activation
   ignore a `said` from a tainted chat: such a mark quiets the item in that chat and nowhere
@@ -384,7 +389,8 @@ curves do.
   is a way to silence an item, so there it is bounded as
   `PERSONA-LIFE-DESIGN` §4.5 bounds `told`: only a subject this chat's notes recorded as
   offered or as background, matched against that recorded id list and never against a note's
-  text, and any other id is refused.
+  text, and any other id is refused. Stopping a tainted mark at its own chat is tighter than
+  §4.5's `told`, which carries one across chats; the tighter rule is the one to build.
 - **Recall stays keyed to the owner's words**, never the persona's.
 - **Nothing crosses personas**, and nothing reaches the knowledge graph. One existing route
   does carry another persona's row into a chat: a fact the owner shared rides in the chat-start
