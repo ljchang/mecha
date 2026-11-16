@@ -228,6 +228,27 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // (found on review). Free when there is nothing to apply.
     reconcile_recorded_keys(&store, &paths, unreadable_sessions, args.dry_run)?;
 
+    // Stamped on every reply row: a pass that stops after a source's rows
+    // and before its mined mark is superseded by the retry's rows.
+    let pass = mecha_core::session::Session::new_id();
+    // A mined session that grew by nothing to ask about is finished here,
+    // before a provider is needed: every live chat grows daily, and a pass
+    // with nothing to ask must go on needing no provider (found on review
+    // of #886).
+    if !args.dry_run && !args.remine_untrusted {
+        let mut still = Vec::with_capacity(todo.len());
+        for (meta, path) in todo {
+            if mined.contains(&meta.id) {
+                if let Some(bytes) = nothing_new(&meta.id, &path, &asked) {
+                    store.finish_pass(&meta.id, Some(&pass), bytes, &[])?;
+                    continue;
+                }
+            }
+            still.push((meta, path));
+        }
+        todo = still;
+    }
+
     if todo.is_empty() && outbox_todo.is_empty() {
         println!("nothing to mine: every session and sent draft is already reflected on");
         return Ok(());
@@ -274,10 +295,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let mut interventions_found = 0usize;
     let mut reflections_written = 0usize;
     let mut replies_tally = mecha_core::learning::ReplyTally::default();
-    // Stamped on every reply row: a pass that stops after a source's rows
-    // and before its mined mark is superseded by the retry's rows.
-    let pass = mecha_core::session::Session::new_id();
-
     for (meta, path) in &todo {
         // The workspace the session's rules block was matched against, off
         // its run record — the key a match presents. Never the session's
@@ -516,7 +533,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
         if !args.remine_untrusted {
             // One line says the session was read to here and which
-            // moments were asked on the way.
+            // moments were asked on the way. "Asked" includes a moment the
+            // loop above passed over on its provenance before the
+            // reflector saw it: recorded taint does not change, so it would
+            // be passed over again on every later pass.
             let new: Vec<String> = keys.into_iter().filter(|k| !asked.contains(k)).collect();
             store.finish_pass(&meta.id, Some(&pass), text.len() as u64, &new)?;
             asked.extend(new);
@@ -671,6 +691,27 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// How long a mined session's transcript is, when every moment in it has
+/// been asked about already. `None` when it holds a new one, or cannot be
+/// read, which the pass itself reports.
+fn nothing_new(
+    session: &str,
+    path: &Path,
+    asked: &std::collections::HashSet<String>,
+) -> Option<u64> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let t = Session::parse(path, &text).ok()?;
+    let mut interventions = extract_interventions(&t.convo.messages);
+    interventions.extend(mecha_core::learning::extract_mismatches(
+        &t.convo.messages,
+        &t.outcome_positions,
+    ));
+    mecha_core::learning::moment_keys(session, &interventions)
+        .iter()
+        .all(|k| asked.contains(k))
+        .then_some(text.len() as u64)
 }
 
 /// Give every mined session that has no length on record one: where its

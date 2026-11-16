@@ -4313,18 +4313,29 @@ struct FinishedPass {
 /// is. Not the message's index, which a compaction moves. A compaction that
 /// drops an earlier "no" makes a later one read as the earlier, already
 /// asked: the error is toward asking once too few, never twice.
+///
+/// A mismatch is known by its step and not its words: every mismatch
+/// carries the same sentence ([`extract_mismatches`]), so by words alone a
+/// key was "the nth mismatch", an index by another name, and after a
+/// compaction dropped earlier ones each new mismatch read as one already
+/// asked (found on review of #886). The step's record is written once and
+/// never changed. The other triggers are not keyed by their context, which
+/// is what the assistant had said before and is the thing a compaction
+/// rewrites: a key that moved with it would ask the same moment twice.
 pub fn moment_keys(session: &str, interventions: &[Intervention]) -> Vec<String> {
     use sha2::{Digest, Sha256};
     let mut seen: HashMap<(&str, &str), usize> = HashMap::new();
     interventions
         .iter()
         .map(|i| {
-            let nth = seen
-                .entry((i.trigger.as_str(), i.text.as_str()))
-                .or_insert(0);
+            let words = match i.trigger {
+                Trigger::Mismatch => i.context.as_str(),
+                _ => i.text.as_str(),
+            };
+            let nth = seen.entry((i.trigger.as_str(), words)).or_insert(0);
             *nth += 1;
             let mut h = Sha256::new();
-            for part in [session, i.trigger.as_str(), i.text.as_str()] {
+            for part in [session, i.trigger.as_str(), words] {
                 h.update((part.len() as u64).to_le_bytes());
                 h.update(part.as_bytes());
             }
@@ -9536,6 +9547,22 @@ mod correction_attribution {
         let again = moment_keys("s", &later);
         assert_eq!(&again[..3], &keys[..]);
         assert!(!keys.contains(&again[3]));
+        // Mismatches all carry one sentence and are told apart by their
+        // step: with an earlier one gone, the later keeps its own key.
+        let failed = |step: &str| Intervention {
+            context: step.into(),
+            ..said(Trigger::Mismatch, "a check failed", 0)
+        };
+        let both = moment_keys("s", &[failed("step-1"), failed("step-2")]);
+        assert_ne!(both[0], both[1]);
+        assert_eq!(moment_keys("s", &[failed("step-2")])[0], both[1]);
+        // A follow-up is not told apart by what the assistant said before
+        // it, which a compaction rewrites.
+        let after = Intervention {
+            context: "a summary".into(),
+            ..said(Trigger::Followup, "no", 4)
+        };
+        assert_eq!(moment_keys("s", &[after])[0], keys[0]);
         // Another session's same words are another moment.
         assert_ne!(moment_keys("t", &first)[0], keys[0]);
         // No text is in a key.

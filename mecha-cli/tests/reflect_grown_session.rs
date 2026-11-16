@@ -142,10 +142,15 @@ async fn fixture_model(asked: Arc<AtomicUsize>) -> (String, tokio::task::JoinHan
 }
 
 async fn reflect(home: &Path, work: &Path) -> String {
+    reflect_with(home, work, &[]).await
+}
+
+async fn reflect_with(home: &Path, work: &Path, flags: &[&str]) -> String {
     let out = tokio::time::timeout(
         Duration::from_secs(120),
         Command::new(env!("CARGO_BIN_EXE_mecha"))
-            .args(["reflect"])
+            .arg("reflect")
+            .args(flags)
             .env("MECHA_HOME", home)
             .env("MECHA_SESSION_KIND", "test")
             .env_remove("MECHA_SESSION_DIR")
@@ -217,6 +222,16 @@ async fn a_chat_that_grew_is_read_again_for_what_is_new_only() {
     // Nothing added: the next pass asks nothing.
     reflect(&grown, &work).await;
     assert_eq!(count(), 1);
+    // Grown by a turn with nothing in it to ask about: the pass says there
+    // is nothing to mine, as one that needs no provider does, and the
+    // session is not read again for it.
+    append(
+        &session,
+        &[Message::assistant(vec![Block::text("A note to self.")])],
+    );
+    let out = reflect(&grown, &work).await;
+    assert!(out.contains("nothing to mine"), "{out}");
+    assert_eq!(count(), 1);
 
     // The chat goes on. The next pass asks about the new message alone,
     // and it is the second turn's attempt that it judges.
@@ -263,6 +278,10 @@ async fn a_chat_that_grew_is_read_again_for_what_is_new_only() {
         format!("{}\n", session.meta.id),
     )
     .unwrap();
+    // A dry run writes nothing: a line made here would mark every moment
+    // of every such session asked, with no model call and no way back.
+    reflect_with(&old, &work, &["--dry-run"]).await;
+    assert!(!old.join("learning").join("mined_passes.jsonl").exists());
     let out = reflect(&old, &work).await;
     assert_eq!(count(), 2, "{out}");
     assert!(
