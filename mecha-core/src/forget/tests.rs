@@ -170,6 +170,10 @@ fn seeded(home: &Path) -> Roots {
     write(&l.join("distilled.jsonl"), &format!("{GONE}\n{KEPT}\n"));
     write(&l.join("mined_outbox.jsonl"), "item-gone\nitem-kept\n");
     write(
+        &l.join("mined_passes.jsonl"),
+        &format!("{{\"session\":\"{GONE}\",\"pass\":\"p\",\"bytes\":9}}\n{{\"session\":\"{KEPT}\",\"pass\":\"p\",\"bytes\":9}}\n"),
+    );
+    write(
         &l.join("validations.jsonl"),
         "{\"reflexion_id\":\"refl-gone\"}\n{\"reflexion_id\":\"refl-kept\"}\n",
     );
@@ -384,6 +388,7 @@ fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
         ("learning/mined.jsonl", KEPT),
         ("learning/distilled.jsonl", KEPT),
         ("learning/mined_outbox.jsonl", "item-kept"),
+        ("learning/mined_passes.jsonl", KEPT),
         ("learning/validations.jsonl", "refl-kept"),
         ("learning/validation-attempts.jsonl", "refl-kept"),
         ("attempts/attempts.jsonl", "an ordinary ask"),
