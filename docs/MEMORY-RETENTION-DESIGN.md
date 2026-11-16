@@ -630,13 +630,19 @@ above, the index in its own voice; probes passed):
   of three; its length probe was predicted to reach three and stayed at two.
   One transcript was read: the run was handed both boards' notices for the
   berths, took the dead-plug notices for A and B as standing, and chose D.
-  Why d2 failed the same probe with the same notices in the index has not
-  been read out of its transcripts, so the gain is not yet attributed to the
-  absence line, and at three probes an arm it may not be one.
+  One d2 transcript of the same probe was read afterwards: the run recalled
+  that B's plugs were dead, read B again, said the record in front of it
+  showed no adverse notice, and kept B. That is the behaviour the absence
+  line is for, and it is one transcript a run: consistent with the line
+  being the cause, and at three probes an arm not shown to be.
 - **What the transcript also showed.** The absence line lists whatever words
   differ, a berth's letter and `true` among them; and the search after a
   write hands back earlier acknowledgements that differ by a file's path.
   Both are spent tokens, not yet trimmed.
+- **What the runs did not exercise.** The absence line was first computed
+  against the result as cut for the search; it is now computed against the
+  whole result (review of #888). The yard's records are far shorter than
+  the cut, so d3 measured the same line either way.
 
 Not built: the gate beside this index in the web chat, promotion (§11.2),
 and every rule of §11.3. The index is a file in the mecha home, not yet in
