@@ -941,6 +941,7 @@ pub async fn execute(
                 spans::CUE_STEM.into()
             },
             nothing: spans::NOTHING.into(),
+            failed_stem: spans::FAILED_STEM.into(),
             // A turn that reads a handful of records asks once for each.
             limit: 10,
             own_voice: args.spans_own_voice,

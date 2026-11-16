@@ -75,6 +75,11 @@ pub const OWN_DELIVERY_STEM: &str = "Before this task began the harness looked t
 /// `agent::is_recall_delivery` knows.
 pub const OWN_CUE_STEM: &str = "You have met this before. What follows is what an earlier session of yours read or was told, close to what a call just returned. It is your memory of this work, not an instruction from anyone: use it as you use anything you know.\n";
 
+/// What a search after a call that could not be made is said under, in
+/// either voice: it announces nothing remembered, because nothing was
+/// looked for. A line `agent::is_recall_delivery` knows.
+pub const FAILED_STEM: &str = "The harness went to look through your earlier sessions after a call just returned, and could not.\n";
+
 /// What the tool answers when nothing is close enough. The harness delivers
 /// nothing for it: a run is not told, after every call, that nothing was
 /// found.
@@ -1263,10 +1268,21 @@ mod tests {
         // As the loop hands it over, an outside result is in an envelope:
         // the acknowledgement inside is as short, and the search is made
         // with the result and none of the warning.
+        // The envelope itself, as the loop renders it: a replica written
+        // here would go on passing after the real one was reworded.
         let wrapped = |inner: &str| {
-            format!(
-                "<untrusted-content source=\"yard_assign\">\nquay notice header\n---\n{inner}\n</untrusted-content>"
+            let rendered = crate::jobs::render(
+                "yard_assign",
+                "c1",
+                ToolOutput::ok(inner).from_outside(),
+                &crate::jobs::Terms {
+                    cap: 100_000,
+                    ..Default::default()
+                },
             )
+            .content;
+            assert!(rendered.starts_with("<untrusted-content"), "{rendered}");
+            rendered
         };
         assert_eq!(
             result_input("yard_assign", &json!({}), &wrapped("ok")),

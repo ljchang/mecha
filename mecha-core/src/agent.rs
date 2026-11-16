@@ -548,6 +548,12 @@ pub struct ResultRecall {
     /// each one is paying for silence. A search that failed is another
     /// thing: it is said, once, and the run is not searched for again.
     pub nothing: String,
+    /// What a search that failed is said under. Its own line, and never
+    /// [`ResultRecall::stem`]: that one announces something remembered, and
+    /// a run told that and then that nothing could be looked for has been
+    /// told something untrue (review of #888). The same second place to
+    /// edit as the stem.
+    pub failed_stem: String,
     /// The most calls in one run.
     pub limit: u32,
     /// Whether what the search found is handed over as the run's own
@@ -2273,6 +2279,7 @@ fn is_recall_delivery(text: &str) -> bool {
         crate::tool::spans::CUE_STEM,
         crate::tool::spans::OWN_DELIVERY_STEM,
         crate::tool::spans::OWN_CUE_STEM,
+        crate::tool::spans::FAILED_STEM,
     ]
     .iter()
     .any(|stem| text.starts_with(stem.trim_end()))
@@ -5015,7 +5022,7 @@ impl Agent {
                                 Some((content, true)) => {
                                     found.push(Block::text(format!(
                                         "{}The search failed, and is not made again in this run: {content}",
-                                        cue.stem
+                                        cue.failed_stem
                                     )));
                                     result_recalls = cue.limit;
                                 }
@@ -12169,6 +12176,7 @@ mod tests {
             crate::tool::spans::CUE_STEM,
             crate::tool::spans::OWN_DELIVERY_STEM,
             crate::tool::spans::OWN_CUE_STEM,
+            crate::tool::spans::FAILED_STEM,
             #[cfg(feature = "memory-prototype")]
             crate::memory_session::DELIVERY_STEM,
             #[cfg(feature = "memory-prototype")]
@@ -19050,6 +19058,7 @@ justification = "echo is off on this box"
     }
 
     const RECALLED: &str = "The harness searched for that failure.\n";
+    const NOT_SEARCHED: &str = "The harness went to search and could not.\n";
 
     fn recall_on_error(limit: u32) -> ErrorRecall {
         ErrorRecall {
@@ -19149,6 +19158,7 @@ justification = "echo is off on this box"
             }),
             stem: RECALLED.into(),
             nothing: "nothing found".into(),
+            failed_stem: NOT_SEARCHED.into(),
             limit: 3,
             own_voice: false,
         });
@@ -19221,6 +19231,7 @@ justification = "echo is off on this box"
             input: Arc::new(|tool, _input, result| Some(json!({"tool": tool, "read": result}))),
             stem: RECALLED.into(),
             nothing: "nothing found".into(),
+            failed_stem: NOT_SEARCHED.into(),
             limit: 3,
             own_voice: true,
         });
@@ -19284,6 +19295,7 @@ justification = "echo is off on this box"
             input: Arc::new(|tool, _input, result| Some(json!({"tool": tool, "read": result}))),
             stem: RECALLED.into(),
             nothing: "nothing found".into(),
+            failed_stem: NOT_SEARCHED.into(),
             limit: 5,
             own_voice: false,
         });
@@ -19293,13 +19305,15 @@ justification = "echo is off on this box"
         // Asked once: the failure is the run's to know, and the budget is
         // not spent finding it out again after every call.
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert_eq!(recalls_after_results(&convo), vec![true, false]);
+        // Nothing is said under the line that announces something
+        // remembered: the failure has its own.
+        assert_eq!(recalls_after_results(&convo), vec![false, false]);
         let said = convo
             .messages
             .iter()
             .flat_map(|m| &m.content)
             .find_map(|b| match b {
-                Block::Text { text } if text.starts_with(RECALLED) => Some(text.clone()),
+                Block::Text { text } if text.starts_with(NOT_SEARCHED) => Some(text.clone()),
                 _ => None,
             })
             .unwrap();
