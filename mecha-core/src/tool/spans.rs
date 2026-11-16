@@ -290,18 +290,12 @@ fn held_outside_content(transcript: &str) -> bool {
 /// handed over; and not a message the harness wrote.
 fn spans_of(session: &str, transcript: &str) -> Vec<Span> {
     let messages = crate::session::Session::messages_ever(transcript);
-    // A picture is the one thing that enters a conversation without its
-    // taint record saying anything came from outside: an attached image arms
-    // private data only (a screenshot is captured, not composed). What it
-    // showed may still have been written by anyone, and what the assistant
-    // then said of it would be recalled as clean. A session that held a
-    // picture is counted as one that held outside content (review of #889;
-    // the owner may rule the other way, and this is the cautious reading
-    // until then).
-    let tainted = held_outside_content(transcript)
-        || messages
-            .iter()
-            .any(|m| m.content.iter().any(|b| matches!(b, Block::Image { .. })));
+    // A picture the owner attached does not make a session one that held
+    // outside content: it is the owner's, as a screenshot is captured and
+    // not composed, and the session is an ordinary chat (the owner's ruling
+    // of 2026-11-16). A picture out of the web or mail arrives through a
+    // tool, and that tool's result is what marks the session.
+    let tainted = held_outside_content(transcript);
     let mut lookups: BTreeSet<String> = BTreeSet::new();
     let mut out: Vec<Span> = Vec::new();
     for message in messages {
@@ -1710,8 +1704,9 @@ mod tests {
         assert_eq!(out.content.matches("fender line condemned").count(), 1);
         assert!(out.external);
 
-        // A session that held a picture: its record says nothing from
-        // outside entered, and what was said in it is not recalled as clean.
+        // A picture the owner attached leaves the session an ordinary
+        // chat: with a record that says nothing from outside entered, what
+        // was said in it is recalled clean.
         let pictured = home();
         let mut shown = vec![Message::user("what does this berth notice say")];
         shown[0]
@@ -1720,7 +1715,7 @@ mod tests {
         shown.extend(read());
         closed(&pictured.join("sessions"), shown, false);
         let out = ask_in(pictured).await;
-        assert!(out.content.contains("fender line condemned") && out.external);
+        assert!(out.content.contains("fender line condemned") && !out.external);
 
         // A run that rewrote its history and was killed before its
         // checkpoint is covered by nothing, whatever the run before it
