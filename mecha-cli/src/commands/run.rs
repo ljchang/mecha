@@ -621,7 +621,7 @@ pub async fn execute(
             );
             let found = dispatched.content.trim() != spans::NOTHING;
             eprintln!(
-                "mecha: spans cover {covered} earlier session(s), {embedded} passage(s) newly                  embedded; delivered {} bytes",
+                "mecha: spans cover {covered} earlier session(s), {embedded} passage(s) newly embedded; delivered {} bytes",
                 if found { dispatched.content.len() } else { 0 }
             );
             found.then(|| format!("{}{}", spans::DELIVERY_STEM, dispatched.content))

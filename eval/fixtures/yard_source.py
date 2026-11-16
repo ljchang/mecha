@@ -17,8 +17,10 @@ two surveys, then two probes. The superseded one
 board on which one notice has reversed, and the reefer probe's right berth
 is the one the second board names.
 
-**Held out.** Written before the stored index it is meant to measure
-existed, and before any memory arm was run on it.
+**Held out for the run of 2026-11-16 (`memory-yard-h1`), development data
+since.** Written before the stored index it is meant to measure existed and
+before any memory arm was run on it; the berth record then gained
+`reefer_points_fitted` on what that run showed.
 """
 
 import json

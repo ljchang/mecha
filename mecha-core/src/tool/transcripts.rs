@@ -406,6 +406,8 @@ mod tests {
             crate::tool::episodes::RETRACED_STEM,
             crate::attempts::DELIVERY_STEM,
             crate::attempts::CUE_STEM,
+            crate::tool::spans::DELIVERY_STEM,
+            crate::tool::spans::CUE_STEM,
         ] {
             let delivered = Block::text(format!("{stem}the quartz rule"));
             assert!(block_doc("a", &Role::User, &delivered).is_none(), "{stem}");

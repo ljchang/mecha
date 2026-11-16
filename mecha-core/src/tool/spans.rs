@@ -811,6 +811,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
+    /// Meaning is the floor and the words give the order: a later, emptier
+    /// reading of the records is nearer by meaning than the one earlier
+    /// reading that carries the notice, and under an even fusion of the two
+    /// ranks two such readings took both places.
+    #[tokio::test]
+    async fn the_reading_that_holds_what_was_asked_with_outranks_nearer_emptier_ones() {
+        let home = home();
+        let sessions = home.join("sessions");
+        let mut earlier = vec![Message::user("what is the weather")];
+        earlier.extend(looked_up("c1", "yard_berth", WITH_NOTICE));
+        earlier.extend(looked_up(
+            "c2",
+            "yard_berth",
+            r#"{"berth": "A", "length": 80}"#,
+        ));
+        earlier.extend(looked_up(
+            "c3",
+            "yard_berth",
+            r#"{"berth": "B", "length": 120}"#,
+        ));
+        session(&sessions, SessionKind::Run, earlier);
+        let current = session(&sessions, SessionKind::Run, vec![]);
+        let spans = Spans::new(
+            dir_in(&home),
+            sessions,
+            current,
+            Embedder::new(&embeddings().await).unwrap(),
+        );
+        spans.refresh().await.unwrap();
+        // The bare siblings are the query's shape exactly, and so nearer by
+        // meaning than the reading with a notice; only that reading has the
+        // letter and the number.
+        let out = ask(&spans, r#"{"berth": "C", "length": 200}"#).await;
+        let first = out.content.find("[session").unwrap();
+        let noticed = out
+            .content
+            .find("fender line condemned")
+            .expect("crowded out");
+        let next = out.content[first + 1..]
+            .find("[session")
+            .map(|at| at + first + 1);
+        assert!(
+            next.is_none_or(|next| noticed < next),
+            "the reading with the notice is not first: {}",
+            out.content
+        );
+        let _ = std::fs::remove_dir_all(home);
+    }
+
     #[test]
     fn a_result_asks_only_when_it_is_about_something() {
         assert!(result_input("yard_berth", &json!({}), WITH_NOTICE).is_some());

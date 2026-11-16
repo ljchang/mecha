@@ -544,7 +544,8 @@ pub struct ResultRecall {
     pub stem: String,
     /// What the tool answers when it found nothing. Nothing is delivered
     /// for it: most calls bring nothing to mind, and a run told so after
-    /// each one is paying for silence.
+    /// each one is paying for silence. A search that failed is another
+    /// thing: it is said, once, and the run is not searched for again.
     pub nothing: String,
     /// The most calls in one run.
     pub limit: u32,
@@ -4980,18 +4981,34 @@ impl Agent {
                                 &mut convo.program_calls,
                                 reads,
                             );
-                            found.extend(blocks.into_iter().find_map(|b| match b {
+                            let answered = blocks.into_iter().find_map(|b| match b {
                                 Block::ToolResult {
                                     tool_use_id,
                                     content,
-                                    is_error: false,
-                                } if tool_use_id == call_id
-                                    && content.trim() != cue.nothing.trim() =>
-                                {
-                                    Some(Block::text(format!("{}{content}", cue.stem)))
-                                }
+                                    is_error,
+                                } if tool_use_id == call_id => Some((content, is_error)),
                                 _ => None,
-                            }));
+                            });
+                            match answered {
+                                // A search that failed is said, once, and
+                                // not made again in this run: "nothing was
+                                // found" and "nothing could be looked for"
+                                // are opposite findings, and a run told
+                                // neither reads afterwards as one that had
+                                // a memory and found it empty (review of
+                                // #887).
+                                Some((content, true)) => {
+                                    found.push(Block::text(format!(
+                                        "{}The search failed, and is not made again in this run: {content}",
+                                        cue.stem
+                                    )));
+                                    result_recalls = cue.limit;
+                                }
+                                Some((content, false)) if content.trim() != cue.nothing.trim() => {
+                                    found.push(Block::text(format!("{}{content}", cue.stem)));
+                                }
+                                _ => {}
+                            }
                         }
                     }
                     let cued: Vec<Block> = cx
@@ -12128,6 +12145,8 @@ mod tests {
             crate::tool::episodes::RETRACED_STEM,
             crate::attempts::DELIVERY_STEM,
             crate::attempts::CUE_STEM,
+            crate::tool::spans::DELIVERY_STEM,
+            crate::tool::spans::CUE_STEM,
             #[cfg(feature = "memory-prototype")]
             crate::memory_session::DELIVERY_STEM,
             #[cfg(feature = "memory-prototype")]
@@ -19143,6 +19162,66 @@ justification = "echo is off on this box"
             .tool_uses()
             .iter()
             .any(|(_, name, _)| *name == "remembers")));
+    }
+
+    #[tokio::test]
+    async fn a_search_after_a_call_that_fails_is_said_once_and_not_made_again() {
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let echo = |id: &str, value: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "echo".into(),
+                    input: json!({"value": value}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let turns = vec![
+            echo("t0", "berth C, 200 m"),
+            echo("t1", "berth E, 150 m"),
+            assistant(vec![Block::text("Assigned.")], StopReason::EndTurn),
+        ];
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![
+                Arc::new(EchoTool),
+                Arc::new(Remembers {
+                    calls: calls.clone(),
+                    fails: true,
+                }),
+            ],
+            PermissionMode::Allow,
+        );
+        agent.cfg.force_final_answer = false;
+        let mut cx = RunContext::clone(agent.context());
+        cx.recall_on_result = Some(ResultRecall {
+            tool: "remembers".into(),
+            input: Arc::new(|tool, _input, result| Some(json!({"tool": tool, "read": result}))),
+            stem: RECALLED.into(),
+            nothing: "nothing found".into(),
+            limit: 5,
+        });
+        let mut convo = Conversation::user("place the vessel");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        // Asked once: the failure is the run's to know, and the budget is
+        // not spent finding it out again after every call.
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(recalls_after_results(&convo), vec![true, false]);
+        let said = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                Block::Text { text } if text.starts_with(RECALLED) => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            said.contains("The search failed") && said.contains("the store is down"),
+            "{said}"
+        );
     }
 
     #[tokio::test]

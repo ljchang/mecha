@@ -1,4 +1,4 @@
-# Memory benchmark, held out: the yard, with a notice that reversed
+# Memory benchmark, held out once and development data since: the yard, with a notice that reversed
 # (docs/MEMORY-RETENTION-DESIGN.md §11.4). As memory-yard.toml, and a
 # recheck after the surveys reads a second board on which the reefer notice
 # has moved from one berth to another. The reefer probe's right berth is the

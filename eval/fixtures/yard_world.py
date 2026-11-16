@@ -14,6 +14,9 @@ and the notices are what rule those out.
 A second board (`second`) reverses one notice, for the lifetime that asks
 whether a superseded fact is still handed over.
 
+Held out for the run of 2026-11-16 (`memory-yard-h1`); development data
+since, when the berth record gained `reefer_points_fitted`.
+
 Fictional names only; the agent cannot read this file.
 """
 

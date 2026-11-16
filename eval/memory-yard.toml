@@ -1,4 +1,4 @@
-# Memory benchmark, held out: the yard
+# Memory benchmark, held out once and development data since: the yard
 # (docs/MEMORY-RETENTION-DESIGN.md §11.4). Two surveys read berth
 # records for a routine figure while a notice rides in each; two later tasks
 # place a vessel after the board is cleared, where the plain rule picks a
