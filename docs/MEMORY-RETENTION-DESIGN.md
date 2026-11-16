@@ -465,3 +465,98 @@ kept from a failed task ("it worked the first time, called with…") is still
 handed over beside the failure it came from, and reads as approval of the
 call that was not enough. A verdict retires a conclusion and not the call episodes kept from
 the same failed task; whether it should is open.
+
+## 11. What is recorded, what is built, what fades (proposal, 2026-11-16)
+
+A proposal, not a ruling. It answers a question §4.3 left sharper than it
+should have: if appraisal decides what is retained, what happens to a turn
+that carried no signal when it happened and matters later, under a goal
+nobody had then?
+
+### 11.1 The gate decides what is built, never what exists
+
+§4.1 already says the transcript is the episodic record. The consequence was
+not drawn: a retention gate that decides *existence* cannot be wrong cheaply,
+and one that decides *priority* can. So there are three layers, and the gate
+sits between the second and the third.
+
+1. **Recorded: everything.** The transcript, as now. Nothing here is gated,
+   and nothing is copied out of it per turn.
+2. **Findable: everything, weakly.** A stored index over transcript spans:
+   keywords and one embedding per span, a pointer and a digest (§8 item 6),
+   no model call beyond the embedder and no seal. This is what keeps a span
+   that was unremarkable then findable now.
+3. **Built: what an outcome marked.** Episodes, verdicts and concepts, by the
+   signals of §4.3. This is the only layer the harness hands to a run or cues
+   during one.
+
+What stops is the sealed copy of every turn into the store with each turn
+depending on the one before, whose cost grew with the conversation and under
+which forgetting an early turn withdrew every later one.
+
+The measurements behind the split are the benchmark's (PR #875 and after):
+a store of everything that the model had to ask for was never asked;
+everything delivered by keyword helped where the lesson was an observed fact,
+at about twice the tokens, and failed where the earlier run had been
+confidently wrong, because the wrong conclusion was delivered unmarked;
+appraised episodes passed both for less. Storing without discrimination cost
+nothing. Delivering without it did.
+
+### 11.2 Promotion is retroactive
+
+A span moves from the second layer to the third when something later makes
+it matter:
+
+- **A verdict or a failure** promotes the spans it bears on, not only the
+  turn it landed in.
+- **A change of goal or charter line** runs a pass over the spans tied to it
+  (§4.4 step 5), which may build episodes from turns that tripped no signal
+  when they happened.
+- **Use.** A span found by the broad index and followed by a success is
+  promoted. A downstream outcome is a label that costs nothing.
+
+So a miss by the gate is a delay and not a loss. And whether a thing is
+meaningful is not answered once at writing: an episode has many
+interpretations, one per goal (§4.2), written at recall or in downtime.
+
+### 11.3 Fading and pruning
+
+The two layers are pruned differently, because they fail differently.
+
+**The built layer is pruned actively.** What is handed to a run is imitated,
+and a superseded entry is the worst distractor there is: closest to the
+query, and wrong.
+
+- **Rank decays with disuse.** `replay_priority` (gain × need × decay)
+  already scores this for replay; recall reads the same term.
+- **Supersession, never overwrite.** A contradicted episode is marked invalid
+  from a time and kept. It stops being handed over and stays auditable.
+- **Retirement by outcome**, as a concept already has: handed over some
+  number of times and never followed by success, it is not handed over
+  again. The number is to be measured; retiring on few trials is reported to
+  hurt.
+- **A cap on what may be handed over at all**, however large the store.
+
+**The recorded layer fades and is not deleted.** A mundane span is one
+nothing promoted and whose rank has decayed: it is not found, which is all
+forgetting needs to be here, and it can still be promoted. Deletion is the
+owner's alone (`forget`), and follows dependencies as now.
+
+### 11.4 What is not known, and the measurement
+
+- Whether retrieval over the second layer is good enough. The benchmark's
+  transcript arm, on keywords alone, mostly returned earlier prompts.
+- Whether promotion by use works at all. Nothing here has tried it.
+- The retirement and decay thresholds.
+
+One family answers the first two: a fact that was unremarkable when it
+occurred and is needed later under a different goal. Arms: the gate alone;
+the gate with the broad index; everything delivered; and the gate with the
+index and pruning, on a lifetime long enough to hold a superseded fact.
+Predictions are written in the manifest before the run, and the family is
+held out until then.
+
+### 11.5 What this changes in the build order
+
+The stored index of §4.5's third bullet moves up beside the gate (§7 step
+2), since the gate is only safe to trust with the index under it.
