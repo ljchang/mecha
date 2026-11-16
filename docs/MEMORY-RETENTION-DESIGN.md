@@ -466,10 +466,12 @@ handed over beside the failure it came from, and reads as approval of the
 call that was not enough. A verdict retires a conclusion and not the call episodes kept from
 the same failed task; whether it should is open.
 
-## 11. What is recorded, what is built, what fades (proposal, 2026-11-16)
+## 11. What is recorded, what is built, what fades (2026-11-16)
 
-A proposal, not a ruling. It answers a question §4.3 left sharper than it
-should have: if appraisal decides what is retained, what happens to a turn
+Proposed on 2026-11-16 and taken up by the owner the same day ("this sounds
+like a good start let's proceed with implementing the proposal"). It is a
+starting shape to build and measure, not a settled one. It answers a
+question §4.3 left sharper than it should have: if appraisal decides what is retained, what happens to a turn
 that carried no signal when it happened and matters later, under a goal
 nobody had then?
 
