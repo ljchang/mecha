@@ -2267,22 +2267,9 @@ fn is_recall_delivery(text: &str) -> bool {
     {
         return true;
     }
-    [
-        crate::tool::transcripts::DELIVERY_STEM,
-        crate::tool::episodes::DELIVERY_STEM,
-        crate::tool::concepts::DELIVERY_STEM,
-        crate::tool::concepts::CUE_STEM,
-        crate::tool::episodes::RETRACED_STEM,
-        crate::attempts::DELIVERY_STEM,
-        crate::attempts::CUE_STEM,
-        crate::tool::spans::DELIVERY_STEM,
-        crate::tool::spans::CUE_STEM,
-        crate::tool::spans::OWN_DELIVERY_STEM,
-        crate::tool::spans::OWN_CUE_STEM,
-        crate::tool::spans::FAILED_STEM,
-    ]
-    .iter()
-    .any(|stem| text.starts_with(stem.trim_end()))
+    crate::tool::transcripts::RECALL_STEMS
+        .iter()
+        .any(|stem| text.starts_with(stem.trim_end()))
 }
 
 /// How the loop answers a call to a name no registered tool has. Every
@@ -12164,24 +12151,22 @@ mod tests {
     /// of the owner's request, and never the owner's steer.
     #[test]
     fn a_delivered_recall_is_the_harness_s_voice_wherever_it_lands() {
-        let stems = [
-            crate::tool::transcripts::DELIVERY_STEM,
-            crate::tool::episodes::DELIVERY_STEM,
-            crate::tool::concepts::DELIVERY_STEM,
-            crate::tool::concepts::CUE_STEM,
-            crate::tool::episodes::RETRACED_STEM,
-            crate::attempts::DELIVERY_STEM,
-            crate::attempts::CUE_STEM,
-            crate::tool::spans::DELIVERY_STEM,
-            crate::tool::spans::CUE_STEM,
+        let mut stems: Vec<&str> = crate::tool::transcripts::RECALL_STEMS.to_vec();
+        // Every stem a recall tool or a harness search declares is in the
+        // one list, the newest among them.
+        for stem in [
             crate::tool::spans::OWN_DELIVERY_STEM,
             crate::tool::spans::OWN_CUE_STEM,
             crate::tool::spans::FAILED_STEM,
-            #[cfg(feature = "memory-prototype")]
+            crate::attempts::CUE_STEM,
+        ] {
+            assert!(stems.contains(&stem), "{stem}");
+        }
+        #[cfg(feature = "memory-prototype")]
+        stems.extend([
             crate::memory_session::DELIVERY_STEM,
-            #[cfg(feature = "memory-prototype")]
             crate::memory_session::ERROR_STEM,
-        ];
+        ]);
         for stem in stems {
             assert!(is_harness_voice(&format!("{stem}what was found")), "{stem}");
             assert!(is_harness_voice(stem), "{stem}");

@@ -103,10 +103,17 @@ const BATCH: usize = 16;
 /// aside, to say something the query does not. Two is a field's name and
 /// one word in it.
 const ADDS: usize = 2;
-/// The most words named as absent from the present record, a passage.
 /// How much of a result the absence line is read against.
 const RECORD_BYTES: usize = 8_000;
+/// The most words named as absent from the present record, a passage.
 const ABSENT_WORDS: usize = 12;
+/// How passages are taken out of a transcript, as a number that changes
+/// when [`spans_of`] does. An index made under another is read out of its
+/// transcripts again: a finished session's length never changes, so without
+/// this its passages would stay as the older rule took them for good
+/// (review of #888). 2: a tool result is taken without the envelope it was
+/// rendered in.
+const EXTRACTION: &str = "2";
 /// What closes a list of them that was cut.
 const ABSENT_MORE: &str = "and others";
 
@@ -323,6 +330,24 @@ fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> 
         }
     }
     paths.sort();
+    // An index whose passages were taken by another rule forgets which
+    // sessions it has read, and so reads them all again below. The passages
+    // themselves stay until then: one the new rule takes the same keeps its
+    // row and its vector.
+    let taken: Option<String> = conn
+        .query_row("SELECT value FROM meta WHERE key = 'extraction'", [], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    if taken.as_deref() != Some(EXTRACTION) {
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM sessions", [])?;
+        tx.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('extraction', ?1)",
+            [EXTRACTION],
+        )?;
+        tx.commit()?;
+    }
     let mut covered = 0usize;
     let mut kept: BTreeSet<String> = BTreeSet::new();
     for path in paths {
@@ -594,16 +619,23 @@ fn choose(
         .map(|(at, _)| words(&spans[*at].1.text).into_iter().collect())
         .collect();
     let n = texts.len() as f32;
+    // How rare each of the query's words is among these passages, once a
+    // word and not once a passage and word: the second is quadratic in the
+    // passages over the floor (review of #887).
+    let idf: std::collections::BTreeMap<&String, f32> = terms
+        .iter()
+        .map(|t| {
+            let df = texts.iter().filter(|h| h.contains(t)).count() as f32;
+            (t, ((n - df + 0.5) / (df + 0.5) + 1.0).ln())
+        })
+        .collect();
     let by_words: Vec<f32> = texts
         .iter()
         .map(|has| {
             terms
                 .iter()
                 .filter(|t| has.contains(*t))
-                .map(|t| {
-                    let df = texts.iter().filter(|h| h.contains(t)).count() as f32;
-                    ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
-                })
+                .filter_map(|t| idf.get(t))
                 .sum()
         })
         .collect();
@@ -807,6 +839,9 @@ impl Tool for Spans {
         })
         .await??;
         if hits.is_empty() {
+            // The tool's own words and not `.from_outside()`, on purpose:
+            // unwrapped, they are what the loop and the run command compare
+            // against to say nothing.
             return Ok(ToolOutput::ok(NOTHING));
         }
         if let Ok(mut handed) = self.handed.lock() {
@@ -1282,6 +1317,21 @@ mod tests {
             current,
             Embedder::new(&embeddings().await).unwrap(),
         );
+        spans.refresh().await.unwrap();
+        // As an index made before passages were taken without their
+        // envelopes would hold it: the passage as rendered, under the
+        // older rule's number. The session's length has not changed, and
+        // it is read again all the same.
+        {
+            let conn = open(&dir_in(&home)).unwrap();
+            conn.execute(
+                "UPDATE spans SET text = ?1 WHERE label = 'tool result'",
+                [&rendered],
+            )
+            .unwrap();
+            conn.execute("UPDATE meta SET value = '1' WHERE key = 'extraction'", [])
+                .unwrap();
+        }
         spans.refresh().await.unwrap();
         let now = r#"{"berth": "C", "length": 200}"#;
         let out = spans

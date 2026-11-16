@@ -67,6 +67,31 @@ fn words(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Every line a recall is handed over under, in any build: the one list
+/// that says "this is the harness speaking". [`delivery`] reads it, so a
+/// hand-over is never indexed or quoted back as a passage, and so does
+/// `agent::is_recall_delivery`, so one is never read as the owner's words or
+/// mined as their steer. **A new stem is added here and nowhere else**: the
+/// four hand-kept copies this replaces let a stem missing from all of them
+/// pass every test (reviews of #875 and #888). The two the memory prototype
+/// adds are matched beside this list, under its feature.
+pub(crate) const RECALL_STEMS: &[&str] = &[
+    DELIVERY_STEM,
+    super::episodes::DELIVERY_STEM,
+    super::concepts::DELIVERY_STEM,
+    // Said in the middle of a run, after a call's result: the harness's
+    // hypothesis, never the owner's words (review of #877).
+    super::concepts::CUE_STEM,
+    super::episodes::RETRACED_STEM,
+    crate::attempts::DELIVERY_STEM,
+    crate::attempts::CUE_STEM,
+    super::spans::DELIVERY_STEM,
+    super::spans::CUE_STEM,
+    super::spans::OWN_DELIVERY_STEM,
+    super::spans::OWN_CUE_STEM,
+    super::spans::FAILED_STEM,
+];
+
 /// Whether a user-role text is something a harness handed over: this
 /// tool's delivery, the episodes', the concepts' (at the start, and a cue
 /// after a call), or the memory store's. None is a passage
@@ -78,18 +103,7 @@ pub(crate) fn delivery(text: &str) -> bool {
     {
         return true;
     }
-    text.starts_with(DELIVERY_STEM)
-        || text.starts_with(super::episodes::DELIVERY_STEM)
-        || text.starts_with(super::concepts::DELIVERY_STEM)
-        || text.starts_with(super::concepts::CUE_STEM)
-        || text.starts_with(super::episodes::RETRACED_STEM)
-        || text.starts_with(crate::attempts::DELIVERY_STEM)
-        || text.starts_with(crate::attempts::CUE_STEM)
-        || text.starts_with(super::spans::DELIVERY_STEM)
-        || text.starts_with(super::spans::CUE_STEM)
-        || text.starts_with(super::spans::OWN_DELIVERY_STEM)
-        || text.starts_with(super::spans::OWN_CUE_STEM)
-        || text.starts_with(super::spans::FAILED_STEM)
+    RECALL_STEMS.iter().any(|stem| text.starts_with(stem))
 }
 
 /// Whether a transcript is one this tool may quote: a one-shot run's, or a
@@ -398,23 +412,7 @@ mod tests {
 
     #[test]
     fn an_earlier_delivery_is_not_a_passage() {
-        for stem in [
-            DELIVERY_STEM,
-            crate::tool::episodes::DELIVERY_STEM,
-            crate::tool::concepts::DELIVERY_STEM,
-            // Said in the middle of a run, after a call's result: the
-            // harness's hypothesis, never the owner's words (review of
-            // #877).
-            crate::tool::concepts::CUE_STEM,
-            crate::tool::episodes::RETRACED_STEM,
-            crate::attempts::DELIVERY_STEM,
-            crate::attempts::CUE_STEM,
-            crate::tool::spans::DELIVERY_STEM,
-            crate::tool::spans::CUE_STEM,
-            crate::tool::spans::OWN_DELIVERY_STEM,
-            crate::tool::spans::OWN_CUE_STEM,
-            crate::tool::spans::FAILED_STEM,
-        ] {
+        for stem in RECALL_STEMS.iter().copied() {
             let delivered = Block::text(format!("{stem}the quartz rule"));
             assert!(block_doc("a", &Role::User, &delivered).is_none(), "{stem}");
             assert!(block_doc("a", &Role::Assistant, &delivered).is_some());
