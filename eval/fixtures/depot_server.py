@@ -102,7 +102,10 @@ def build(store):
         name = parcel_of(args)
         colour = str(args.get("crate", "")).strip().lower()
         if colour not in world.CRATES:
-            raise ToolError(f"no {colour!r} crate; crates are {world.CRATES}")
+            # Not which crates there are: the list would hand the answer to a
+            # caller that asked with none (review of #889; the held-out run's
+            # control passed no crate probe, so it did not happen there).
+            raise ToolError(f"no {colour!r} crate")
         state = load()
         state["crated"][name] = colour
         save(state)

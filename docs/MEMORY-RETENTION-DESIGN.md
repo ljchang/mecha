@@ -712,7 +712,12 @@ assistant's reply is clean only out of a session that nothing from outside
 entered; a session whose record cannot say is not clean. A recall counts
 as outside content exactly when a passage in it does. The origin is the
 session's and not the moment's, so a reply written before a session's first
-outside read is counted with the ones after it.
+outside read is counted with the ones after it. One thing enters a
+conversation without its taint record saying so: an attached picture arms
+private data only, since a screenshot is captured and not composed. What a
+picture showed may still be anyone's words, so a session that held one is
+counted here as one that held outside content. That is the cautious reading
+of a question the owner has not ruled on.
 
 The depot lifetime (`eval/memory-depot.toml`) is the family §11.4 asked for
 after the yard: two tallies read bay records while a handover note rides in
