@@ -310,6 +310,11 @@ fn keep_vectors(index: &Path, rows: Vec<(i64, Vec<u8>)>, dims: usize) -> Result<
 
 /// Every embedded passage, with its vector.
 fn embedded(index: &Path) -> Result<Vec<(i64, Span, Vec<f32>)>> {
+    // A call reads and never makes: an index nothing has built holds
+    // nothing, and asking it must not leave one behind.
+    if !index.join("index.db").exists() {
+        return Ok(vec![]);
+    }
     let conn = open(index)?;
     let mut q = conn.prepare(
         "SELECT id, session, label, text, vec FROM spans WHERE vec IS NOT NULL ORDER BY id",
