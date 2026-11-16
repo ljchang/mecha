@@ -80,6 +80,11 @@ pub enum Feature {
     /// rejected, a steer, a denial. A plain file under the mecha home, in
     /// every build.
     Corrections,
+    /// What the owner's earlier chats and runs said, found by meaning when
+    /// it bears on the chat in hand and handed over there
+    /// ([`crate::tool::spans`]): clean passages only. An index under the
+    /// mecha home, embedded by the embeddings server, in every build.
+    Recall,
 }
 
 impl Feature {
@@ -112,6 +117,7 @@ impl Feature {
         Feature::Code,
         Feature::Memory,
         Feature::Corrections,
+        Feature::Recall,
     ];
 
     /// The name on the command line and on the wire.
@@ -145,6 +151,7 @@ impl Feature {
             Feature::Code => "code",
             Feature::Memory => "memory",
             Feature::Corrections => "corrections",
+            Feature::Recall => "recall",
         }
     }
 
@@ -180,6 +187,9 @@ impl Feature {
             Feature::Corrections => {
                 "Corrections (drafts you changed or rejected, steers and next messages read as \
                  corrections, recalled on a like ask)"
+            }
+            Feature::Recall => {
+                "Recall (what your earlier chats and runs said, found when it bears on a chat)"
             }
         }
     }
@@ -270,7 +280,9 @@ impl Feature {
             | Feature::Code
             // Off, the web chat keeps no attempt, joins no verdict and hands
             // nothing over.
-            | Feature::Corrections => true,
+            | Feature::Corrections
+            // Off, no chat is searched for and none is handed anything.
+            | Feature::Recall => true,
             // Its guards are still to come: today the switch says only that
             // the owner wants the home store, and every attachment is an
             // explicit `--episodic-memory`. Answers `true` in the change
@@ -336,6 +348,9 @@ impl Feature {
             // neither, and a trial that kept attempts would keep them about
             // fixtures.
             | Feature::Corrections
+            // The owner's own history: an environment has none, and an
+            // experiment asks for the index by its arm.
+            | Feature::Recall
             // A manifest's `live_servers` can carry the operator's graph in,
             // and the row cannot tell that entry from a declared one;
             // `config_at` defaults this bool instead (FEATURES-DESIGN §5.1).
@@ -980,7 +995,8 @@ fn evidence(facts: &Facts, f: Feature) -> bool {
         | Feature::System
         | Feature::Code
         | Feature::Memory
-        | Feature::Corrections => false,
+        | Feature::Corrections
+        | Feature::Recall => false,
         Feature::Incognito
         | Feature::Tasks
         | Feature::Ocr
@@ -2057,6 +2073,9 @@ fn own_state(facts: &Facts, f: Feature) -> State {
         // Nothing to set up: past the switch, it is on. Its file is made by
         // the first attempt kept.
         Feature::Corrections => on("attempts and your verdicts on them, in the mecha home"),
+        // Nothing to set up past the switch: the index is made by the first
+        // chat that asks, and embedded by the embeddings server.
+        Feature::Recall => on("an index of what your chats and runs said, in the mecha home"),
     }
 }
 
@@ -2635,12 +2654,13 @@ mod tests {
                 | Feature::System
                 | Feature::Code
                 | Feature::Memory
-                | Feature::Corrections => {}
+                | Feature::Corrections
+                | Feature::Recall => {}
             }
         }
-        // The match above lists 28 — raise this with it, and a variant
+        // The match above lists 29 — raise this with it, and a variant
         // added to the match but not to `ALL` fails here.
-        assert_eq!(Feature::ALL.len(), 28);
+        assert_eq!(Feature::ALL.len(), 29);
     }
 
     #[test]

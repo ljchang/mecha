@@ -89,6 +89,12 @@ pub struct ChatState {
     /// home in `serve`, a scratch directory in a test, for the reason
     /// `sessions_dir` is held here.
     attempts_dir: PathBuf,
+    /// The index of what the owner's earlier chats and runs said
+    /// (`mecha_core::tool::spans`), when the door has one: one tool for
+    /// every chat, registered on the agent only while `[features] recall`
+    /// is on. `None` in a test, and in a `serve` whose embeddings address
+    /// is not a loopback one.
+    recall: Option<Recall>,
     /// Where this door records and resumes transcripts, and where its chats'
     /// workspaces live: `~/.mecha/sessions` and `~/.mecha/work/web` in
     /// `serve`, a scratch directory in a test. Held here rather than
@@ -397,6 +403,72 @@ pub(crate) fn web_agent_opts(dynamic_goals: bool) -> Result<GlobalOpts> {
     })
 }
 
+/// The door's recall index, and which chats have had it brought up to date.
+#[derive(Clone)]
+pub(super) struct Recall {
+    index: Arc<mecha_core::tool::spans::Spans>,
+    /// Chats whose first turn already asked for a refresh. One a chat, and
+    /// in the background: a first embedding of a whole history is minutes,
+    /// and a person is waiting on the turn.
+    refreshed: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// One refresh at a time.
+    refreshing: Arc<tokio::sync::Mutex<()>>,
+}
+
+/// The most searches the harness makes after calls in one turn of a chat.
+const RECALLS_A_TURN: u32 = 4;
+
+impl Recall {
+    fn open(sessions: &std::path::Path) -> Option<Self> {
+        use mecha_core::tool::spans;
+        let home = mecha_core::work::mecha_home().ok()?;
+        // The one embeddings server, at the address the graph is given.
+        let url = std::env::var("MECHA_GRAPH_EMBED_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8081".to_string());
+        let embedder = match mecha_core::embed::Embedder::new(&url) {
+            Ok(embedder) => embedder,
+            Err(e) => {
+                tracing::warn!("recall has no embeddings server to ask ({url}): {e:#}");
+                return None;
+            }
+        };
+        Some(Recall {
+            index: Arc::new(spans::Spans::shared(
+                spans::dir_in(&home),
+                sessions.to_path_buf(),
+                embedder,
+            )),
+            refreshed: Arc::default(),
+            refreshing: Arc::default(),
+        })
+    }
+
+    /// Bring the index up to date for a chat's first turn, without waiting.
+    /// What a search finds meanwhile is what was indexed before: a chat
+    /// started while a long first embedding runs is handed less, and the
+    /// log says when the pass ends and what it covered.
+    fn refresh_once_for(&self, chat: &str) {
+        let first = self
+            .refreshed
+            .lock()
+            .map(|mut seen| seen.insert(chat.to_string()))
+            .unwrap_or(false);
+        if !first {
+            return;
+        }
+        let (index, gate) = (Arc::clone(&self.index), Arc::clone(&self.refreshing));
+        tokio::spawn(async move {
+            let _one = gate.lock().await;
+            match index.refresh().await {
+                Ok((covered, embedded)) => tracing::info!(
+                    "recall covers {covered} session(s), {embedded} passage(s) newly embedded"
+                ),
+                Err(e) => tracing::warn!("recall's index was not brought up to date: {e:#}"),
+            }
+        });
+    }
+}
+
 impl ChatState {
     /// Build the in-process agent. Fails loudly; the caller degrades the
     /// surface to dashboard-only and says so, rather than serving a chat
@@ -425,6 +497,7 @@ impl ChatState {
             })
             .transpose()?;
         let routes: QuestionRoutes = Arc::default();
+        let spans = Recall::open(&Session::default_dir()?);
         // Not interactive: no terminal approver — and then `ask_user` IS
         // registered, against the Slack connector's precedent, because this
         // front-end can do what that one could not: route the question to
@@ -438,7 +511,18 @@ impl ChatState {
             let routes = Arc::clone(&routes);
             #[cfg(feature = "memory-prototype")]
             let recall = ordinary_memory.as_ref().map(|m| Arc::clone(&m.router));
+            let spans = spans.as_ref().map(|r| Arc::clone(&r.index));
             Box::new(move |prepared: &mut setup::Prepared| {
+                // Only while the owner's switch is on: off, the tool is not
+                // in the list and no chat is searched for.
+                if let Some(spans) = spans.as_ref().filter(|_| {
+                    mecha_core::feature::switched_on(
+                        &prepared.config,
+                        mecha_core::feature::Feature::Recall,
+                    )
+                }) {
+                    prepared.agent.registry_mut().insert(spans.clone());
+                }
                 #[cfg(feature = "memory-prototype")]
                 if let Some(recall) = &recall {
                     prepared.agent.registry_mut().insert(recall.clone());
@@ -505,6 +589,7 @@ impl ChatState {
             routes,
             outbox_root,
             attempts_dir: mecha_core::attempts::dir_in(&mecha_core::work::mecha_home()?),
+            recall: spans,
             sessions_dir: Session::default_dir()?,
             work_dir: producer_root()?,
             sessions: Mutex::new(HashMap::new()),
@@ -4056,7 +4141,92 @@ fn begin_turn(
                 stem: attempts::CUE_STEM.into(),
             });
         }
+        // What the owner's earlier chats and runs said that bears on this
+        // one (`[features] recall`): asked with the owner's words before the
+        // turn, and with what a call returned after it, clean passages only
+        // and never this chat's own. An ordinary web chat only, for the
+        // reasons corrections has; and only where the tool is on the agent,
+        // which it is while the switch is on.
+        let recall = state_for_task.recall.clone().zip(session.kept().filter(|s| {
+            s.meta.kind == Some(mecha_core::session::SessionKind::Web)
+                && workflow.is_none()
+                && draw.is_none()
+                && agent
+                    .registry()
+                    .get(mecha_core::tool::spans::NAME)
+                    .is_some()
+        }));
+        if let Some((recall, kept)) = &recall {
+            use mecha_core::tool::spans;
+            let chat = kept.meta.id.clone();
+            recall.refresh_once_for(&chat);
+            if !asked.trim().is_empty() {
+                let mut input = spans::delivery_input(&asked);
+                input["conversation"] = serde_json::json!(chat);
+                input["clean"] = serde_json::json!(true);
+                // Under the brief's deadline: the turn does not wait on a
+                // slow embeddings server. Late or failed, nothing is handed
+                // over before this turn, and the log says which.
+                let found = tokio::time::timeout(
+                    crate::setup::BRIEF_BOARD_TIMEOUT_INTERACTIVE,
+                    agent.dispatch_one(&cx, &mut conversation, spans::NAME, input, &None),
+                )
+                .await;
+                match found {
+                    Ok(d) if d.is_error => {
+                        tracing::warn!("recall could not search for this turn: {}", d.content)
+                    }
+                    Ok(d) if d.content.trim() != spans::NOTHING => {
+                        let text = format!(
+                            "{}{}",
+                            spans::OWN_DELIVERY_STEM,
+                            spans::in_own_voice(&d.content)
+                        );
+                        mecha_core::agent::append_user_text(
+                            &mut conversation.messages,
+                            text.clone(),
+                        );
+                        let index = conversation.messages.len() - 1;
+                        if let Err(e) = kept.append(&Record::Extend {
+                            index,
+                            blocks: vec![Block::text(text)],
+                        }) {
+                            tracing::warn!("a recall hand-over was not recorded: {e:#}");
+                        }
+                        if let Err(e) = kept.append(&Record::Taint(conversation.taint)) {
+                            tracing::warn!("a recall hand-over's taint was not recorded: {e:#}");
+                        }
+                        before = conversation.messages.clone().into();
+                    }
+                    Ok(_) => {}
+                    Err(_) => tracing::warn!("recall did not answer in time; nothing handed over"),
+                }
+            }
+            let asking = chat.clone();
+            cx.recall_on_result = Some(mecha_core::agent::ResultRecall {
+                tool: spans::NAME.into(),
+                input: Arc::new(move |tool, input, result| {
+                    let mut asked = spans::result_input(tool, input, result)?;
+                    asked["conversation"] = serde_json::json!(asking);
+                    asked["clean"] = serde_json::json!(true);
+                    Some(asked)
+                }),
+                stem: spans::OWN_CUE_STEM.into(),
+                nothing: spans::NOTHING.into(),
+                failed_stem: spans::FAILED_STEM.into(),
+                limit: RECALLS_A_TURN,
+                own_voice: true,
+            });
+        }
         let outcome = agent.run_in(&cx, &mut conversation, Some(tx)).await;
+        if let Some((recall, _)) = &recall {
+            let withheld = recall.index.withheld();
+            if withheld > 0 {
+                tracing::info!(
+                    "recall has withheld {withheld} passage(s) from chats since this serve started, for holding outside content"
+                );
+            }
+        }
         let _ = forwarder.await;
         if let Some((store, id, _guard)) = &workflow {
             if let Err(e) = store.finish_task(
@@ -6935,6 +7105,7 @@ pub(super) fn test_chat() -> Arc<ChatState> {
         routes: Arc::default(),
         outbox_root: test_root.join("outbox"),
         attempts_dir: test_root.join("attempts"),
+        recall: None,
         sessions_dir: test_root.join("sessions"),
         work_dir: test_root.join("work/web"),
         sessions: Mutex::new(HashMap::new()),
@@ -7477,6 +7648,37 @@ fn test_chat_with(
     )
 }
 
+/// A chat whose model answers every turn with `reply`, with a recall index
+/// over its own scratch sessions asking the embeddings server at `embed`,
+/// and `[features] recall` as given: registered on the agent only when on,
+/// as `serve` does it.
+#[cfg(test)]
+pub(super) fn test_chat_recalling(reply: &'static str, embed: &str, on: bool) -> Arc<ChatState> {
+    let mut config = answering_config(true);
+    mecha_core::feature::set_switch(&mut config, mecha_core::feature::Feature::Recall, on);
+    test_chat_assembled(
+        Box::new(Answers(reply)),
+        mecha_core::tool::Registry::new(),
+        config,
+        None,
+        super::persona_chat::PersonaChats::for_tests(),
+        Some(embed),
+    )
+}
+
+/// The recall index of a test chat, brought up to date and waited for: the
+/// door's own refresh is in the background, which a test cannot wait on.
+#[cfg(test)]
+pub(super) async fn test_recall_refreshed(chat: &ChatState) -> (usize, usize) {
+    chat.recall
+        .as_ref()
+        .expect("a chat with a recall index")
+        .index
+        .refresh()
+        .await
+        .unwrap()
+}
+
 /// [`test_chat_with`], with the persona door the caller built — for
 /// `persona_chat`'s tests, which need a store and a provider of their own.
 #[cfg(test)]
@@ -7487,6 +7689,34 @@ pub(super) fn test_chat_built(
     todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
     personas: super::persona_chat::PersonaChats,
 ) -> Arc<ChatState> {
+    test_chat_assembled(provider, registry, config, todo, personas, None)
+}
+
+#[cfg(test)]
+fn test_chat_assembled(
+    provider: Box<dyn mecha_core::provider::Provider>,
+    mut registry: mecha_core::tool::Registry,
+    config: Config,
+    todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
+    personas: super::persona_chat::PersonaChats,
+    recall_embed: Option<&str>,
+) -> Arc<ChatState> {
+    let test_root = test_scratch_root();
+    let recall = recall_embed.map(|url| Recall {
+        index: Arc::new(mecha_core::tool::spans::Spans::shared(
+            test_root.join("spans"),
+            test_root.join("sessions"),
+            mecha_core::embed::Embedder::new(url).unwrap(),
+        )),
+        refreshed: Arc::default(),
+        refreshing: Arc::default(),
+    });
+    if let Some(recall) = recall
+        .as_ref()
+        .filter(|_| mecha_core::feature::switched_on(&config, mecha_core::feature::Feature::Recall))
+    {
+        registry.insert(recall.index.clone());
+    }
     let agent = Agent::new(
         provider,
         registry,
@@ -7503,12 +7733,12 @@ pub(super) fn test_chat_built(
         Some(todo) => follower.with_todo(todo),
         None => follower,
     };
-    let test_root = test_scratch_root();
     Arc::new(ChatState {
         follower: Arc::new(follower),
         routes: Arc::default(),
         outbox_root: test_root.join("outbox"),
         attempts_dir: test_root.join("attempts"),
+        recall,
         sessions_dir: test_root.join("sessions"),
         work_dir: test_root.join("work/web"),
         sessions: Mutex::new(HashMap::new()),

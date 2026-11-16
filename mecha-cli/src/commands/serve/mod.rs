@@ -5959,6 +5959,129 @@ mod boundary_tests {
         kept.attempts.last().unwrap().clone()
     }
 
+    /// An embeddings server for a test: one dimension a word of a small
+    /// vocabulary, so two texts are alike by the words they share.
+    async fn word_embeddings() -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        const VOCAB: [&str; 6] = ["harbour", "berth", "notice", "fender", "crane", "tide"];
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 8192];
+                    let body = loop {
+                        let n = sock.read(&mut chunk).await.unwrap_or(0);
+                        buf.extend_from_slice(&chunk[..n]);
+                        let text = String::from_utf8_lossy(&buf).to_string();
+                        if let Some(at) = text.find("\r\n\r\n") {
+                            let len: usize = text
+                                .lines()
+                                .find_map(|l| {
+                                    l.to_ascii_lowercase()
+                                        .strip_prefix("content-length:")
+                                        .map(|v| v.trim().parse().unwrap())
+                                })
+                                .unwrap_or(0);
+                            if buf.len() >= at + 4 + len {
+                                break text[at + 4..].to_string();
+                            }
+                        }
+                        if n == 0 {
+                            return;
+                        }
+                    };
+                    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+                    let data: Vec<serde_json::Value> = v["input"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|s| {
+                            let text = s.as_str().unwrap().to_lowercase();
+                            let mut e: Vec<f32> = VOCAB
+                                .iter()
+                                .map(|w| if text.contains(w) { 1.0 } else { 0.0 })
+                                .collect();
+                            e.push(0.1);
+                            serde_json::json!({ "embedding": e })
+                        })
+                        .collect();
+                    let reply = serde_json::json!({ "data": data }).to_string();
+                    let _ = sock
+                        .write_all(format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}", reply.len()).as_bytes())
+                        .await;
+                });
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    /// Recall, end to end through the web chat's own turn: what the owner
+    /// said in one chat is handed to a later chat whose ask is close to it,
+    /// in that turn's own message, as the harness speaking and on record;
+    /// a chat is not handed its own words; and with the switch off none of
+    /// it happens.
+    #[tokio::test]
+    async fn what_was_said_in_one_chat_is_handed_to_a_later_one_that_bears_on_it() {
+        use mecha_core::tool::spans;
+        let _home = crate::testenv::HomeGuard::new("recall");
+        let embed = word_embeddings().await;
+        let handed = |path: &std::path::Path| -> Vec<String> {
+            mecha_core::session::Session::messages_ever(&std::fs::read_to_string(path).unwrap())
+                .iter()
+                .flat_map(|m| m.content.clone())
+                .filter_map(|b| match b {
+                    mecha_core::message::Block::Text { text }
+                        if text.starts_with(spans::OWN_DELIVERY_STEM) =>
+                    {
+                        Some(text)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        for on in [true, false] {
+            let chat = chat::test_chat_recalling("Noted.", &embed, on);
+            let app = app(chat.clone());
+            converse(
+                &app,
+                "first",
+                "the harbour berth notice says the fender line is condemned",
+            )
+            .await;
+            let first = chat::test_transcript(&chat, "first").await;
+            // Nothing earlier to be handed, and never its own words.
+            assert!(handed(&first).is_empty());
+            let (covered, _) = chat::test_recall_refreshed(&chat).await;
+            // A session marked as a test is not history: nothing is indexed
+            // from it, which is all there is to check under the mark.
+            if mecha_core::session::SessionKind::test_override().is_some() {
+                assert_eq!(covered, 0);
+                return;
+            }
+            assert_eq!(covered, 1);
+            converse(&app, "second", "which harbour berth had a notice").await;
+            let second = chat::test_transcript(&chat, "second").await;
+            let got = handed(&second);
+            if on {
+                assert_eq!(got.len(), 1, "{got:?}");
+                assert!(got[0].contains("the fender line is condemned"), "{got:?}");
+                // The owner's own words, out of a chat nothing from outside
+                // entered: handed over without an envelope, and the chat it
+                // went to is none the less clean for it.
+                assert!(!got[0].contains("untrusted-content"), "{got:?}");
+                let (_, after) = mecha_core::session::Session::load(&second).unwrap();
+                assert!(!after.taint.untrusted && after.taint.private);
+            } else {
+                assert!(got.is_empty(), "{got:?}");
+            }
+        }
+    }
+
     /// Corrections, end to end through the web chat's own turn: a turn that
     /// used a tool is kept as an attempt; once the owner has judged it, a
     /// later turn with a like ask is told when it has used the same tool,
