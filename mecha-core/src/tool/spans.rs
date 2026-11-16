@@ -309,17 +309,20 @@ fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> 
     let mut covered = 0usize;
     let mut kept: BTreeSet<String> = BTreeSet::new();
     for path in paths {
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        if !super::transcripts::searchable(&text, trial) {
-            continue;
-        }
-        covered += 1;
         let session = path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        kept.insert(session.clone());
+        // A transcript is appended to and never rewritten shorter or in
+        // place, so one as long as it was when it was indexed is the one
+        // that was indexed: it is not opened. Only a session that was
+        // searchable has a row, so its length answers that too. Reading
+        // every transcript in full at every start, to learn that nothing
+        // had changed, was the cost of a whole history a run (review of
+        // #887, and the owner's "that seems unnecessary").
+        let bytes = std::fs::metadata(&path)
+            .with_context(|| format!("reading {}", path.display()))?
+            .len() as i64;
         let read: Option<i64> = conn
             .query_row(
                 "SELECT bytes FROM sessions WHERE session = ?1",
@@ -327,9 +330,30 @@ fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> 
                 |r| r.get(0),
             )
             .optional()?;
-        if read == Some(text.len() as i64) {
+        if read == Some(bytes) {
+            covered += 1;
+            kept.insert(session);
             continue;
         }
+        // Its header says whether it may be quoted at all, and a session
+        // that may not be is read no further.
+        let header = {
+            use std::io::BufRead;
+            let file = std::fs::File::open(&path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            let mut line = String::new();
+            std::io::BufReader::new(file)
+                .read_line(&mut line)
+                .with_context(|| format!("reading {}", path.display()))?;
+            line
+        };
+        if !super::transcripts::searchable(&header, trial) {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        covered += 1;
+        kept.insert(session.clone());
         let now = spans_of(&session, &text);
         let tx = conn.transaction()?;
         // A passage the session still holds keeps its row and its vector.
@@ -932,6 +956,21 @@ mod tests {
         assert_eq!(embedded, 5);
         // Read again, nothing is new.
         assert_eq!(spans.refresh().await.unwrap(), (1, 0));
+        // And a transcript as long as it was is not opened to find that
+        // out: what it was indexed as stands.
+        let indexed = std::fs::read_dir(home.join("sessions"))
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| {
+                std::fs::read_to_string(p)
+                    .unwrap()
+                    .contains("fender line condemned")
+            })
+            .unwrap();
+        let was = std::fs::read_to_string(&indexed).unwrap();
+        std::fs::write(&indexed, "x".repeat(was.len())).unwrap();
+        assert_eq!(spans.refresh().await.unwrap(), (1, 0));
+        std::fs::write(&indexed, was).unwrap();
 
         // The record as it reads now, its notice gone. By meaning it is
         // exactly as near its sibling, which was read first, as its own
