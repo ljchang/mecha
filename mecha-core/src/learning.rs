@@ -50,7 +50,7 @@ use crate::message::{Block, Message, Role};
 use crate::situation::Situation;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -1525,6 +1525,9 @@ impl LearningStore {
         // only a stopped pass's rows and count those (found on review of
         // #730).
         let (sessions, items) = (self.mined_sessions()?, self.mined_outbox()?);
+        // The passes that finished a session, read before the rows for the
+        // same reason as the marks.
+        let finished = self.finished_passes()?;
         let path = self.root.join(REPLIES_FILE);
         if !path.exists() {
             return Ok((Vec::new(), 0));
@@ -1549,6 +1552,13 @@ impl LearningStore {
         // that marked it. Until then its rows are a pass in flight, or one
         // that stopped and will be retried, and count for nothing. A row
         // with no pass is superseded like any other.
+        //
+        // A session read again after it grew ([`Self::finish_pass`]) has
+        // more than one pass that finished it, and each one's rows count:
+        // the later pass asked about other moments, and superseding the
+        // earlier would drop replies that were given. For such a session
+        // the passes on record are the ones counted, and the last-pass rule
+        // is for a session with none on record, as every one was before.
         let latest: std::collections::HashMap<(bool, String), Option<String>> = out
             .iter()
             .filter_map(|r| {
@@ -1563,7 +1573,11 @@ impl LearningStore {
                 } else {
                     sessions.contains(id)
                 };
-                mined && latest.get(&(item, id.to_string())) == Some(&r.pass)
+                let counted = match finished.get(id).filter(|_| !item) {
+                    Some(passes) => passes.contains(&r.pass),
+                    None => latest.get(&(item, id.to_string())) == Some(&r.pass),
+                };
+                mined && counted
             }
             None => true,
         });
@@ -1585,6 +1599,101 @@ impl LearningStore {
 
     pub fn mark_mined(&self, session_id: &str) -> Result<()> {
         self.append_line("mined.jsonl", session_id)
+    }
+
+    /// Record that `pass` read `session` to the end of a transcript `bytes`
+    /// long, and mark the session mined if it is not yet. A transcript only
+    /// grows, a compaction included, so a later pass knows the session has
+    /// more to read by its file being longer than this — never by a count
+    /// of messages, which a compaction changes. `pass` is `None` for the
+    /// record a pass makes of a session mined before these were kept, when
+    /// no reply of that session carried one.
+    ///
+    /// `asked` is the moments of the session put to the reflector by now
+    /// ([`moment_keys`]) that no earlier record holds: hashes, never text.
+    /// They ride in the same line as the length, so one append says both
+    /// "read to here" and "these were asked". Kept apart, a stop between
+    /// the two either asked every moment again or lost a pass's replies
+    /// from the count.
+    pub fn finish_pass(
+        &self,
+        session_id: &str,
+        pass: Option<&str>,
+        bytes: u64,
+        asked: &[String],
+    ) -> Result<()> {
+        if !self.mined_sessions()?.contains(session_id) {
+            self.mark_mined(session_id)?;
+        }
+        self.append_line(
+            PASSES_FILE,
+            &serde_json::to_string(&FinishedPass {
+                session: session_id.to_string(),
+                pass: pass.map(String::from),
+                bytes,
+                asked: asked.to_vec(),
+            })?,
+        )
+    }
+
+    fn finished(&self) -> Result<Vec<FinishedPass>> {
+        let path = self.root.join(PASSES_FILE);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        // A line that cannot be read is passed over: the session it named
+        // then reads as having no record, which is how every session read
+        // before these were kept, and is given one again.
+        Ok(std::fs::read_to_string(&path)?
+            .lines()
+            .filter_map(|l| serde_json::from_str(l.trim()).ok())
+            .collect())
+    }
+
+    /// The passes that finished each session, for a session with any on
+    /// record.
+    fn finished_passes(&self) -> Result<HashMap<String, HashSet<Option<String>>>> {
+        let mut out: HashMap<String, HashSet<Option<String>>> = HashMap::new();
+        for f in self.finished()? {
+            out.entry(f.session).or_default().insert(f.pass);
+        }
+        Ok(out)
+    }
+
+    /// How long each session's transcript was when a pass last read it to
+    /// the end. A mined session with no entry was read before this was
+    /// kept.
+    pub fn mined_lengths(&self) -> Result<HashMap<String, u64>> {
+        Ok(self
+            .finished()?
+            .into_iter()
+            .map(|f| (f.session, f.bytes))
+            .collect())
+    }
+
+    /// The pass whose replies count for a session with no pass on record:
+    /// the last one in the reply ledger, as [`Self::replies_counting`]
+    /// reads it. What the first record made for such a session names, so
+    /// its replies go on counting once later passes are recorded beside it.
+    pub fn last_reply_passes(&self) -> Result<HashMap<String, Option<String>>> {
+        let path = self.root.join(REPLIES_FILE);
+        if !path.exists() {
+            return Ok(HashMap::new());
+        }
+        Ok(std::fs::read_to_string(&path)?
+            .lines()
+            .filter_map(|l| serde_json::from_str::<ReplyRecord>(l.trim()).ok())
+            .filter(|r| r.item_id.is_none())
+            .filter_map(|r| Some((r.session_id?, r.pass)))
+            .collect())
+    }
+
+    /// The moments already put to the reflector ([`moment_keys`]): hashes,
+    /// never text. What a pass over a session that has grown leaves out, so
+    /// a moment is asked about once, a skip included — a skip writes no
+    /// reflection to be known by.
+    pub fn asked_moments(&self) -> Result<HashSet<String>> {
+        Ok(self.finished()?.into_iter().flat_map(|f| f.asked).collect())
     }
 
     /// Outbox items already mined for writing reflections — the outbox
@@ -4183,6 +4292,58 @@ impl ReplyTally {
 
 /// The reply ledger's file in the learning store.
 const REPLIES_FILE: &str = "reflector_replies.jsonl";
+/// Which passes read which session to its end, and how long it was.
+const PASSES_FILE: &str = "mined_passes.jsonl";
+
+/// One line of [`PASSES_FILE`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FinishedPass {
+    session: String,
+    #[serde(default)]
+    pass: Option<String>,
+    #[serde(default)]
+    bytes: u64,
+    /// The moments first put to the reflector by this pass, as hashes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    asked: Vec<String>,
+}
+
+/// A key for each of a session's interventions, in order: a hash of the
+/// session, the trigger, the words, and which occurrence of those words it
+/// is. Not the message's index, which a compaction moves. A compaction that
+/// drops an earlier "no" makes a later one read as the earlier, already
+/// asked: the error is toward asking once too few, never twice.
+///
+/// A mismatch is known by its step and not its words: every mismatch
+/// carries the same sentence ([`extract_mismatches`]), so by words alone a
+/// key was "the nth mismatch", an index by another name, and after a
+/// compaction dropped earlier ones each new mismatch read as one already
+/// asked (found on review of #886). The step's record is written once and
+/// never changed. The other triggers are not keyed by their context, which
+/// is what the assistant had said before and is the thing a compaction
+/// rewrites: a key that moved with it would ask the same moment twice.
+pub fn moment_keys(session: &str, interventions: &[Intervention]) -> Vec<String> {
+    use sha2::{Digest, Sha256};
+    let mut seen: HashMap<(&str, &str), usize> = HashMap::new();
+    interventions
+        .iter()
+        .map(|i| {
+            let words = match i.trigger {
+                Trigger::Mismatch => i.context.as_str(),
+                _ => i.text.as_str(),
+            };
+            let nth = seen.entry((i.trigger.as_str(), words)).or_insert(0);
+            *nth += 1;
+            let mut h = Sha256::new();
+            for part in [session, i.trigger.as_str(), words] {
+                h.update((part.len() as u64).to_le_bytes());
+                h.update(part.as_bytes());
+            }
+            h.update((*nth as u64).to_le_bytes());
+            h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+        })
+        .collect()
+}
 
 /// One row of the reply ledger (`HARNESS-EVOLUTION-DESIGN.md` P7): every
 /// reply the reflector gave, so the share of skips and the categories of
@@ -9284,6 +9445,130 @@ mod correction_attribution {
 
     /// A pass that stopped after a source's rows and before its mined mark
     /// counts nothing; the retry that marks it counts, never both.
+    #[test]
+    fn a_session_read_again_after_it_grew_counts_every_pass_that_finished_it() {
+        let root = std::env::temp_dir().join(format!(
+            "mecha-passes-{}",
+            crate::session::Session::new_id()
+        ));
+        let store = LearningStore::open(&root).unwrap();
+        let reply = |session: &str| {
+            Reflection {
+                outcome: Reflected::Skipped,
+                prompt: "p".into(),
+            }
+            .record(
+                Trigger::Followup,
+                "m",
+                Some(session.into()),
+                None,
+                Evidence::Full,
+                false,
+            )
+            .unwrap()
+        };
+        let passes = |store: &LearningStore| {
+            let (rows, _) = store.replies_counting().unwrap();
+            rows.iter()
+                .map(|r| (r.session_id.clone().unwrap(), r.pass.clone().unwrap()))
+                .collect::<Vec<_>>()
+        };
+        let row = |s: &str, p: &str| (s.to_string(), p.to_string());
+
+        // Mined before lengths were kept: its last pass counts, and the
+        // record made for it afterwards names that pass, so it goes on
+        // counting when a later pass is recorded beside it.
+        store.append_reply("zero", &reply("old")).unwrap();
+        store.append_reply("one", &reply("old")).unwrap();
+        store.mark_mined("old").unwrap();
+        assert_eq!(passes(&store), vec![row("old", "one")]);
+        assert_eq!(store.mined_lengths().unwrap().get("old"), None);
+        let last = store.last_reply_passes().unwrap();
+        store
+            .finish_pass("old", last["old"].as_deref(), 100, &["aa".into()])
+            .unwrap();
+        assert_eq!(passes(&store), vec![row("old", "one")]);
+        assert_eq!(store.mined_lengths().unwrap()["old"], 100);
+
+        // It grew and was read again: a pass that stops before it finishes
+        // counts nothing, and the one that finishes counts beside the first.
+        store.append_reply("two", &reply("old")).unwrap();
+        assert_eq!(passes(&store), vec![row("old", "one")]);
+        store.append_reply("three", &reply("old")).unwrap();
+        store
+            .finish_pass("old", Some("three"), 250, &["bb".into()])
+            .unwrap();
+        assert_eq!(passes(&store), vec![row("old", "one"), row("old", "three")]);
+        assert_eq!(store.mined_lengths().unwrap()["old"], 250);
+        // Marked mined once, however many passes finished it.
+        let mined = std::fs::read_to_string(root.join("mined.jsonl")).unwrap();
+        assert_eq!(mined.lines().filter(|l| l.trim() == "old").count(), 1);
+
+        // A new session's first pass marks it mined and is on record.
+        store.append_reply("three", &reply("new")).unwrap();
+        assert!(passes(&store).iter().all(|(s, _)| s == "old"));
+        store.finish_pass("new", Some("three"), 40, &[]).unwrap();
+        assert!(store.mined_sessions().unwrap().contains("new"));
+        assert!(passes(&store).contains(&row("new", "three")));
+
+        // The moments each pass asked about ride in its own record.
+        let asked = store.asked_moments().unwrap();
+        assert!(asked.contains("aa") && asked.contains("bb") && asked.len() == 2);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_moment_s_key_is_its_words_and_which_time_they_were_said_never_where() {
+        let said = |trigger: Trigger, text: &str, at: usize| Intervention {
+            trigger,
+            context: "c".into(),
+            text: text.into(),
+            aftermath: String::new(),
+            at,
+            tools_before: Vec::new(),
+            tools_after: Vec::new(),
+        };
+        let first = [
+            said(Trigger::Followup, "no", 4),
+            said(Trigger::Followup, "the winter one", 8),
+            said(Trigger::Followup, "no", 12),
+        ];
+        let keys = moment_keys("s", &first);
+        assert_eq!(keys.len(), 3);
+        assert!(keys[0] != keys[1] && keys[0] != keys[2] && keys[1] != keys[2]);
+        // The same conversation later, every index moved and one moment
+        // added: the three it had keep their keys.
+        let later = [
+            said(Trigger::Followup, "no", 1),
+            said(Trigger::Followup, "the winter one", 3),
+            said(Trigger::Followup, "no", 5),
+            said(Trigger::Steer, "no", 9),
+        ];
+        let again = moment_keys("s", &later);
+        assert_eq!(&again[..3], &keys[..]);
+        assert!(!keys.contains(&again[3]));
+        // Mismatches all carry one sentence and are told apart by their
+        // step: with an earlier one gone, the later keeps its own key.
+        let failed = |step: &str| Intervention {
+            context: step.into(),
+            ..said(Trigger::Mismatch, "a check failed", 0)
+        };
+        let both = moment_keys("s", &[failed("step-1"), failed("step-2")]);
+        assert_ne!(both[0], both[1]);
+        assert_eq!(moment_keys("s", &[failed("step-2")])[0], both[1]);
+        // A follow-up is not told apart by what the assistant said before
+        // it, which a compaction rewrites.
+        let after = Intervention {
+            context: "a summary".into(),
+            ..said(Trigger::Followup, "no", 4)
+        };
+        assert_eq!(moment_keys("s", &[after])[0], keys[0]);
+        // Another session's same words are another moment.
+        assert_ne!(moment_keys("t", &first)[0], keys[0]);
+        // No text is in a key.
+        assert!(keys.iter().all(|k| k.len() == 64 && !k.contains("winter")));
+    }
+
     #[test]
     fn a_retried_source_counts_its_last_pass_only() {
         let root = std::env::temp_dir().join(format!(
