@@ -504,7 +504,22 @@ everything delivered by keyword helped where the lesson was an observed fact,
 and for more tokens, and failed where the earlier run had been
 confidently wrong, because the wrong conclusion was delivered unmarked;
 appraised episodes passed both for less. Storing without discrimination cost
-nothing. Delivering without it did.
+nothing there, where what was stored was text and its keywords; the second
+layer adds an embedding a span, whose cost at the size of a real history is
+not measured. Delivering without discrimination did cost.
+
+**What the second layer hands over is prose, and that is its largest new
+surface.** Every other recall path returns something typed or built; this
+one returns a passage as it was read, from any session of the home. Its
+rules are therefore the ones for prose a run did not write: a passage is
+never an instruction and never mined as the owner's words; it carries the
+home's private data into the conversation that receives it, whichever
+session it came from, and is marked so; what was outside content when it
+was first read is outside content when it is recalled; and a session kind a
+privileged run is never shown (a front-door conversation, a test) is not
+indexed at all. Whether a recalled passage may be shown without a warning
+around it, and whether its origin may ever be cleared, are the owner's
+rulings and are recorded with the build (§11.6).
 
 ### 11.2 Promotion is retroactive
 
@@ -580,7 +595,10 @@ held out until then.
 
 ### 11.5 What this changes in the build order
 
-A stored index moves up beside the gate (§7 step 2), and it is not the one
+A stored index moves up beside the gate (§7 step 2, which still reads as
+written before this section, as does §5's Capture row: what is retired
+there is the sealed copy of every passage into the store, not the index
+over them), and it is not the one
 §4.5's third bullet described: that one was over retained passages, above
 the gate. This one is over every transcript span, under the gate, and the
 gate is only safe to trust with this one under it.
