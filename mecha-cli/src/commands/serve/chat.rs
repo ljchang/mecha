@@ -418,13 +418,30 @@ pub(super) struct Recall {
 /// The most searches the harness makes after calls in one turn of a chat.
 const RECALLS_A_TURN: u32 = 4;
 
+/// How long a turn gives one search of the index. Not the brief's two
+/// seconds, which were set against a local board read: every search embeds
+/// its query, and the embeddings server is started on demand and stops after
+/// ten idle minutes, with a first answer some three to four seconds away
+/// (`docs/LLAMA-SERVER.md`; the figure is that document's and was not
+/// measured again here). Under the brief's deadline the first search of a
+/// chat timed out as a matter of course (review of #890). Six seconds is
+/// that start with room, paid at most once after an idle spell.
+const RECALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(6);
+
 impl Recall {
     fn open(sessions: &std::path::Path) -> Option<Self> {
         use mecha_core::tool::spans;
         let home = mecha_core::work::mecha_home().ok()?;
-        // The one embeddings server, at the address the graph is given.
-        let url = std::env::var("MECHA_GRAPH_EMBED_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:8081".to_string());
+        // The one embeddings server, at the address the owner's config gives
+        // every client in this process (`[documents] embed_url`, as
+        // `setup::file_embedder` reads it), and its default where there is
+        // no such table. Not the graph server's environment variable, which
+        // mecha writes for that server and never has itself (review of
+        // #890).
+        let url = Config::load_global()
+            .ok()
+            .and_then(|cfg| cfg.documents.map(|d| d.embed_url))
+            .unwrap_or_else(|| "http://127.0.0.1:8081".to_string());
         let embedder = match mecha_core::embed::Embedder::new(&url) {
             Ok(embedder) => embedder,
             Err(e) => {
@@ -4164,8 +4181,8 @@ fn begin_turn(
                 let mut input = spans::delivery_input(&asked);
                 input["conversation"] = serde_json::json!(chat);
                 input["clean"] = serde_json::json!(true);
-                // Under the brief's deadline: the turn does not wait on a
-                // slow embeddings server. Late or failed, nothing is handed
+                // Under a deadline: the turn does not wait on a slow
+                // embeddings server. Late or failed, nothing is handed
                 // over before this turn, and the log says which.
                 //
                 // The conversation holds the owner's earlier words once
@@ -4175,7 +4192,7 @@ fn begin_turn(
                 // for what it may return, and the dispatch arms on that.
                 let unasked = conversation.taint;
                 let found = tokio::time::timeout(
-                    crate::setup::BRIEF_BOARD_TIMEOUT_INTERACTIVE,
+                    RECALL_DEADLINE,
                     agent.dispatch_one(&cx, &mut conversation, spans::NAME, input, &None),
                 )
                 .await;
@@ -4228,7 +4245,7 @@ fn begin_turn(
                 limit: RECALLS_A_TURN,
                 // A person is waiting on the turn: the same bound as the
                 // search before it.
-                deadline: Some(crate::setup::BRIEF_BOARD_TIMEOUT_INTERACTIVE),
+                deadline: Some(RECALL_DEADLINE),
                 own_voice: true,
             });
         }
@@ -7684,13 +7701,10 @@ pub(super) fn test_chat_recalling(reply: &'static str, embed: &str, on: bool) ->
 /// door's own refresh is in the background, which a test cannot wait on.
 #[cfg(test)]
 pub(super) async fn test_recall_refreshed(chat: &ChatState) -> (usize, usize) {
-    chat.recall
-        .as_ref()
-        .expect("a chat with a recall index")
-        .index
-        .refresh()
-        .await
-        .unwrap()
+    let recall = chat.recall.as_ref().expect("a chat with a recall index");
+    // Behind the door's own refresh, as another of its would be.
+    let _one = recall.refreshing.lock().await;
+    recall.index.refresh().await.unwrap()
 }
 
 /// [`test_chat_with`], with the persona door the caller built — for

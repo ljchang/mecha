@@ -11835,8 +11835,14 @@ for the whole door (`serve::chat::Recall`).
   when a search hands nothing over, as corrections does. A hand-over marks
   the chat private, and `Taint::arm_for_content` reads the same off the
   transcript, since the record of it is best effort.
-- **A turn never waits on the index.** The search before a turn and each
-  one after a call run under the brief's deadline and hand nothing over
+- **One index a home, whoever refreshes it.** Which sessions are indexed
+  does not turn on the caller: a one-shot run's pass and the door's admit
+  the same sessions, and a caller that does not take web chats as history
+  is not handed their passages when it searches.
+- **A turn never waits long on the index.** The search before a turn and
+  each one after a call run under a deadline of their own
+  (`RECALL_DEADLINE`, sized to the embeddings server's start on demand, not
+  the brief's two seconds) and hand nothing over
   when late or failed (after a call: said once, and not made again that
   turn), with a log line; the refresh is once a chat and in the background, so a
   chat begun during a long first embedding is handed less and not held up.

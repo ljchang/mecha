@@ -6060,20 +6060,56 @@ mod boundary_tests {
             let first = chat::test_transcript(&chat, "first").await;
             // Nothing earlier to be handed, and never its own words.
             assert!(handed(&first).is_empty());
-            let (covered, _) = chat::test_recall_refreshed(&chat).await;
-            // A session marked as a test is not history: nothing is indexed
-            // from it, which is all there is to check under the mark.
-            if mecha_core::session::SessionKind::test_override().is_some() {
-                assert_eq!(covered, 0);
-                return;
+            // An earlier chat that read something from outside, closer to the
+            // later ask than the owner's own words are: its record must not
+            // reach a chat, which is the door's to see to and not only the
+            // tool's.
+            {
+                use mecha_core::message::{Block, Message};
+                use mecha_core::session::{Record, Session, SessionKind, SessionMeta};
+                let read = Session::create(
+                    chat.sessions_dir(),
+                    SessionMeta {
+                        id: Session::new_id(),
+                        created_at: chrono::Utc::now(),
+                        provider: "fixture".into(),
+                        model: "fixture".into(),
+                        workspace: chat.sessions_dir().to_path_buf(),
+                        title: None,
+                        kind: Some(SessionKind::Web),
+                    },
+                )
+                .unwrap();
+                for message in [
+                    Message::user("look up the tide"),
+                    Message::assistant(vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "fetch_page".into(),
+                        input: serde_json::json!({}),
+                    }]),
+                    Message::tool_results(vec![Block::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "harbour berth notice: tide gauge crane closed".into(),
+                        is_error: false,
+                    }]),
+                ] {
+                    read.append(&Record::Message(message)).unwrap();
+                }
+                read.append(&Record::Taint(mecha_core::agent::Taint {
+                    private: false,
+                    untrusted: true,
+                }))
+                .unwrap();
             }
-            assert_eq!(covered, 1);
+            let (covered, _) = chat::test_recall_refreshed(&chat).await;
+            assert_eq!(covered, 2);
             converse(&app, "second", "which harbour berth had a notice").await;
             let second = chat::test_transcript(&chat, "second").await;
             let got = handed(&second);
             if on {
                 assert_eq!(got.len(), 1, "{got:?}");
                 assert!(got[0].contains("the fender line is condemned"), "{got:?}");
+                assert!(!got[0].contains("tide gauge"), "{got:?}");
                 // The owner's own words, out of a chat nothing from outside
                 // entered: handed over without an envelope, and the chat it
                 // went to is none the less clean for it.
