@@ -482,7 +482,11 @@ fn read_sessions(
         .optional()?;
     if taken.as_deref() != Some(EXTRACTION) {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute("DELETE FROM sessions", [])?;
+        // The marks stay and are made stale, never deleted: a mark also
+        // says whether its session is a web chat, which a search filters
+        // on, and with the marks gone for the length of the re-read every
+        // web chat's passages would have been anyone's (review of #890).
+        tx.execute("UPDATE sessions SET bytes = -1", [])?;
         tx.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('extraction', ?1)",
             [EXTRACTION],
@@ -1069,7 +1073,7 @@ impl Tool for Spans {
         Some(crate::tool::effect::Effect::Read)
     }
 
-    async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+    async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let query = match input.get("query").and_then(Value::as_str) {
             Some(q) if !words(q).is_empty() => cut(q, QUERY_BYTES).to_string(),
             _ => {
@@ -1109,7 +1113,17 @@ impl Tool for Spans {
             .and_then(Value::as_str)
             .map(str::to_string);
         let clean = input.get("clean").and_then(Value::as_bool) == Some(true);
-        let key = conversation.clone().unwrap_or_default();
+        // What was handed is remembered for the conversation the harness
+        // named, and for a call the model made itself, which names none,
+        // for the conversation its turn is stamped with: one bucket for
+        // every such call would have one chat's hits withheld from every
+        // other for the life of the host (review of #890). The model's own
+        // call is not kept from its own session's passages: that needs the
+        // session's id, which only the harness gives.
+        let key = conversation
+            .clone()
+            .or_else(|| ctx.conversation.clone())
+            .unwrap_or_default();
         let web = self.web;
         let index = self.index.clone();
         let handed = self

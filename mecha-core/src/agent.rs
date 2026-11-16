@@ -5000,10 +5000,17 @@ impl Agent {
                             let dispatched = {
                                 let (mut denied, mut pictures) =
                                     (Vec::new(), RunPictures::default());
+                                // No events: this is the harness's search
+                                // and not a call of the model's to show as
+                                // one. What it found is shown as what is
+                                // handed over; and a search dropped at its
+                                // deadline would otherwise leave a call on
+                                // the page that nothing ever answers
+                                // (review of #890).
                                 let search = self.dispatch(
                                     cx,
                                     vec![(call_id.clone(), cue.tool.clone(), input)],
-                                    &events,
+                                    &None,
                                     &mut denied,
                                     &mut taint,
                                     &mut blocked_sends,

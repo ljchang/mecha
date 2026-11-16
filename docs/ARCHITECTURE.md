@@ -11827,7 +11827,9 @@ for the whole door (`serve::chat::Recall`).
   when the file's length changed.
 - **One tool, many chats.** The registry is shared, so the conversation is
   an argument: its own session is left out of its searches and what it was
-  handed is remembered under its id. The tool is on the agent only while
+  handed is remembered under its id. A call the model makes itself names no
+  conversation: what it is handed is remembered under the conversation its
+  turn is stamped with, and its own session's passages are not left out. The tool is on the agent only while
   the switch is on, so the tool list does not change per chat.
 - **A chat that is told nothing is left as it was.** `span_recall` declares
   private data for what it may return, and a dispatch arms on what is
