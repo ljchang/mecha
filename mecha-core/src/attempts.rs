@@ -186,9 +186,13 @@ fn is_ask(message: &Message) -> bool {
 /// harness's own, not a refusal by the owner or by policy, and not a memory
 /// lookup.
 fn working_calls(messages: &[Message], start: usize) -> Vec<(usize, Call)> {
+    working_calls_until(messages, start, end_of_turn(messages, start))
+}
+
+/// [`working_calls`] with the turn's end given.
+fn working_calls_until(messages: &[Message], start: usize, end: usize) -> Vec<(usize, Call)> {
     let mut pending: BTreeMap<&str, &str> = BTreeMap::new();
     let mut out = Vec::new();
-    let end = end_of_turn(messages, start);
     // Only a call a registered tool answered, by an id issued once: an id
     // is the model's own output, a provider may hand back an empty one, and
     // a shared id would let one call's result vouch for another's name. A
@@ -314,7 +318,9 @@ pub fn in_run(attempt: &Attempt, messages: &[Message], when: &str) -> Vec<Verdic
 /// today, so `at` only finds the turn: the attempt is the one kept for
 /// `session` that holds a working call of that turn, an id against an id. A
 /// turn that only talked, or whose calls a compaction has since dropped,
-/// has no attempt to judge.
+/// has no attempt to judge. A slash command typed in between is the owner
+/// and is not an ask of the assistant, so the turn before is looked for
+/// past it.
 ///
 /// The words are the owner's own message and nothing else, so what a later
 /// run is handed stays clean whatever the corrected turn had read. The
@@ -327,8 +333,12 @@ pub fn of_followup(
     when: &str,
 ) -> Option<Verdict> {
     let said = messages.get(at).filter(|m| is_ask(m)).map(owner_text)?;
-    let start = (0..at).rev().find(|&i| is_ask(&messages[i]))?;
-    let calls = working_calls(messages, start);
+    let start = (0..at)
+        .rev()
+        .find(|&i| is_ask(&messages[i]) && !owner_text(&messages[i]).trim().starts_with('/'))?;
+    // To the follow-up itself, and not to a slash command before it: a
+    // command runs no tool, so nothing of another turn is taken in.
+    let calls: Vec<_> = working_calls_until(messages, start, at);
     let attempt = attempts.iter().find(|a| {
         a.session == session
             && a.calls
@@ -1136,6 +1146,12 @@ mod tests {
         assert_eq!(of_followup(&kept, "s", &messages, at + 1, "t"), None);
         assert_eq!(of_followup(&kept, "s", &messages, 0, "t"), None);
         assert_eq!(of_followup(&kept, "s", &messages, 99, "t"), None);
+        // A slash command between the attempt and the correction is the
+        // owner, and not what the correction answers.
+        let mut commanded = messages.clone();
+        commanded.insert(at, Message::user("/model harbour"));
+        let v = of_followup(&kept, "s", &commanded, at + 1, "later").unwrap();
+        assert_eq!(v.key, attempt.key);
         // An attempt whose calls are no longer in the transcript is not
         // guessed at from where it used to be.
         let mut gone = attempt.clone();
