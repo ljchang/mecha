@@ -55,6 +55,7 @@ pub async fn execute(args: Args) -> Result<()> {
             Source::Reject => "you rejected the draft",
             Source::Denial => "you refused a call",
             Source::Steer => "you stepped in",
+            Source::Followup => "your next message was read as a correction",
             Source::SentUnchanged | Source::Unknown => "judged",
         };
         println!(

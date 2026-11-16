@@ -703,6 +703,11 @@ fn purge_learning(roots: &Roots, id: &str, keep_distilled: bool, report: &mut Re
         // (see `forget`), because a ledger line gone while its draft stays
         // makes the draft mineable again — and a fresh `writing` lesson from
         // a forgotten conversation would ride in every future prompt.
+        // Where each pass read the session to, with the hashes of the
+        // moments it put to the reflector: a line names its session.
+        ledgers += filter_jsonl(&root.join("mined_passes.jsonl"), |v| {
+            field_is(v, "session", id)
+        })?;
         report.count("learning ledgers", ledgers);
 
         let by_reflexion = |v: &Value| {

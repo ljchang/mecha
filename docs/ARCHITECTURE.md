@@ -9952,6 +9952,24 @@ carries its own count rule.
   wire format: an unknown outcome reads as `Unknown` and is counted on its
   own, never as unusable. `forget` purges the ledger by session and by
   forgotten reflection, like the validation ledgers.
+- **A session that grew is read again, for what is new.** A web chat is one
+  conversation over days and fires no `session_end`, so the nightly's first
+  pass used to be the only one it ever got. A pass that finishes a session
+  writes one line to `mined_passes.jsonl` (`LearningStore::finish_pass`):
+  the pass, how long the transcript was, and the hashes of the moments it
+  put to the reflector (`learning::moment_keys`: session, trigger, words
+  and which occurrence of those words, never an index, which a compaction
+  moves, and never text). A mined session whose file is longer than its
+  last line says is a candidate again, and only moments no line holds are
+  asked about, a skip included. The length and the moments are one append
+  because apart they failed two ways: a stop between them either asked
+  every moment again or dropped a pass's replies from the count.
+  `replies_counting` counts, for a session with passes on record, the rows
+  of every pass on record, and keeps the last-pass rule for a session with
+  none; superseding would drop replies a finished pass was given. A session
+  mined before the file existed is given a line on the next pass, naming
+  the pass whose rows counted for it and its moments, with no model call.
+  `forget` removes a session's lines.
 - **The baseline before it is partial.** Skips used to be discarded, and
   only steer and denial skips were ever printed to the learning log
   (`· [steer] no lesson drawn`). Followup skips, the common case, have no
@@ -11725,8 +11743,19 @@ into the ordinary web chat only, in `serve/chat.rs`'s turn task.
   draft sent as written is good; edited, rejected, a steer or a denial is a
   verdict against the turn. A turn nobody acted on has no verdict, and no
   verdict is never a good one: such attempts are kept and handed to nothing.
-  A later message that may be a correction is **not** read: whether it is one
-  is the reflector's judgement, made overnight, and nothing joins it yet.
+  A later message that may be a correction is **not** read in the turn:
+  whether it is one is the reflector's judgement, made overnight. Where
+  `mecha reflect` draws a lesson from a follow-up, the same pass writes it
+  as a verdict on the attempt kept for the turn before
+  (`attempts::of_followup`, `Source::Followup`): the words are the owner's
+  message and nothing else, and it is said to a later run as a message
+  "read afterwards as a correction", because that reading is a model's. A
+  skip is no verdict. The join is by a working call's id in the transcript
+  as loaded, so a turn that only talked, or whose calls a compaction has
+  dropped, is judged by nothing. One limit follows from the pass it rides:
+  the web chat fires no `session_end`, so the pass that reads one is the
+  nightly's. A chat that goes on after a pass is read again for what is new
+  (`LearningStore::finish_pass`, `learning::moment_keys`).
 - **Only the owner's.** `attempts::Draft::of` reads an outbox item as a
   verdict only where the owner released, edited or rejected it at their own
   door (`owners_unchanged_release`, `owners_edit`, a reject stamped

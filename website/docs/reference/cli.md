@@ -1425,6 +1425,14 @@ the session id that proves it and an `Origin` classified from the transcript's
 recorded taint. A session whose reflections fail is left unmined for a later run to
 retry rather than marked and silently lost.
 
+A conversation that goes on after a pass has read it is read again, for what is
+new only: a pass records how long each transcript was and which moments it put
+to the reflector (as hashes, never text), so a later pass asks about a moment
+once. With `[features] corrections` on, a follow-up the pass reads as a
+correction is also recorded as your verdict on the turn before it (see
+[`corrections`](#corrections)); if that file cannot be written the session is
+left unmined.
+
 ```bash
 mecha reflect --dry-run
 mecha reflect -p local --limit 20
@@ -1553,7 +1561,11 @@ mecha corrections --json
 
 A judgement is something you did, never something you were asked for: a draft
 you edited before sending, a draft you rejected, a time you stepped in during
-a run, a call you refused. A draft you sent as written counts as good. It
+a run, a call you refused. A draft you sent as written counts as good. Your
+next message counts too when the nightly [`reflect`](#reflect) pass reads it
+as a correction of the turn before: it is recorded with your words, and
+listed as "your next message was read as a correction", since that reading
+is a model's and not an act of yours. It
 reads whether or not `[features] corrections` is on; switching the feature
 off stops the record growing. Deleting a conversation (`mecha sessions
 delete`) removes its lines.

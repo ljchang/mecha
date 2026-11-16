@@ -36,6 +36,7 @@ is the undo, one rule at a time, and `mecha rules restore` reverses it.
 | `runs.jsonl` | One audit record per consolidation pass |
 | `passes.jsonl` | One line per pass that wrote to the store: when, and what it counted — never content |
 | `mined.jsonl`, `mined_outbox.jsonl`, `distilled.jsonl` | Idempotence ledgers |
+| `mined_passes.jsonl` | Where each pass read a session to, and which moments it put to the reflector (hashes, never text), so a conversation that grows is read again for what is new only |
 | `proposals/<id>.json` | Rule changes waiting for a human |
 
 ## `mecha reflect` — interventions become reflections
