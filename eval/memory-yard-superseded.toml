@@ -32,6 +32,10 @@
 # `memory-yard-superseded-d4`: 0, 2, 6 of six; pass rates held, tokens in fell by
 # about a thousand an arm, which is not the fall predicted.
 #
+# Correction: no yard result in d2, d3 or d4 was recorded in an envelope, so
+# the statement above that d2 and d3 searched with the warning is wrong for
+# these runs, and d4 is a replicate of d3 (docs/MEMORY-RETENTION-DESIGN.md §11.6).
+#
 #   mecha exp new eval/memory-yard-superseded.toml
 #   mecha exp run memory-yard-superseded
 

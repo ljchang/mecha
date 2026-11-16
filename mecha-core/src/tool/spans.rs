@@ -104,6 +104,8 @@ const BATCH: usize = 16;
 /// one word in it.
 const ADDS: usize = 2;
 /// The most words named as absent from the present record, a passage.
+/// How much of a result the absence line is read against.
+const RECORD_BYTES: usize = 8_000;
 const ABSENT_WORDS: usize = 12;
 /// What closes a list of them that was cut.
 const ABSENT_MORE: &str = "and others";
@@ -148,12 +150,13 @@ pub fn result_input(tool: &str, _input: &Value, result: &str) -> Option<Value> {
     if super::episodes::MEMORY_TOOLS.contains(&tool) || record.trim().len() < ASKS_BYTES {
         return None;
     }
-    // The whole result beside the cut one the search is made with: what a
-    // passage holds that the record does not is said of the record, and a
-    // word past the cut is in the record (review of #888).
+    // Far more of the result than the search is made with: what a passage
+    // holds that the record does not is said of the record, and a word past
+    // the search's cut is in the record (review of #888). Bounded all the
+    // same, since the input is kept in the run's trace.
     Some(json!({
         "query": cut(record, QUERY_BYTES),
-        "record": record,
+        "record": cut(record, RECORD_BYTES),
     }))
 }
 
@@ -218,7 +221,16 @@ fn spans_of(session: &str, transcript: &str) -> Vec<Span> {
                 (_, Block::ToolResult { tool_use_id, .. }) if lookups.contains(tool_use_id) => {
                     continue
                 }
-                (_, Block::ToolResult { content, .. }) => ("tool result", content.as_str()),
+                // The record, and not the warning the loop rendered around it
+                // when it came from outside: left on, the warning is a fifth
+                // of every such passage, is handed over inside it in either
+                // voice, and is what the absence line then lists (review of
+                // #888). Whether a passage had one is where its origin can
+                // be read from when the index comes to keep origins.
+                (_, Block::ToolResult { content, .. }) => (
+                    "tool result",
+                    crate::outbox_source::unwrap_untrusted(content),
+                ),
                 (Role::User, Block::Text { text }) if super::transcripts::delivery(text) => {
                     continue
                 }
@@ -1240,6 +1252,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
+    /// A result recorded as the loop renders an outside one is indexed as
+    /// the record: the warning around it is not handed over inside the
+    /// passage, and is not what the record is said not to show.
+    #[tokio::test]
+    async fn a_passage_recorded_in_an_envelope_is_indexed_without_it() {
+        let home = home();
+        let sessions = home.join("sessions");
+        let rendered = crate::jobs::render(
+            "yard_berth",
+            "e1",
+            ToolOutput::ok(WITH_NOTICE).from_outside(),
+            &crate::jobs::Terms {
+                cap: 100_000,
+                ..Default::default()
+            },
+        )
+        .content;
+        assert!(rendered.starts_with("<untrusted-content"), "{rendered}");
+        session(
+            &sessions,
+            SessionKind::Run,
+            looked_up("e1", "yard_berth", &rendered).to_vec(),
+        );
+        let current = session(&sessions, SessionKind::Run, vec![]);
+        let spans = Spans::new(
+            dir_in(&home),
+            sessions,
+            current,
+            Embedder::new(&embeddings().await).unwrap(),
+        );
+        spans.refresh().await.unwrap();
+        let now = r#"{"berth": "C", "length": 200}"#;
+        let out = spans
+            .call(
+                json!({ "query": now, "record": now }),
+                &ToolCtx::default().with_workspace(std::env::temp_dir()),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content
+                .contains("does not show: notice, fender, line, condemned."),
+            "{}",
+            out.content
+        );
+        assert!(!out.content.contains("untrusted"), "{}", out.content);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
     /// A record read in two earlier sessions is one passage: it takes one
     /// place, leaving the other to the next thing that bears, and is not
     /// handed over a second time from the other session's row.
@@ -1289,7 +1350,7 @@ mod tests {
         );
         // A word past where the search's query is cut is in the record, and
         // is not said to be missing from it.
-        let long = format!("{} {}", "berth ".repeat(QUERY_BYTES), "condemned");
+        let long = format!("{} {}", "berth ".repeat(QUERY_BYTES / 3), "condemned");
         let asked = result_input("yard_berth", &json!({}), &long).unwrap();
         assert!(!asked["query"].as_str().unwrap().contains("condemned"));
         assert!(!absent_from(asked["record"].as_str().unwrap(), WITH_NOTICE)
