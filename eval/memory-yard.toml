@@ -7,6 +7,12 @@
 # any memory arm ran on it; not for tuning. The predictions below were
 # written with the fixtures.
 #
+# Run once as held out on 2026-11-16 (`memory-yard-h1`), every arm, with the
+# predictions below. Development data since: the berth record then gained
+# `reefer_points_fitted`, without which the reefer question had more than one
+# answer the notices allowed, and the index's ranking was changed on what
+# that run showed. A number from a later run of this file is not held out.
+#
 #   mecha exp new eval/memory-yard.toml
 #   mecha exp run memory-yard
 

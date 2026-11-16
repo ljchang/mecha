@@ -920,7 +920,8 @@ pub async fn execute(
             input: std::sync::Arc::new(spans::result_input),
             stem: spans::CUE_STEM.into(),
             nothing: spans::NOTHING.into(),
-            limit: 6,
+            // A turn that reads a handful of records asks once for each.
+            limit: 10,
         });
     }
     #[cfg(feature = "memory-prototype")]

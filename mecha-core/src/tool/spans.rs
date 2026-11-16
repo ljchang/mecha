@@ -11,13 +11,17 @@
 //!
 //! Three rules, each from a measurement.
 //!
-//! **Words and meaning, fused.** The embeddings server scores two different
-//! records of one shape as near-identical: on the benchmark's development
-//! texts two jobs' settings came back at 0.99. Meaning finds the
-//! neighbourhood and cannot tell this record's earlier state from its
-//! sibling's; the exact name or number in it can. So a passage must clear a
-//! floor by meaning, and the passages that do are ranked by both
-//! (reciprocal rank, as `persona::search` fuses them).
+//! **Meaning is the floor, and words give the order.** The embeddings
+//! server scores two different records of one shape as near-identical: on
+//! the benchmark's development texts two jobs' settings came back at 0.99.
+//! Meaning finds the neighbourhood and cannot tell this record's earlier
+//! state from its sibling's; the exact name or number in it can. So a
+//! passage must clear a floor by meaning, and those that do are ordered by
+//! how much of what was asked with they hold, counting a rare word for more.
+//! Meaning orders only what the words leave tied. The first form fused the
+//! two ranks evenly, and on the yard lifetime a later, emptier reading of
+//! every record — nearest of all by meaning — crowded the one earlier
+//! reading that carried the notice out of what was handed over.
 //!
 //! **A passage is embedded as it is asked for: bare.** What is asked with
 //! here is usually a tool's result, a passage itself and not a question, and
@@ -78,14 +82,9 @@ const QUERY_BYTES: usize = 1_500;
 const ASKS_BYTES: usize = 16;
 /// Passages embedded per request.
 const BATCH: usize = 16;
-/// Reciprocal-rank fusion's constant, as `persona::search` has it.
-const RRF_K: f32 = 60.0;
 /// A passage with at least this share of its distinct words in the query
 /// says nothing the query does not.
 const RESTATES: f32 = 0.8;
-/// Two passages this close by meaning are not told apart by it: they share
-/// a rank, and the words decide between them.
-const SAME: f32 = 0.02;
 
 /// Where a home keeps the index.
 pub fn dir_in(home: &Path) -> PathBuf {
@@ -343,8 +342,8 @@ fn squeezed(text: &str) -> String {
 }
 
 /// The passages to hand over for `query`: those at or over the floor by
-/// meaning, not already in front of the run, ranked by meaning and by words
-/// together. Best first, with each one's id.
+/// meaning and not already in front of the run, ordered by the words of the
+/// query they hold and then by meaning. Best first, with each one's id.
 fn choose(
     spans: &[(i64, Span, Vec<f32>)],
     query: &str,
@@ -396,28 +395,16 @@ fn choose(
                 .sum()
         })
         .collect();
-    // A rank is how many passages are better: by meaning, better by more
-    // than the margin it cannot tell apart; by words, strictly better. A
-    // passage that shares no word with the query gets nothing from words.
-    let mut best: Vec<(usize, f32)> = (0..near.len())
-        .map(|i| {
-            let ahead = near.iter().filter(|(_, l)| *l > near[i].1 + SAME).count();
-            let mut score = 1.0 / (RRF_K + ahead as f32 + 1.0);
-            if by_words[i] > 0.0 {
-                let ahead = by_words.iter().filter(|w| **w > by_words[i]).count();
-                score += 1.0 / (RRF_K + ahead as f32 + 1.0);
-            }
-            (i, score)
-        })
-        .collect();
+    let mut best: Vec<usize> = (0..near.len()).collect();
     best.sort_by(|a, b| {
-        b.1.total_cmp(&a.1)
-            .then(near[b.0].1.total_cmp(&near[a.0].1))
-            .then(near[a.0].0.cmp(&near[b.0].0))
+        by_words[*b]
+            .total_cmp(&by_words[*a])
+            .then(near[*b].1.total_cmp(&near[*a].1))
+            .then(near[*a].0.cmp(&near[*b].0))
     });
     best.into_iter()
         .take(HITS)
-        .map(|(i, _)| {
+        .map(|i| {
             let at = near[i].0;
             (spans[at].0, spans[at].1.clone())
         })

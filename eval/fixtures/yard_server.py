@@ -67,8 +67,8 @@ def build(store):
 
     def berth(args):
         name = berth_of(args)
-        length, bollards = world.BERTHS[name]
-        record = {"berth": name, "length_m": length, "bollards": bollards}
+        length, bollards, points = world.BERTHS[name]
+        record = {"berth": name, "length_m": length, "bollards": bollards, "reefer_points_fitted": points}
         notice = board().get(name)
         if notice:
             record["notice"] = notice

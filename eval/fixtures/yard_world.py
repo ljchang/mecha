@@ -17,14 +17,20 @@ whether a superseded fact is still handed over.
 Fictional names only; the agent cannot read this file.
 """
 
-# berth -> (length in metres, bollards)
+# berth -> (length in metres, bollards, whether reefer points are fitted)
+#
+# The points are in the record for good: which berths have them is never in
+# doubt, only whether they are live, which a notice says. The first form left
+# them out, and a run told that A's and B's plugs were dead placed a reefer
+# vessel at C, of which nothing was known either way: an answer the notices
+# did not rule out, graded wrong.
 BERTHS = {
-    "A": (80, 6),
-    "B": (120, 8),
-    "C": (200, 14),
-    "D": (100, 7),
-    "E": (150, 10),
-    "F": (110, 8),
+    "A": (80, 6, True),
+    "B": (120, 8, True),
+    "C": (200, 14, False),
+    "D": (100, 7, True),
+    "E": (150, 10, False),
+    "F": (110, 8, False),
 }
 
 # What each board says, by berth. A berth with no entry has no notice.
