@@ -531,7 +531,8 @@ pub type ResultRecallInput = Arc<dyn Fn(&str, &Value, &str) -> Option<Value> + S
 /// loop knows only this shape and never which store answers. Unlike a
 /// [`SuccessCue`], whose text is the host's own words, this is a tool's
 /// result through the one dispatch a model's call takes, so its taint is
-/// counted as any result's is.
+/// counted as any result's is. Never inherited by a subagent: the search is
+/// the run's that asked for it.
 #[derive(Clone)]
 pub struct ResultRecall {
     /// The registered tool to call. Its own result is never a trigger.

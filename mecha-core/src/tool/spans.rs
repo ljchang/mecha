@@ -229,21 +229,34 @@ fn label_of(label: &str) -> &'static str {
 /// `transcripts` is, so it has to be told. How many sessions it now covers.
 fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> Result<usize> {
     let mut conn = open(index)?;
-    let mut paths: Vec<PathBuf> = match std::fs::read_dir(sessions) {
-        Ok(entries) => entries
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().is_some_and(|x| x == "jsonl") && p != current)
-            .collect(),
-        // No directory is no history, which is an answer.
-        Err(_) => vec![],
-    };
+    // What cannot be read stops the pass, and so the start of the run that
+    // asked for it: a directory or a transcript that merely failed to read
+    // would otherwise be taken for one that is gone, and everything indexed
+    // from it deleted below (review of #887). Only a directory that is not
+    // there is no history, which is an answer.
+    let mut paths: Vec<PathBuf> = vec![];
+    match std::fs::read_dir(sessions) {
+        Ok(entries) => {
+            for entry in entries {
+                let path = entry
+                    .with_context(|| format!("listing {}", sessions.display()))?
+                    .path();
+                if path.extension().is_some_and(|x| x == "jsonl") && path != current {
+                    paths.push(path);
+                }
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(e).with_context(|| format!("listing {}", sessions.display()));
+        }
+    }
     paths.sort();
     let mut covered = 0usize;
     let mut kept: BTreeSet<String> = BTreeSet::new();
     for path in paths {
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
         if !super::transcripts::searchable(&text, trial) {
             continue;
         }
@@ -809,6 +822,20 @@ mod tests {
             Embedder::new(&embeddings().await).unwrap(),
         );
         assert!(!ask(&again, wide).await.content.contains("closed"));
+        // A sessions directory that cannot be listed stops the pass, and is
+        // not taken for one with nothing in it: what was indexed stays.
+        std::fs::write(home.join("sessions-file"), "not a directory").unwrap();
+        let blind = Spans::new(
+            dir_in(&home),
+            home.join("sessions-file"),
+            home.join("sessions/none.jsonl"),
+            Embedder::new(&embeddings().await).unwrap(),
+        );
+        assert!(blind.refresh().await.is_err());
+        assert!(ask(&blind, now)
+            .await
+            .content
+            .contains("fender line condemned"));
         // Something about nothing the sessions held is under the floor.
         assert_eq!(ask(&spans, "a vessel").await.content, NOTHING);
         let _ = std::fs::remove_dir_all(home);

@@ -593,6 +593,13 @@ section's own claims:
   showed. It also turned out to test a conflict between memory and a
   present record, which §11.4 did not intend: the next family puts the fact
   where the later task cannot look at all.
+- **A known blind spot: a number is not news.** The restatement rule counts
+  the words a passage adds to the query and leaves numbers out, so that an
+  acknowledgement differing only in a byte count brings nothing to mind. The
+  cost is that an earlier record differing from the present one only in a
+  number, a setting whose value changed, is taken for the record said again
+  and is not handed over. Not measured; the superseded family is where it
+  would show.
 
 Not built: the gate beside this index in the web chat, promotion (§11.2),
 and every rule of §11.3. The index is a file in the mecha home, not yet in
