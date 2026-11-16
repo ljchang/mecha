@@ -13,6 +13,15 @@
 # answer the notices allowed, and the index's ranking was changed on what
 # that run showed. A number from a later run of this file is not held out.
 #
+# Development runs, 2026-11-16, arms none / spans / spans_own_voice.
+# `memory-yard-superseded-d2`: length 0/3, 2/3, 2/3; reefer-after 0/3 in
+# every arm; both own-voice predictions held, and spans passed length twice
+# where d1 had it at none. Written before `memory-yard-superseded-d3`, which
+# adds the line naming what a passage holds that the record just read does
+# not: own-voice length reaches three of three, and reefer-after stays at
+# most one of three, since the line speaks for a replaced notice as readily
+# as for the one that replaced it.
+#
 #   mecha exp new eval/memory-yard-superseded.toml
 #   mecha exp run memory-yard-superseded
 

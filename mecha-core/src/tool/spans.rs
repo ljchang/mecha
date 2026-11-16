@@ -94,6 +94,8 @@ const BATCH: usize = 16;
 /// aside, to say something the query does not. Two is a field's name and
 /// one word in it.
 const ADDS: usize = 2;
+/// The most words named as absent from the present record, a passage.
+const ABSENT_WORDS: usize = 12;
 
 /// A dispatched result of this tool without the envelope the loop put
 /// around it, for a host that hands it over as the run's own memory.
@@ -130,7 +132,24 @@ pub fn result_input(tool: &str, _input: &Value, result: &str) -> Option<Value> {
     if super::episodes::MEMORY_TOOLS.contains(&tool) || result.trim().len() < ASKS_BYTES {
         return None;
     }
-    Some(json!({ "query": cut(result, QUERY_BYTES) }))
+    Some(json!({ "query": cut(result, QUERY_BYTES), "present": true }))
+}
+
+/// The words of an earlier passage that the result just returned does not
+/// hold, in the passage's order, numbers aside: what the run remembers and
+/// the record in front of it is silent on. Said beside the passage (the
+/// owner's ruling of 2026-11-16), because a model handed a memory and a
+/// present record that merely omits it took the omission for a correction
+/// (§11.6 of the design). Empty when the passage adds nothing.
+fn absent_from(present: &str, passage: &str) -> Vec<String> {
+    let shown: BTreeSet<String> = words(present).into_iter().collect();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    words(passage)
+        .into_iter()
+        .filter(|w| !shown.contains(w) && !w.chars().all(|c| c.is_ascii_digit()))
+        .filter(|w| seen.insert(w.clone()))
+        .take(ABSENT_WORDS)
+        .collect()
 }
 
 fn words(text: &str) -> Vec<String> {
@@ -649,6 +668,10 @@ impl Tool for Spans {
                 "query": {
                     "type": "string",
                     "description": "The text to find earlier passages close to."
+                },
+                "present": {
+                    "type": "boolean",
+                    "description": "The query is a record just read: each passage is followed by what it holds that the record does not."
                 }
             },
             "required": ["query"]
@@ -690,6 +713,8 @@ impl Tool for Spans {
                 )))
             }
         };
+        let present = input.get("present").and_then(Value::as_bool) == Some(true);
+        let asked = query.clone();
         let index = self.index.clone();
         let handed = self.handed.lock().map(|h| h.clone()).unwrap_or_default();
         let hits = tokio::task::spawn_blocking(move || -> Result<Vec<(i64, Span)>> {
@@ -711,6 +736,17 @@ impl Tool for Spans {
                 "\n[session {} · {}]\n{}\n",
                 span.session, span.label, span.text
             ));
+            let absent = if present {
+                absent_from(&asked, &span.text)
+            } else {
+                vec![]
+            };
+            if !absent.is_empty() {
+                out.push_str(&format!(
+                    "[The record just read does not show: {}. It is silent on them, which is not the same as saying they stopped being so.]\n",
+                    absent.join(", ")
+                ));
+            }
         }
         // Another conversation's content: where its bytes came from is not
         // this conversation's to know.
@@ -889,6 +925,8 @@ mod tests {
             .expect("sibling not found");
         assert!(first < second, "{}", out.content);
         assert!(out.content.contains("· tool result]"), "{}", out.content);
+        // Asked plainly, nothing is said about any present record.
+        assert!(!out.content.contains("does not show"), "{}", out.content);
         // Nothing is said twice in a run.
         assert_eq!(ask(&spans, now).await.content, NOTHING);
         // An acknowledgement that differs from an earlier one by a number
@@ -931,10 +969,22 @@ mod tests {
             Embedder::new(&embeddings().await).unwrap(),
         );
         assert!(blind.refresh().await.is_err());
-        assert!(ask(&blind, now)
+        // Asked with a record just read, each passage is followed by what
+        // it holds that the record does not.
+        let beside = blind
+            .call(
+                json!({ "query": now, "present": true }),
+                &ToolCtx::default().with_workspace(std::env::temp_dir()),
+            )
             .await
-            .content
-            .contains("fender line condemned"));
+            .unwrap();
+        assert!(
+            beside.content.contains(
+                "fender line condemned\"}\n[The record just read does not show: notice, fender, line, condemned."
+            ),
+            "{}",
+            beside.content
+        );
         // Something about nothing the sessions held is under the floor.
         assert_eq!(ask(&spans, "a vessel").await.content, NOTHING);
         let _ = std::fs::remove_dir_all(home);
@@ -1132,7 +1182,13 @@ mod tests {
 
     #[test]
     fn a_result_asks_only_when_it_is_about_something() {
-        assert!(result_input("yard_berth", &json!({}), WITH_NOTICE).is_some());
+        assert_eq!(
+            result_input("yard_berth", &json!({}), WITH_NOTICE).unwrap()["present"],
+            true
+        );
+        // A passage that differs by a number, or not at all, is silent on
+        // nothing.
+        assert!(absent_from(WITH_NOTICE, r#"{"berth": "C", "length": 150}"#).is_empty());
         assert_eq!(result_input("yard_assign", &json!({}), "ok"), None);
         assert_eq!(result_input(NAME, &json!({}), WITH_NOTICE), None);
         assert_eq!(

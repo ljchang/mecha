@@ -13,6 +13,13 @@
 # answer the notices allowed, and the index's ranking was changed on what
 # that run showed. A number from a later run of this file is not held out.
 #
+# Development runs, 2026-11-16, arms none / spans / spans_own_voice, probes
+# of six an arm. `memory-yard-d2`: 0, 3, 6 (reefer 0/3, 0/3, 3/3); the
+# own-voice prediction held. Written before `memory-yard-d3`, which adds to
+# the after-call search the line naming what a passage holds that the record
+# just read does not: own voice stays at six of six, and spans, which keeps
+# its envelope and its caution, gains at most one reefer probe.
+#
 #   mecha exp new eval/memory-yard.toml
 #   mecha exp run memory-yard
 
