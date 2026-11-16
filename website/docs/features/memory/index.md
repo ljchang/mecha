@@ -537,3 +537,22 @@ it records. Each "never" has a test or a structural guard behind it — the
 details live in [Security](/docs/features/security),
 [Learning](/docs/features/learning), and
 [Sessions and replay](/docs/features/memory/sessions-and-replay).
+
+## Recall
+
+With `[features] recall` on, the web chat is handed what your earlier web
+chats and one-shot runs said when it bears on the chat you are in: before a
+turn, by what you asked, and after a tool call, by what the call returned.
+It is off until you turn it on.
+
+- Only clean passages are handed over: your own words, and what was said or
+  read in a session that nothing from outside (a web page, mail, an external
+  server) had entered. What is left out is counted in the server's log.
+- Persona chats, calls, delegated tasks, front-door conversations and test
+  sessions are never indexed.
+- The index lives under the mecha home (`spans/`) and is embedded by the
+  local embeddings server. It is brought up to date in the background when
+  a chat starts, so the first chat after a long history is indexed may be
+  handed less.
+- Permanently deleting a session removes its passages from the index at
+  once.

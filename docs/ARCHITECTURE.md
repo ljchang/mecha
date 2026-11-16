@@ -11799,6 +11799,49 @@ into the ordinary web chat only, in `serve/chat.rs`'s turn task.
   and hand-overs with everything else. `doctor::check_corrections` reports a
   file or a line that cannot be read.
 
+
+## Recall
+
+`[features] recall`, off unless the owner turns it on: what the owner's
+earlier web chats and one-shot runs said, found by meaning when it bears on
+the chat in hand, and handed to that chat by the harness. The index is
+`tool::spans` (`docs/MEMORY-RETENTION-DESIGN.md` §11), one `Spans::shared`
+for the whole door (`serve::chat::Recall`).
+
+- **A passage is what it was when its session held it.** Its origin is read
+  off its own session's `Record::Taint` checkpoints when it is indexed
+  (`held_outside_content`): the owner's words are the owner's; a tool's
+  result or the assistant's reply is clean only out of a session nothing
+  from outside entered; a record that cannot say is not clean. A result is
+  `.from_outside()` exactly when a passage in it is. Memory is not outside
+  content for being memory (the owner's ruling, 2026-11-16), and nothing
+  here clears an origin: that waits on an offline pass.
+- **The web chat is handed clean passages only.** The door asks with
+  `clean: true`; what that leaves out is counted (`Spans::withheld`) and
+  logged, never said to the run. A model that calls `span_recall` itself
+  gets outside passages as outside content, envelope and taint and all.
+- **Which sessions are history is a closed list read from each header**
+  (`quotable`): one-shot runs, and web chats for the shared index. A
+  persona's chat, a call, a delegated task, a front-door conversation and a
+  test are never indexed. The header is read on every pass; the body only
+  when the file's length changed.
+- **One tool, many chats.** The registry is shared, so the conversation is
+  an argument: its own session is left out of its searches and what it was
+  handed is remembered under its id. The tool is on the agent only while
+  the switch is on, so the tool list does not change per chat.
+- **A turn never waits on the index.** The search before a turn runs under
+  the brief's deadline and hands nothing over when it is late or fails,
+  with a log line; the refresh is once a chat and in the background, so a
+  chat begun during a long first embedding is handed less and not held up.
+  This is the one place a search may answer from an index that is behind:
+  `mecha run --spans-deliver` still refuses to start on one.
+- **A hand-over is the harness speaking.** Its stems are in
+  `transcripts::RECALL_STEMS`, so it is never mined as the owner's steer
+  and never indexed as a passage; it is written to the transcript as an
+  extension of the owner's message with a taint record after it.
+- **Forgetting a session reaches the index** (`spans::forget`, in
+  `crate::forget`'s walk), at once and not at the next refresh.
+
 ## The experiment store
 
 `experiment.rs` and `mecha exp` (`docs/EXPERIMENT-DESIGN.md` §3–§4, Part II
