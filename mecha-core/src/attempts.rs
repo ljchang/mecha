@@ -11,6 +11,8 @@
 //! - a draft **rejected** — bad, and the owner's words if they typed any;
 //! - a **steer** or a **denial** in the middle of a run — bad at that point,
 //!   and the owner's words;
+//! - their **next message**, where the reflector's nightly pass judged it a
+//!   correction of the turn before — bad, and that message's words;
 //! - nothing — no verdict, which is never a good one.
 //!
 //! Three rules shape everything below.
@@ -122,6 +124,10 @@ pub enum Source {
     Edit,
     Reject,
     SentUnchanged,
+    /// The owner's next message, judged a correction by the reflector
+    /// ([`of_followup`]). The words are the owner's; that they correct the
+    /// attempt is a model's reading, which is why it is a source of its own.
+    Followup,
     #[serde(other)]
     Unknown,
 }
@@ -148,7 +154,7 @@ pub struct Verdict {
     #[serde(default)]
     pub before: Vec<String>,
     /// What the verdict is about, so the same act is recorded once:
-    /// `draft:<id>` or `message:<index>`.
+    /// `draft:<id>`, `message:<index>` or `followup:<call id>`.
     pub about: String,
     pub when: String,
 }
@@ -161,15 +167,19 @@ fn end_of_turn(messages: &[Message], start: usize) -> usize {
         .iter()
         .enumerate()
         .skip(start + 1)
-        .find(|(_, m)| {
-            m.role == Role::User
-                && !m
-                    .content
-                    .iter()
-                    .any(|b| matches!(b, Block::ToolResult { .. }))
-                && !owner_text(m).trim().is_empty()
-        })
+        .find(|(_, m)| is_ask(m))
         .map_or(messages.len(), |(at, _)| at)
+}
+
+/// Whether a message is the owner asking: their words, with no tool result
+/// beside them.
+fn is_ask(message: &Message) -> bool {
+    message.role == Role::User
+        && !message
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::ToolResult { .. }))
+        && !owner_text(message).trim().is_empty()
 }
 
 /// The working calls of the turn that begins at `start`, in order: not the
@@ -263,7 +273,8 @@ fn distinct(tools: impl Iterator<Item = String>) -> Vec<String> {
 /// The owner's steers and denials inside the run that began at `start`:
 /// each a verdict against that turn, with their words and the tools that
 /// had worked by then. A later message that may be a correction is not
-/// read here: whether it is one is a model's judgement, made overnight.
+/// read here: whether it is one is a model's judgement, made overnight
+/// ([`of_followup`]).
 pub fn in_run(attempt: &Attempt, messages: &[Message], when: &str) -> Vec<Verdict> {
     let (session, start) = (attempt.session.as_str(), attempt.turn);
     let calls = working_calls(messages, start);
@@ -294,6 +305,51 @@ pub fn in_run(attempt: &Attempt, messages: &[Message], when: &str) -> Vec<Verdic
             when: when.to_string(),
         })
         .collect()
+}
+
+/// The verdict the owner's message at `at` makes on the turn before it,
+/// once the reflector has judged that message a correction
+/// (`learning::Trigger::Followup` with a lesson drawn; a skip is no verdict
+/// and never a good one). `messages` is the session's transcript as loaded
+/// today, so `at` only finds the turn: the attempt is the one kept for
+/// `session` that holds a working call of that turn, an id against an id. A
+/// turn that only talked, or whose calls a compaction has since dropped,
+/// has no attempt to judge.
+///
+/// The words are the owner's own message and nothing else, so what a later
+/// run is handed stays clean whatever the corrected turn had read. The
+/// judged point is the end of the attempt: every tool it used.
+pub fn of_followup(
+    attempts: &[Attempt],
+    session: &str,
+    messages: &[Message],
+    at: usize,
+    when: &str,
+) -> Option<Verdict> {
+    let said = messages.get(at).filter(|m| is_ask(m)).map(owner_text)?;
+    let start = (0..at).rev().find(|&i| is_ask(&messages[i]))?;
+    let calls = working_calls(messages, start);
+    let attempt = attempts.iter().find(|a| {
+        a.session == session
+            && a.calls
+                .iter()
+                .any(|kept| calls.iter().any(|(_, call)| call.id == kept.id))
+    })?;
+    Some(Verdict {
+        key: attempt.key.clone(),
+        session: attempt.session.clone(),
+        turn: attempt.turn,
+        good: false,
+        source: Source::Followup,
+        tool: None,
+        why: Some(cut(&said, WORDS_BYTES)).filter(|w| !w.is_empty()),
+        before: distinct(attempt.calls.iter().map(|c| c.tool.clone())),
+        // One turn follows an attempt, so one such act per attempt, named
+        // by a call of it: a line from before attempts had keys is told
+        // apart by that.
+        about: format!("followup:{}", attempt.calls.first()?.id),
+        when: when.to_string(),
+    })
 }
 
 /// What the owner did with a draft, as far as it is a verdict.
@@ -796,6 +852,10 @@ impl Failure {
                 "The owner refused a call that attempt wanted to make{}.",
                 said(":")
             ),
+            Source::Followup => format!(
+                "The owner's next message was read afterwards as a correction of that attempt{}.",
+                said(". They said:")
+            ),
             _ => format!(
                 "The owner stepped in during that attempt{}.",
                 said(" and said:")
@@ -1028,6 +1088,92 @@ mod tests {
         assert_eq!(v.before, vec!["mail_search".to_string()]);
         // An earlier turn's steer is not this turn's.
         assert!(in_run(&turn(4), &messages, "t").is_empty());
+    }
+
+    #[test]
+    fn a_next_message_judged_a_correction_is_a_verdict_on_the_turn_before_it() {
+        let messages = chat(vec![
+            vec![
+                Message::user("what is the capital of the moon"),
+                Message::assistant(vec![Block::text("It has none.")]),
+            ],
+            drafted("write to the harbour office about the berth", "c9"),
+            vec![
+                Message::user("no, the winter berth, not the summer one"),
+                Message::assistant(vec![Block::text("Understood.")]),
+            ],
+        ]);
+        let attempt = of_turn("s", &messages, 2, "t").unwrap();
+        let kept = [attempt.clone()];
+        let at = messages.len() - 2;
+        let v = of_followup(&kept, "s", &messages, at, "later").unwrap();
+        assert_eq!(v.key, attempt.key);
+        assert!(!v.good && v.source == Source::Followup);
+        assert_eq!(
+            v.why.as_deref(),
+            Some("no, the winter berth, not the summer one")
+        );
+        // The judged point is the end of the attempt: every tool it used.
+        assert_eq!(v.before, vec!["mail_search", "mail_send"]);
+        assert_eq!(v.about, "followup:search-c9");
+        // Nothing a call was made with or returned, and nothing a model said.
+        let line = serde_json::to_string(&v).unwrap();
+        assert!(
+            !line.contains("letter") && !line.contains("Drafted"),
+            "{line}"
+        );
+
+        // The join is by a call's id and never by the index: the same
+        // conversation with an earlier turn cut away still finds it.
+        let cut_away = &messages[2..];
+        let moved = of_followup(&kept, "s", cut_away, at - 2, "later").unwrap();
+        assert_eq!(moved.key, attempt.key);
+
+        // Another session's attempt, a turn that only talked, a message
+        // that is not the owner asking, and a first message judge nothing.
+        assert_eq!(of_followup(&kept, "other", &messages, at, "t"), None);
+        assert_eq!(of_followup(&kept, "s", &messages, 2, "t"), None);
+        assert_eq!(of_followup(&kept, "s", &messages, at + 1, "t"), None);
+        assert_eq!(of_followup(&kept, "s", &messages, 0, "t"), None);
+        assert_eq!(of_followup(&kept, "s", &messages, 99, "t"), None);
+        // An attempt whose calls are no longer in the transcript is not
+        // guessed at from where it used to be.
+        let mut gone = attempt.clone();
+        gone.calls[0].id = "dropped-1".into();
+        gone.calls[1].id = "dropped-2".into();
+        assert_eq!(of_followup(&[gone], "s", &messages, at, "t"), None);
+    }
+
+    #[test]
+    fn a_follow_up_verdict_is_kept_once_and_said_after_the_attempt_s_tools() {
+        let (store, dir) = store();
+        let messages = chat(vec![
+            drafted("write to the harbour office about the berth", "c9"),
+            vec![Message::user("no, the winter berth, not the summer one")],
+        ]);
+        let attempt = of_turn("s", &messages, 0, "t").unwrap();
+        store.keep(&attempt, &[]).unwrap();
+        let kept = store.load().unwrap();
+        let v = of_followup(&kept.attempts, "s", &messages, messages.len() - 1, "later").unwrap();
+        assert_eq!(store.judge(std::slice::from_ref(&v)).unwrap(), 1);
+        // A second pass over the same session writes nothing.
+        assert_eq!(store.judge(std::slice::from_ref(&v)).unwrap(), 0);
+        let kept = store.load().unwrap();
+        assert_eq!(kept.readout(5).judged_against, 1);
+        assert_eq!(kept.readout(5).with_a_reason, 1);
+
+        let mut watch = Watch::new(kept.failures(), "write the harbour office about a berth");
+        // Nothing at the start: the correction came after the tools.
+        assert_eq!(watch.start(), None);
+        assert_eq!(watch.after("mail_search"), None);
+        let said = watch.after("mail_send").unwrap();
+        assert!(
+            said.contains("read afterwards as a correction")
+                && said.contains("\"no, the winter berth, not the summer one\""),
+            "{said}"
+        );
+        assert_eq!(watch.after("mail_send"), None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn draft(id: &str, call: &str, act: Act) -> Draft {
