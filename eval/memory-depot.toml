@@ -1,0 +1,82 @@
+# Memory benchmark, held out: the depot
+# (docs/MEMORY-RETENTION-DESIGN.md §11.4 and §11.6). Two tallies read bay
+# records for a routine figure while a handover note rides in each, and the
+# second tally's request carries a remark of the owner's; three later tasks
+# each need one of those things after the notes are down, and no tool gives
+# it back.
+#
+# Written on 2026-11-16, after the yard lifetime showed it had tested memory
+# against a present record the later task could still read. Here the later
+# task cannot look at all. Fixtures and the predictions below were written
+# before any arm ran on it; not for tuning. A number from a second run of
+# this file is development data.
+#
+#   mecha exp new eval/memory-depot.toml
+#   mecha exp run memory-depot
+
+name = "memory-depot"
+kind = "lifetime"
+description = "Does something read or said in passing reach a later task that needs it and has no way to look it up."
+control = "none"
+split_seed = 29
+seeds = [1, 2, 3]
+repetitions = 1
+
+[schedule]
+reflect = 0
+validate = 0
+learn = 0
+retire = 0
+ruminate = 0
+
+[tasks]
+source = ["python3", "eval/fixtures/depot_source.py"]
+fixture = "eval/fixtures/opaque-workspace"
+ids = ["depot-tally-parcels", "depot-tally-weights", "depot-probe-code", "depot-probe-door", "depot-probe-crate"]
+
+[tasks.confirmed_goals]
+depot-tally-parcels = "task:depot-tally-parcels"
+depot-tally-weights = "task:depot-tally-weights"
+depot-probe-code = "task:depot-probe-code"
+depot-probe-door = "task:depot-probe-door"
+depot-probe-crate = "task:depot-probe-crate"
+
+[fixtures]
+outbox_tools = []
+
+[[fixtures.mcp]]
+name = "depot"
+command = "python3"
+args = ["eval/fixtures/depot_server.py"]
+prefix_tools = false
+
+[arms.none]
+preset = "bare"
+levers_on = ["mcp"]
+
+[arms.transcripts]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "transcripts"
+
+[arms.transcripts.prediction]
+metric = "failure"
+rationale = "Written before the run: the transcript search is made once, with the task's own words, by keyword. The probes' requests share a parcel's number with nothing earlier and the word depot with everything, so what is delivered is mostly the earlier requests. The second of those holds the owner's remark about the crate, so the crate probe passes at least two of three; the code and door probes pass at most one of three each."
+
+[arms.spans]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "spans"
+
+[arms.spans.prediction]
+metric = "failure"
+rationale = "Written before the run, and after passages came to keep their origin: the parcel's record names the cold locker and its code, and the courier, so the note that bears is handed over after that call. Nothing in front of the run contradicts it, which is what the yard's wrapped arm lost its probes to, so the envelope costs less here: the code and door probes pass at least four of six between them. The owner's remark is a clean passage and is handed over without an envelope if it is found at all; whether a request about a parcel finds a request about a tally by meaning is the open part, and the crate probe passes at least one of three. At least five of nine probes in all."
+
+[arms.spans_own_voice]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "spans_own_voice"
+
+[arms.spans_own_voice.prediction]
+metric = "failure"
+rationale = "Written before the run: as spans, without the envelope or the caution on the notes. The code and door probes pass at least five of six between them, the crate probe as in spans (the owner's remark is handed over the same way in both), at least six of nine in all, and no fewer than spans. If spans and this arm come out level, the envelope was only ever costly where a present record argued with the memory."
