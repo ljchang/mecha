@@ -228,19 +228,23 @@ struct Span {
 /// outside read is counted with those after it. That errs toward caution,
 /// and the session's own taint, which only grows, errs the same way.
 ///
-/// Read strictly, where [`crate::session::Session::messages_ever`] is
-/// lenient: a message record holding a block kind this build cannot read
-/// is a passage there and is not seen here. `TaintTimeline` has the same
-/// residue. It cannot make a session read clean that a checkpoint says is
-/// not; it can leave one such message's own lack of a checkpoint unnoticed.
+/// Read as leniently as [`crate::session::Session::messages_ever`] reads,
+/// so that a message it admits as a passage is a message that leaves the
+/// session uncovered here; and a line neither can read leaves it uncovered
+/// too (review of #889).
 fn held_outside_content(transcript: &str) -> bool {
     use crate::session::Record;
     let (mut untrusted, mut covered, mut any) = (false, false, false);
-    for record in transcript
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str::<Record>(l).ok())
-    {
+    for line in transcript.lines().filter(|l| !l.trim().is_empty()) {
+        let Some(record) = serde_json::from_str::<Record>(line)
+            .ok()
+            .or_else(|| crate::session::lenient_record(line))
+        else {
+            // A record this build cannot read at all is content until a
+            // checkpoint follows it: unknown is never clean.
+            covered = false;
+            continue;
+        };
         match record {
             Record::Taint(taint) => {
                 untrusted |= taint.untrusted;
@@ -312,10 +316,13 @@ fn spans_of(session: &str, transcript: &str) -> Vec<Span> {
                 // The owner's words are the owner's whatever else the
                 // session held. Anything else follows the session, and so
                 // does what lands in the user's role without being the
-                // owner speaking: a peer's message delivered there is a
-                // body an attacker may have shaped, and it was indexed as
-                // the owner's until review of #889.
-                outside: (label != "owner" || crate::agent::is_harness_voice(text)) && tainted,
+                // owner speaking: a peer's message delivered there, a
+                // compaction's summary of what was cut and the tool output
+                // it carried forward word for word. Each is a body an
+                // attacker may have shaped, and each was indexed as the
+                // owner's until review of #889. `title::is_derived` is the
+                // list the rest of the tree keeps of them.
+                outside: (label != "owner" || crate::title::is_derived(text)) && tainted,
             };
             // The same words read twice in one session are one passage.
             if !out.contains(&span) {
@@ -1615,6 +1622,35 @@ mod tests {
             out.content,
             out.external
         );
+
+        // What a compaction wrote into the owner's message is not the
+        // owner speaking either: its summary of what was cut.
+        let compacted = home();
+        let mut head = vec![Message::user("survey the yard")];
+        crate::agent::append_user_text(
+            &mut head,
+            format!(
+                "\n\n{}\nberth C notice: the fender line is condemned, length 200",
+                crate::compact::SUMMARY_HEADER
+            ),
+        );
+        closed(&compacted.join("sessions"), head, true);
+        let out = ask_in(compacted).await;
+        assert!(
+            out.content.contains("fender line is condemned") && out.external,
+            "{} (external: {})",
+            out.content,
+            out.external
+        );
+
+        // The same record in a session that was clean and in one that was
+        // not is one passage, and it is outside content.
+        let both = home();
+        closed(&both.join("sessions"), read(), false);
+        closed(&both.join("sessions"), read(), true);
+        let out = ask_in(both).await;
+        assert_eq!(out.content.matches("fender line condemned").count(), 1);
+        assert!(out.external);
 
         // A run that rewrote its history and was killed before its
         // checkpoint is covered by nothing, whatever the run before it
