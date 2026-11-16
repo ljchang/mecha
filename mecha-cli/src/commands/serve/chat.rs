@@ -413,19 +413,27 @@ pub(super) struct Recall {
     refreshed: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     /// One refresh at a time.
     refreshing: Arc<tokio::sync::Mutex<()>>,
+    /// When the embeddings server was last asked to be up for a chat.
+    warmed: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
+
+/// How long a warming is taken to last. The embeddings server stops after
+/// ten idle minutes (`docs/LLAMA-SERVER.md`); a page that is open asks for
+/// its transcript far more often than this.
+const WARM_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// The most searches the harness makes after calls in one turn of a chat.
 const RECALLS_A_TURN: u32 = 4;
 
-/// How long a turn gives one search of the index. Not the brief's two
-/// seconds, which were set against a local board read: every search embeds
-/// its query, and the embeddings server is started on demand and stops after
-/// ten idle minutes, with a first answer some three to four seconds away
-/// (`docs/LLAMA-SERVER.md`; the figure is that document's and was not
-/// measured again here). Under the brief's deadline the first search of a
-/// chat timed out as a matter of course (review of #890). Six seconds is
-/// that start with room, paid at most once after an idle spell.
+/// The longest a turn waits on one search of the index: a backstop for an
+/// embeddings server that is not answering, whose own client would wait two
+/// minutes. Not what makes a search quick: that is the server being up,
+/// which a chat's page asks for when it opens (`Recall::warm`). Not the
+/// brief's two seconds either, which were set against a local board read
+/// and are under the server's start on demand (three to four seconds, by
+/// `docs/LLAMA-SERVER.md`; not measured again here): a page left open past
+/// the server's idle stop still meets a cold one, and six seconds lets that
+/// first search through.
 const RECALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(6);
 
 impl Recall {
@@ -457,7 +465,32 @@ impl Recall {
             )),
             refreshed: Arc::default(),
             refreshing: Arc::default(),
+            warmed: Arc::default(),
         })
+    }
+
+    /// Have the embeddings server up before the owner's first message
+    /// (the owner's choice, 2026-11-16): it starts on demand and a first
+    /// answer is seconds away, which a search before a turn would otherwise
+    /// wait out. Asked when a chat's page opens, in the background, and no
+    /// more often than [`WARM_FOR`]. A server that does not answer is the
+    /// search's to report, not this.
+    fn warm(&self) {
+        let due = self
+            .warmed
+            .lock()
+            .map(|mut last| {
+                let due = last.is_none_or(|at| at.elapsed() >= WARM_FOR);
+                if due {
+                    *last = Some(std::time::Instant::now());
+                }
+                due
+            })
+            .unwrap_or(false);
+        if due {
+            let index = Arc::clone(&self.index);
+            tokio::spawn(async move { index.warm().await });
+        }
     }
 
     /// Bring the index up to date for a chat's first turn, without waiting.
@@ -2499,6 +2532,19 @@ pub async fn transcript(
             chat.follower.current()
         }
     };
+    // A page asking for its transcript is a chat being opened or watched:
+    // where recall is on, have the embeddings server up before the owner
+    // writes. Only while the tool is on the agent, which it is while the
+    // switch is on.
+    if let Some(recall) = chat.recall.as_ref().filter(|_| {
+        bound
+            .agent
+            .registry()
+            .get(mecha_core::tool::spans::NAME)
+            .is_some()
+    }) {
+        recall.warm();
+    }
     let sessions = chat.sessions.lock().await;
     let ws = match sessions.get(&key).and_then(ChatSlot::ordinary) {
         Some(ws) => ws,
@@ -7738,6 +7784,7 @@ fn test_chat_assembled(
         )),
         refreshed: Arc::default(),
         refreshing: Arc::default(),
+        warmed: Arc::default(),
     });
     if let Some(recall) = recall
         .as_ref()

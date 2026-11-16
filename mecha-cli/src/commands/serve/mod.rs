@@ -5961,8 +5961,10 @@ mod boundary_tests {
 
     /// An embeddings server for a test: one dimension a word of a small
     /// vocabulary, so two texts are alike by the words they share.
-    async fn word_embeddings() -> String {
+    async fn word_embeddings() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&asked);
         const VOCAB: [&str; 6] = ["harbour", "berth", "notice", "fender", "crane", "tide"];
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -5971,6 +5973,7 @@ mod boundary_tests {
                 let Ok((mut sock, _)) = listener.accept().await else {
                     return;
                 };
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 tokio::spawn(async move {
                     let mut buf = Vec::new();
                     let mut chunk = [0u8; 8192];
@@ -6017,7 +6020,7 @@ mod boundary_tests {
                 });
             }
         });
-        format!("http://127.0.0.1:{port}")
+        (format!("http://127.0.0.1:{port}"), asked)
     }
 
     /// Recall, end to end through the web chat's own turn: what the owner
@@ -6033,7 +6036,7 @@ mod boundary_tests {
         // stop after finding nothing indexed.
         mecha_core::session::ignore_kind_env_for_tests();
         let _home = crate::testenv::HomeGuard::new("recall");
-        let embed = word_embeddings().await;
+        let (embed, asked) = word_embeddings().await;
         let handed = |path: &std::path::Path| -> Vec<String> {
             mecha_core::session::Session::messages_ever(&std::fs::read_to_string(path).unwrap())
                 .iter()
@@ -6051,6 +6054,21 @@ mod boundary_tests {
         for on in [true, false] {
             let chat = chat::test_chat_recalling("Noted.", &embed, on);
             let app = app(chat.clone());
+            // A page opening a chat has the embeddings server asked for
+            // before anything is written, and only with the switch on.
+            let before = asked.load(std::sync::atomic::Ordering::SeqCst);
+            let _ = app.clone().oneshot(get("/api/chat/first")).await.unwrap();
+            for _ in 0..100 {
+                if asked.load(std::sync::atomic::Ordering::SeqCst) > before {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            assert_eq!(
+                asked.load(std::sync::atomic::Ordering::SeqCst) > before,
+                on,
+                "warming with the switch {on}"
+            );
             converse(
                 &app,
                 "first",

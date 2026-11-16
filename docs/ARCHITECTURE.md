@@ -11839,10 +11839,12 @@ for the whole door (`serve::chat::Recall`).
   does not turn on the caller: a one-shot run's pass and the door's admit
   the same sessions, and a caller that does not take web chats as history
   is not handed their passages when it searches.
-- **A turn never waits long on the index.** The search before a turn and
-  each one after a call run under a deadline of their own
-  (`RECALL_DEADLINE`, sized to the embeddings server's start on demand, not
-  the brief's two seconds) and hand nothing over
+- **A turn does not wait on the embeddings server starting.** A chat's page
+  asks for it to be up when it opens (`Recall::warm`, at most once in five
+  minutes; the server stops after ten idle). The searches still run under
+  a deadline (`RECALL_DEADLINE`), which is a backstop for a server that is
+  not answering and not what makes a search quick; past it they hand
+  nothing over
   when late or failed (after a call: said once, and not made again that
   turn), with a log line; the refresh is once a chat and in the background, so a
   chat begun during a long first embedding is handed less and not held up.

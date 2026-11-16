@@ -928,6 +928,16 @@ impl Spans {
         }
     }
 
+    /// Ask the embeddings server for one small embedding and keep nothing:
+    /// it starts on demand, and a host that knows a search is coming has it
+    /// up first. A failure is the search's to report.
+    pub async fn warm(&self) {
+        let _ = self
+            .embedder
+            .embed(&["warm".to_string()], Task::Passage)
+            .await;
+    }
+
     /// How many passages searches that asked for clean ones only have left
     /// out for being outside content, since this tool was made.
     pub fn withheld(&self) -> u64 {
