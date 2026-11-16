@@ -103,7 +103,8 @@ const BATCH: usize = 16;
 /// aside, to say something the query does not. Two is a field's name and
 /// one word in it.
 const ADDS: usize = 2;
-/// How much of a result the absence line is read against.
+/// The longest result the absence line is said of. A longer one is not
+/// kept whole in the run's trace, and nothing is said of it.
 const RECORD_BYTES: usize = 8_000;
 /// The most words named as absent from the present record, a passage.
 const ABSENT_WORDS: usize = 12;
@@ -157,14 +158,17 @@ pub fn result_input(tool: &str, _input: &Value, result: &str) -> Option<Value> {
     if super::episodes::MEMORY_TOOLS.contains(&tool) || record.trim().len() < ASKS_BYTES {
         return None;
     }
-    // Far more of the result than the search is made with: what a passage
-    // holds that the record does not is said of the record, and a word past
-    // the search's cut is in the record (review of #888). Bounded all the
-    // same, since the input is kept in the run's trace.
-    Some(json!({
-        "query": cut(record, QUERY_BYTES),
-        "record": cut(record, RECORD_BYTES),
-    }))
+    // The whole result beside the cut one the search is made with: what a
+    // passage holds that the record does not is said of the record, and a
+    // word past the search's cut is in the record (review of #888).
+    let mut asked = json!({ "query": cut(record, QUERY_BYTES) });
+    // Only a record that is here whole: of a longer one the harness could
+    // say only what the part it kept does not show, and the line it writes
+    // makes no such allowance. It says nothing instead.
+    if record.len() <= RECORD_BYTES {
+        asked["record"] = json!(record);
+    }
+    Some(asked)
 }
 
 /// The words of an earlier passage that the result just returned does not
@@ -277,6 +281,7 @@ fn open(dir: &Path) -> Result<Connection> {
     conn.execute_batch(
         "PRAGMA busy_timeout = 5000;
          PRAGMA journal_mode = WAL;
+         PRAGMA secure_delete = ON;
          CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS sessions (session TEXT PRIMARY KEY, bytes INTEGER NOT NULL);
          CREATE TABLE IF NOT EXISTS spans (
@@ -355,10 +360,28 @@ fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> 
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
+        // Its header says whether it may be quoted at all, and is read on
+        // every pass, a line a session: whether a session may be quoted
+        // turns on the home as well as the file, and a rule about it that
+        // tightens has to reach what is already indexed (review of #888). A
+        // session that may not be is read no further, and what was indexed
+        // from it goes with the sessions that are gone.
+        let header = {
+            use std::io::BufRead;
+            let file = std::fs::File::open(&path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            let mut line = String::new();
+            std::io::BufReader::new(file)
+                .read_line(&mut line)
+                .with_context(|| format!("reading {}", path.display()))?;
+            line
+        };
+        if !super::transcripts::searchable(&header, trial) {
+            continue;
+        }
         // A transcript is appended to and never rewritten shorter or in
         // place, so one as long as it was when it was indexed is the one
-        // that was indexed: it is not opened. Only a session that was
-        // searchable has a row, so its length answers that too. Reading
+        // that was indexed: it is read no further than its header. Reading
         // every transcript in full at every start, to learn that nothing
         // had changed, was the cost of a whole history a run (review of
         // #887, and the owner's "that seems unnecessary").
@@ -375,21 +398,6 @@ fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> 
         if read == Some(bytes) {
             covered += 1;
             kept.insert(session);
-            continue;
-        }
-        // Its header says whether it may be quoted at all, and a session
-        // that may not be is read no further.
-        let header = {
-            use std::io::BufRead;
-            let file = std::fs::File::open(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
-            let mut line = String::new();
-            std::io::BufReader::new(file)
-                .read_line(&mut line)
-                .with_context(|| format!("reading {}", path.display()))?;
-            line
-        };
-        if !super::transcripts::searchable(&header, trial) {
             continue;
         }
         let text = std::fs::read_to_string(&path)
@@ -424,7 +432,12 @@ fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> 
         tx.commit()?;
     }
     let indexed: Vec<String> = {
-        let mut q = conn.prepare("SELECT session FROM sessions")?;
+        // From the table that holds the passages, not the one that marks
+        // a session read: that mark is cleared when the extraction rule
+        // changes, and a session whose transcript was already gone then
+        // would have no row left to be found by, and its passages would be
+        // handed over for good (review of #888).
+        let mut q = conn.prepare("SELECT session FROM spans UNION SELECT session FROM sessions")?;
         let rows = q.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
         rows
     };
@@ -1039,9 +1052,19 @@ mod tests {
             })
             .unwrap();
         let was = std::fs::read_to_string(&indexed).unwrap();
-        std::fs::write(&indexed, "x".repeat(was.len())).unwrap();
+        let header = was.lines().next().unwrap();
+        std::fs::write(
+            &indexed,
+            format!("{header}\n{}", "x".repeat(was.len() - header.len() - 1)),
+        )
+        .unwrap();
         assert_eq!(spans.refresh().await.unwrap(), (1, 0));
+        // Its header is read all the same: as long as it was, and no longer
+        // a session that may be quoted, it is covered no more.
+        std::fs::write(&indexed, "x".repeat(was.len())).unwrap();
+        assert_eq!(spans.refresh().await.unwrap().0, 0);
         std::fs::write(&indexed, was).unwrap();
+        assert_eq!(spans.refresh().await.unwrap().0, 1);
 
         // The record as it reads now, its notice gone. By meaning it is
         // exactly as near its sibling, which was read first, as its own
@@ -1351,6 +1374,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
+    /// A session whose transcript went while the index had no mark of
+    /// having read it (the mark is cleared when the extraction rule
+    /// changes) is still found by its passages and dropped.
+    #[tokio::test]
+    async fn passages_of_a_session_that_is_gone_go_even_when_its_mark_went_first() {
+        let home = home();
+        let sessions = home.join("sessions");
+        let gone = session(
+            &sessions,
+            SessionKind::Run,
+            looked_up("g1", "yard_berth", WITH_NOTICE).to_vec(),
+        );
+        let current = session(&sessions, SessionKind::Run, vec![]);
+        let spans = Spans::new(
+            dir_in(&home),
+            sessions,
+            current,
+            Embedder::new(&embeddings().await).unwrap(),
+        );
+        spans.refresh().await.unwrap();
+        std::fs::remove_file(gone).unwrap();
+        open(&dir_in(&home))
+            .unwrap()
+            .execute("UPDATE meta SET value = '1' WHERE key = 'extraction'", [])
+            .unwrap();
+        spans.refresh().await.unwrap();
+        assert_eq!(
+            ask(&spans, r#"{"berth": "C", "length": 200}"#)
+                .await
+                .content,
+            NOTHING
+        );
+        let _ = std::fs::remove_dir_all(home);
+    }
+
     /// A record read in two earlier sessions is one passage: it takes one
     /// place, leaving the other to the next thing that bears, and is not
     /// handed over a second time from the other session's row.
@@ -1400,6 +1458,9 @@ mod tests {
         );
         // A word past where the search's query is cut is in the record, and
         // is not said to be missing from it.
+        // And of a result too long to be kept whole, nothing is said.
+        let huge = "berth ".repeat(RECORD_BYTES);
+        assert!(result_input("yard_berth", &json!({}), &huge).unwrap()["record"].is_null());
         let long = format!("{} {}", "berth ".repeat(QUERY_BYTES / 3), "condemned");
         let asked = result_input("yard_berth", &json!({}), &long).unwrap();
         assert!(!asked["query"].as_str().unwrap().contains("condemned"));

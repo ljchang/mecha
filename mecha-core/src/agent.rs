@@ -12151,7 +12151,7 @@ mod tests {
     /// of the owner's request, and never the owner's steer.
     #[test]
     fn a_delivered_recall_is_the_harness_s_voice_wherever_it_lands() {
-        let mut stems: Vec<&str> = crate::tool::transcripts::RECALL_STEMS.to_vec();
+        let listed: Vec<&str> = crate::tool::transcripts::RECALL_STEMS.to_vec();
         // Every stem a recall tool or a harness search declares is in the
         // one list, the newest among them.
         for stem in [
@@ -12160,13 +12160,16 @@ mod tests {
             crate::tool::spans::FAILED_STEM,
             crate::attempts::CUE_STEM,
         ] {
-            assert!(stems.contains(&stem), "{stem}");
+            assert!(listed.contains(&stem), "{stem}");
         }
         #[cfg(feature = "memory-prototype")]
-        stems.extend([
+        let prototype = vec![
             crate::memory_session::DELIVERY_STEM,
             crate::memory_session::ERROR_STEM,
-        ]);
+        ];
+        #[cfg(not(feature = "memory-prototype"))]
+        let prototype: Vec<&str> = vec![];
+        let stems: Vec<&str> = listed.into_iter().chain(prototype).collect();
         for stem in stems {
             assert!(is_harness_voice(&format!("{stem}what was found")), "{stem}");
             assert!(is_harness_voice(stem), "{stem}");
