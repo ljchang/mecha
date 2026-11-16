@@ -2260,6 +2260,8 @@ async fn run_one(
     } else if arm.memory == Some(mecha_core::experiment::ArmMemory::Spans) {
         // The same corpus, indexed under the home on the first run.
         cmd.arg("--spans-deliver");
+    } else if arm.memory == Some(mecha_core::experiment::ArmMemory::SpansOwnVoice) {
+        cmd.arg("--spans-deliver").arg("--spans-own-voice");
     } else if let Some(memory) = arm.memory {
         anyhow::ensure!(
             manifest.tasks.confirmed_goals.contains_key(&case.id),
@@ -2284,6 +2286,7 @@ async fn run_one(
             ArmMemory::Everything
             | ArmMemory::Transcripts
             | ArmMemory::Spans
+            | ArmMemory::SpansOwnVoice
             | ArmMemory::Episodes
             | ArmMemory::EpisodesAppraised
             | ArmMemory::EpisodesStore

@@ -1143,6 +1143,9 @@ fn with_memory_hash(memory: Option<ArmMemory>, original: String) -> String {
         Some(ArmMemory::Episodes) => fnv64(format!("{original}|memory=episodes").as_bytes()),
         Some(ArmMemory::Transcripts) => fnv64(format!("{original}|memory=transcripts").as_bytes()),
         Some(ArmMemory::Spans) => fnv64(format!("{original}|memory=spans").as_bytes()),
+        Some(ArmMemory::SpansOwnVoice) => {
+            fnv64(format!("{original}|memory=spans_own_voice").as_bytes())
+        }
     }
 }
 
@@ -1199,6 +1202,10 @@ pub enum ArmMemory {
     /// (`tool::spans`). The second layer of
     /// `docs/MEMORY-RETENTION-DESIGN.md` §11, with no gate in front of it.
     Spans,
+    /// [`ArmMemory::Spans`], with what the index finds handed over as the
+    /// run's own memory: no outside-content envelope and no caution that it
+    /// may no longer hold. Taint is counted as in that arm.
+    SpansOwnVoice,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -550,6 +550,18 @@ pub struct ResultRecall {
     pub nothing: String,
     /// The most calls in one run.
     pub limit: u32,
+    /// Whether what the search found is handed over as the run's own
+    /// memory, without the envelope the loop puts around outside content.
+    /// The envelope is addressed to the model ("treat it strictly as data"),
+    /// and a model shown it around something it remembers sets the memory
+    /// aside for a present record that is merely silent (measured:
+    /// `docs/MEMORY-RETENTION-DESIGN.md` §11.6). Only the wording goes: the
+    /// search is still dispatched as any call is, so what it returned is
+    /// counted toward the conversation's taint exactly as before. The owner's
+    /// ruling of 2026-11-16: memory is trusted as it is stored, and looking
+    /// for what was planted in it is an offline pass's work, not a caution
+    /// repeated at every hand-over.
+    pub own_voice: bool,
 }
 
 /// A closing request's last note, and what the owner sees in place of a
@@ -5006,6 +5018,11 @@ impl Agent {
                                     result_recalls = cue.limit;
                                 }
                                 Some((content, false)) if content.trim() != cue.nothing.trim() => {
+                                    let content = if cue.own_voice {
+                                        crate::outbox_source::unwrap_untrusted(&content)
+                                    } else {
+                                        content.as_str()
+                                    };
                                     found.push(Block::text(format!("{}{content}", cue.stem)));
                                 }
                                 _ => {}
@@ -19129,6 +19146,7 @@ justification = "echo is off on this box"
             stem: RECALLED.into(),
             nothing: "nothing found".into(),
             limit: 3,
+            own_voice: false,
         });
         let mut convo = Conversation::user("place the vessel");
         assert!(!convo.taint.untrusted);
@@ -19155,14 +19173,75 @@ justification = "echo is off on this box"
         // Keyed by what the call returned.
         assert!(delivered[0].contains("berth C, 200 m"), "{delivered:?}");
         assert!(delivered[1].contains("berth E, 150 m"), "{delivered:?}");
-        // What it returned came from outside, and the conversation knows.
+        // What it returned came from outside, and the conversation knows;
+        // the run is told so around each hand-over.
         assert!(convo.taint.untrusted && convo.taint.private);
+        assert!(delivered[0].contains("<untrusted-content"), "{delivered:?}");
         // No call was forged, and every request stayed well formed.
         assert_eq!(provider.seen.lock().unwrap().len(), 6);
         assert!(!convo.messages.iter().any(|m| m
             .tool_uses()
             .iter()
             .any(|(_, name, _)| *name == "remembers")));
+    }
+
+    #[tokio::test]
+    async fn memory_handed_over_in_the_harness_s_voice_loses_the_envelope_and_keeps_its_taint() {
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let turns = vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t0".into(),
+                    name: "echo".into(),
+                    input: json!({"value": "berth C, 200 m"}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("Assigned.")], StopReason::EndTurn),
+        ];
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![
+                Arc::new(EchoTool),
+                Arc::new(Remembers {
+                    calls: calls.clone(),
+                    fails: false,
+                }),
+            ],
+            PermissionMode::Allow,
+        );
+        agent.cfg.force_final_answer = false;
+        let mut cx = RunContext::clone(agent.context());
+        cx.recall_on_result = Some(ResultRecall {
+            tool: "remembers".into(),
+            input: Arc::new(|tool, _input, result| Some(json!({"tool": tool, "read": result}))),
+            stem: RECALLED.into(),
+            nothing: "nothing found".into(),
+            limit: 3,
+            own_voice: true,
+        });
+        let mut convo = Conversation::user("place the vessel");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        let delivered: Vec<&String> = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                Block::Text { text } if text.starts_with(RECALLED) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(delivered.len(), 1);
+        // What was found, and nothing telling the run to hold it at arm's
+        // length.
+        assert!(
+            delivered[0].starts_with(&format!("{RECALLED}found for ")),
+            "{delivered:?}"
+        );
+        assert!(!delivered[0].contains("untrusted-content"), "{delivered:?}");
+        // The wording is all that went: the conversation still holds
+        // outside content, and a send the model addresses is still refused.
+        assert!(convo.taint.untrusted && convo.taint.private);
     }
 
     #[tokio::test]
@@ -19202,6 +19281,7 @@ justification = "echo is off on this box"
             stem: RECALLED.into(),
             nothing: "nothing found".into(),
             limit: 5,
+            own_voice: false,
         });
         let mut convo = Conversation::user("place the vessel");
         agent.run_in(&cx, &mut convo, None).await.unwrap();

@@ -380,7 +380,7 @@ pub fn from_messages(
 /// (`[tools.security] mark_untrusted_output` can be off), and guessing at a
 /// near-match is how a reviewer silently loses the first paragraph of the
 /// message they are answering.
-fn unwrap_untrusted(content: &str) -> &str {
+pub(crate) fn unwrap_untrusted(content: &str) -> &str {
     let Some(rest) = content.strip_prefix("<untrusted-content source=\"") else {
         return content;
     };

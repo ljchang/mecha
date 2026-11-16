@@ -91,3 +91,12 @@ memory = "spans"
 [arms.spans.prediction]
 metric = "failure"
 rationale = "Written before the run, and after the arm was built: the index holds both boards' records and nothing in it says which is current, so the reefer probe is handed the berth whose plugs have since died about as often as the one that replaced it: at most one of three. The length probe passes as in memory-yard, at least two of three. This arm has no rule for a fact that was replaced; that rule is what the lifetime is for."
+
+[arms.spans_own_voice]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "spans_own_voice"
+
+[arms.spans_own_voice.prediction]
+metric = "failure"
+rationale = "Written before the arm ran, on development data (2026-11-16, after memory-yard-superseded-d1): the length probe passes at least two of three, where spans passed none, since its notice was handed over and set aside. The reefer probe stays at most one of three: the index holds both boards' notices with nothing saying which is current, and trusting memory more makes the replaced notice as persuasive as the one that replaced it. That is the pruning rule's work, not this arm's."
