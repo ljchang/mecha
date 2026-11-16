@@ -79,8 +79,9 @@ pub const RETRACED_STEM: &str = "The harness noted that this run has now made th
 const DID: usize = 6;
 const DID_BYTES: usize = 160;
 /// Tools whose calls are the harness's memory, never an episode's subject.
-pub(crate) const MEMORY_TOOLS: [&str; 6] = [
+pub(crate) const MEMORY_TOOLS: [&str; 7] = [
     NAME,
+    super::spans::NAME,
     super::concepts::NAME,
     "goal_context",
     "memory_search",

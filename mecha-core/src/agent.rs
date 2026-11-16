@@ -455,6 +455,10 @@ pub struct RunContext {
     /// ([`ErrorRecall`]). `None` everywhere but a run that asked for it, and
     /// never inherited by a subagent.
     pub recall_on_error: Option<ErrorRecall>,
+    /// A search the harness makes for the run after a call that worked,
+    /// keyed by what the call returned ([`ResultRecall`]). `None` everywhere
+    /// but a run that asked for it.
+    pub recall_on_result: Option<ResultRecall>,
     /// After a turn in which a call worked, fold the lines the run's hosts
     /// hold for that moment into the message carrying the results, one
     /// block a host ([`SuccessCue`]). Empty everywhere but a run that asked
@@ -511,6 +515,37 @@ pub struct ErrorRecall {
     /// in a user message, so it must also be one `is_recall_delivery`
     /// knows, or its delivery is mined as the owner's steer.
     pub stem: String,
+    /// The most calls in one run.
+    pub limit: u32,
+}
+
+/// A call that worked — its tool, input and result — to the input of the
+/// harness's own call; `None` makes none.
+pub type ResultRecallInput = Arc<dyn Fn(&str, &Value, &str) -> Option<Value> + Send + Sync>;
+
+/// A call the harness makes for the run when one of the model's calls
+/// worked: a search of what the run's host remembers, keyed by what the call
+/// returned. [`ErrorRecall`]'s shape at the other moment, and for the reason
+/// the measurements keep giving: what a run is handed before it starts is
+/// not acted on, and the same thing said after the call it bears on is. The
+/// loop knows only this shape and never which store answers. Unlike a
+/// [`SuccessCue`], whose text is the host's own words, this is a tool's
+/// result through the one dispatch a model's call takes, so its taint is
+/// counted as any result's is.
+#[derive(Clone)]
+pub struct ResultRecall {
+    /// The registered tool to call. Its own result is never a trigger.
+    pub tool: String,
+    pub input: ResultRecallInput,
+    /// What the result is delivered under, in a text block after the turn's
+    /// results. **A second place to edit:** it must also be a line
+    /// `is_recall_delivery` knows, or its delivery is mined as the owner's
+    /// steer.
+    pub stem: String,
+    /// What the tool answers when it found nothing. Nothing is delivered
+    /// for it: most calls bring nothing to mind, and a run told so after
+    /// each one is paying for silence.
+    pub nothing: String,
     /// The most calls in one run.
     pub limit: u32,
 }
@@ -1046,6 +1081,7 @@ impl RunContext {
             end_after_deferral: false,
             close_with: None,
             recall_on_error: None,
+            recall_on_result: None,
             cue_on_success: Vec::new(),
         }
     }
@@ -2219,6 +2255,8 @@ fn is_recall_delivery(text: &str) -> bool {
         crate::tool::episodes::RETRACED_STEM,
         crate::attempts::DELIVERY_STEM,
         crate::attempts::CUE_STEM,
+        crate::tool::spans::DELIVERY_STEM,
+        crate::tool::spans::CUE_STEM,
     ]
     .iter()
     .any(|stem| text.starts_with(stem.trim_end()))
@@ -3649,6 +3687,9 @@ impl Agent {
         let mut closing: Option<Closing> = cx.close_with;
         // Harness recalls made after a failed call, against `ErrorRecall::limit`.
         let mut error_recalls = 0u32;
+        // And those made after a call that worked, against
+        // `ResultRecall::limit`.
+        let mut result_recalls = 0u32;
 
         // Carried in from the transcript, not started fresh. Everything the
         // conversation has already seen still applies — this is the whole
@@ -4884,6 +4925,75 @@ impl Agent {
                         .map(|t| (t.name.as_str(), t.input.to_string()))
                         .collect();
                     let uses = response.message.tool_uses();
+                    // A call that worked, and a host that asked to be
+                    // searched by what such a call returns: the harness's
+                    // own call for each, in order, through the one dispatch,
+                    // and what it found after the results. Not for a call
+                    // that was staged and did not run, not for the search
+                    // itself, and not in a closing run, which could act on
+                    // nothing it was told.
+                    let mut found: Vec<Block> = Vec::new();
+                    if let Some(cue) = cx.recall_on_result.as_ref().filter(|_| closing.is_none()) {
+                        let asks: Vec<Value> = results
+                            .iter()
+                            .filter_map(|block| {
+                                let Block::ToolResult {
+                                    tool_use_id,
+                                    content,
+                                    is_error: false,
+                                } = block
+                                else {
+                                    return None;
+                                };
+                                let (_, name, input) =
+                                    uses.iter().find(|(id, _, _)| *id == tool_use_id.as_str())?;
+                                if *name == cue.tool || staged.contains(&(*name, input.to_string()))
+                                {
+                                    return None;
+                                }
+                                (cue.input)(name, input, content)
+                            })
+                            .collect();
+                        for input in asks {
+                            if result_recalls >= cue.limit {
+                                break;
+                            }
+                            result_recalls += 1;
+                            let call_id =
+                                format!("{HARNESS_CALL}{}", uuid::Uuid::new_v4().simple());
+                            let (blocks, _, reads, _) = self
+                                .dispatch(
+                                    cx,
+                                    vec![(call_id.clone(), cue.tool.clone(), input)],
+                                    &events,
+                                    &mut Vec::new(),
+                                    &mut taint,
+                                    &mut blocked_sends,
+                                    &mut RunPictures::default(),
+                                    cx.tools.output_budget_bytes,
+                                    None,
+                                    false,
+                                )
+                                .await;
+                            convo.taint = taint;
+                            crate::tool::code::record::extend_bounded(
+                                &mut convo.program_calls,
+                                reads,
+                            );
+                            found.extend(blocks.into_iter().find_map(|b| match b {
+                                Block::ToolResult {
+                                    tool_use_id,
+                                    content,
+                                    is_error: false,
+                                } if tool_use_id == call_id
+                                    && content.trim() != cue.nothing.trim() =>
+                                {
+                                    Some(Block::text(format!("{}{content}", cue.stem)))
+                                }
+                                _ => None,
+                            }));
+                        }
+                    }
                     let cued: Vec<Block> = cx
                         .cue_on_success
                         .iter()
@@ -4921,6 +5031,7 @@ impl Agent {
                         .collect();
                     let mut result_message = Message::tool_results(results);
                     result_message.content.extend(recalled);
+                    result_message.content.extend(found);
                     result_message.content.extend(cued);
                     result_message.tool_provenance = provenance;
                     plan_batch.attach(&mut result_message);
@@ -18889,6 +19000,10 @@ justification = "echo is off on this box"
             if self.fails {
                 return Ok(ToolOutput::err("the store is down"));
             }
+            // Nothing found is the tool's own words, not outside content.
+            if input.get("read").and_then(Value::as_str) == Some("quiet") {
+                return Ok(ToolOutput::ok("nothing found"));
+            }
             Ok(ToolOutput::ok(format!("found for {input}")).from_outside())
         }
     }
@@ -18948,6 +19063,86 @@ justification = "echo is off on this box"
                 first_text.is_some()
             })
             .collect()
+    }
+
+    #[tokio::test]
+    async fn a_call_that_worked_is_followed_by_what_the_harness_found_and_by_nothing_when_it_found_nothing(
+    ) {
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let echo = |id: &str, value: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "echo".into(),
+                    input: json!({"value": value}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let turns = vec![
+            echo("t0", "berth C, 200 m"),
+            echo("t1", "quiet"),
+            echo("t2", "ok"),
+            echo("t3", "berth E, 150 m"),
+            echo("t4", "berth F, 110 m"),
+            assistant(vec![Block::text("Assigned.")], StopReason::EndTurn),
+        ];
+        let (mut agent, provider) = agent_with_tools(
+            turns,
+            vec![
+                Arc::new(EchoTool),
+                Arc::new(Remembers {
+                    calls: calls.clone(),
+                    fails: false,
+                }),
+            ],
+            PermissionMode::Allow,
+        );
+        agent.cfg.force_final_answer = false;
+        let mut cx = RunContext::clone(agent.context());
+        cx.recall_on_result = Some(ResultRecall {
+            tool: "remembers".into(),
+            // A result too short to be about anything asks nothing.
+            input: Arc::new(|tool, _input, result| {
+                (result.len() > 2).then(|| json!({"tool": tool, "read": result}))
+            }),
+            stem: RECALLED.into(),
+            nothing: "nothing found".into(),
+            limit: 3,
+        });
+        let mut convo = Conversation::user("place the vessel");
+        assert!(!convo.taint.untrusted);
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        // Asked after t0, t1 and t3: not after t2, which returned nothing
+        // to ask with, and not after t4, past the limit.
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        // Said after t0 and t3 only: t1's search found nothing, and a run
+        // is not told so.
+        assert_eq!(
+            recalls_after_results(&convo),
+            vec![true, false, false, true, false]
+        );
+        let delivered: Vec<String> = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                Block::Text { text } if text.starts_with(RECALLED) => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        // Keyed by what the call returned.
+        assert!(delivered[0].contains("berth C, 200 m"), "{delivered:?}");
+        assert!(delivered[1].contains("berth E, 150 m"), "{delivered:?}");
+        // What it returned came from outside, and the conversation knows.
+        assert!(convo.taint.untrusted && convo.taint.private);
+        // No call was forged, and every request stayed well formed.
+        assert_eq!(provider.seen.lock().unwrap().len(), 6);
+        assert!(!convo.messages.iter().any(|m| m
+            .tool_uses()
+            .iter()
+            .any(|(_, name, _)| *name == "remembers")));
     }
 
     #[tokio::test]

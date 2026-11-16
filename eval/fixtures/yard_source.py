@@ -98,6 +98,10 @@ def main(argv):
         return 2
     if verb == "setup":
         # The board each task meets: up for the surveys, cleared for a probe.
+        # Before a lifetime's first task no store exists yet and nothing is
+        # written; the server takes that as the first board
+        # (`yard_server.py`), so the first task of a lifetime must be one
+        # that meets it.
         for folder in stores():
             with open(os.path.join(folder, world.BOARD), "w") as f:
                 f.write(task["board"])

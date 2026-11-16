@@ -22,6 +22,7 @@ pub mod profile;
 pub mod recall;
 pub mod request_access;
 pub mod skill;
+pub mod spans;
 pub mod system_read;
 pub mod todo;
 pub mod transcripts;

@@ -37,11 +37,18 @@ def build(store):
     save(load())
 
     def board():
+        # With no board named, the first one is up. The source names a board
+        # by a file in this store, and can only find the store once this
+        # server has started in it: before a lifetime's first task there is
+        # none to find. Read as "no notices", that made the first survey
+        # read bare records, and nothing a later task needed was ever shown
+        # (found in a scripted dry run, before any measured run).
         try:
             with open(os.path.join(store, world.BOARD)) as f:
-                return world.BOARDS.get(f.read().strip(), {})
+                name = f.read().strip()
         except OSError:
-            return {}
+            name = "first"
+        return world.BOARDS.get(name, {})
 
     def berth_of(args):
         berth = str(args.get("berth", "")).strip().upper()

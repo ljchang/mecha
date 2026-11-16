@@ -76,3 +76,12 @@ memory = "episodes_store"
 [arms.episodes_store.prediction]
 metric = "failure"
 rationale = "Written before the run: as in memory-yard, the notices are not what is kept. Probes fail as the control does, at most one of six passing."
+
+[arms.spans]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "spans"
+
+[arms.spans.prediction]
+metric = "failure"
+rationale = "Written before the run, and after the arm was built: the index holds both boards' records and nothing in it says which is current, so the reefer probe is handed the berth whose plugs have since died about as often as the one that replaced it: at most one of three. The length probe passes as in memory-yard, at least two of three. This arm has no rule for a fact that was replaced; that rule is what the lifetime is for."

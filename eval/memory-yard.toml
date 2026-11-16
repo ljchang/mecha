@@ -75,3 +75,12 @@ memory = "episodes_store"
 [arms.episodes_store.prediction]
 metric = "failure"
 rationale = "Written before the run: nothing is refused and nothing fails in the surveys, so what is kept is that the lookups worked and each run's last words, which report figures. A notice is kept only where a run happened to mention it. Probes fail as the control does, at most one of six passing."
+
+[arms.spans]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "spans"
+
+[arms.spans.prediction]
+metric = "failure"
+rationale = "Written before the run, and after the arm was built: nothing is gated, so the notices are in the index, and the harness asks it with what each call returns. The vessel's record names reefer plugs and a berth's record is its own earlier record less the notice, so the notice that bears is handed over after the call it bears on. At least four of six probes pass, for fewer tokens than delivered."

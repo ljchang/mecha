@@ -71,7 +71,7 @@ fn words(text: &str) -> Vec<String> {
 /// tool's delivery, the episodes', the concepts' (at the start, and a cue
 /// after a call), or the memory store's. None is a passage
 /// of the session it sits in.
-fn delivery(text: &str) -> bool {
+pub(crate) fn delivery(text: &str) -> bool {
     #[cfg(feature = "memory-prototype")]
     if text.starts_with(crate::memory_session::DELIVERY_STEM)
         || text.contains(crate::memory_session::ERROR_STEM)
@@ -85,6 +85,8 @@ fn delivery(text: &str) -> bool {
         || text.starts_with(super::episodes::RETRACED_STEM)
         || text.starts_with(crate::attempts::DELIVERY_STEM)
         || text.starts_with(crate::attempts::CUE_STEM)
+        || text.starts_with(super::spans::DELIVERY_STEM)
+        || text.starts_with(super::spans::CUE_STEM)
 }
 
 /// Whether a transcript is one this tool may quote: a one-shot run's, or a
@@ -93,7 +95,7 @@ fn delivery(text: &str) -> bool {
 /// a stranger's prose that a privileged run is never shown, a session marked
 /// as a test is not experience, and a header that cannot be read names no
 /// kind at all (review of #875).
-fn searchable(transcript: &str, experiment_home: bool) -> bool {
+pub(crate) fn searchable(transcript: &str, experiment_home: bool) -> bool {
     use crate::session::{Record, SessionKind};
     let Some(Ok(Record::Meta(meta))) = transcript
         .lines()
