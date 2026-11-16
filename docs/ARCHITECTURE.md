@@ -11725,8 +11725,19 @@ into the ordinary web chat only, in `serve/chat.rs`'s turn task.
   draft sent as written is good; edited, rejected, a steer or a denial is a
   verdict against the turn. A turn nobody acted on has no verdict, and no
   verdict is never a good one: such attempts are kept and handed to nothing.
-  A later message that may be a correction is **not** read: whether it is one
-  is the reflector's judgement, made overnight, and nothing joins it yet.
+  A later message that may be a correction is **not** read in the turn:
+  whether it is one is the reflector's judgement, made overnight. Where
+  `mecha reflect` draws a lesson from a follow-up, the same pass writes it
+  as a verdict on the attempt kept for the turn before
+  (`attempts::of_followup`, `Source::Followup`): the words are the owner's
+  message and nothing else, and it is said to a later run as a message
+  "read afterwards as a correction", because that reading is a model's. A
+  skip is no verdict. The join is by a working call's id in the transcript
+  as loaded, so a turn that only talked, or whose calls a compaction has
+  dropped, is judged by nothing. Two limits follow from the pass it rides:
+  a session is mined once, so a follow-up typed after its chat was mined is
+  never read; and the web chat fires no `session_end`, so the pass that
+  reads one is the nightly's.
 - **Only the owner's.** `attempts::Draft::of` reads an outbox item as a
   verdict only where the owner released, edited or rejected it at their own
   door (`owners_unchanged_release`, `owners_edit`, a reject stamped

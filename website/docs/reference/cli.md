@@ -1553,7 +1553,11 @@ mecha corrections --json
 
 A judgement is something you did, never something you were asked for: a draft
 you edited before sending, a draft you rejected, a time you stepped in during
-a run, a call you refused. A draft you sent as written counts as good. It
+a run, a call you refused. A draft you sent as written counts as good. Your
+next message counts too when the nightly [`reflect`](#reflect) pass reads it
+as a correction of the turn before: it is recorded with your words, and
+listed as "your next message was read as a correction", since that reading
+is a model's and not an act of yours. It
 reads whether or not `[features] corrections` is on; switching the feature
 off stops the record growing. Deleting a conversation (`mecha sessions
 delete`) removes its lines.

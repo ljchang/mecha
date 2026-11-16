@@ -223,18 +223,30 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let model = global.model.clone().or_else(|| provider_cfg.model.clone());
         let reflector = Reflector::new(provider, model).with_contrast(cfg.agent.contrast_evidence);
         eprintln!("reflecting with {} ({name})", reflector.model());
-        Some((reflector, cfg.agent.contrast_evidence))
+        // Corrections (`mecha_core::attempts`): a follow-up this pass judges
+        // a correction is also the owner's verdict on the attempt before
+        // it. Only with the feature on, as the web chat keeps attempts.
+        let corrections =
+            mecha_core::feature::switched_on(&cfg, mecha_core::feature::Feature::Corrections);
+        Some((reflector, cfg.agent.contrast_evidence, corrections))
     };
     // Contrast evidence (row 2e-4b-2, R43): the verified successes a
     // correction in their region is reflected beside, read once per pass —
     // with the lever on, or on a dry run, which is its shadow readout (each
     // listed correction names the success it would be shown). Off, nothing
     // is read and the reflector's prompt is the bytes it was.
-    let contrast_on = reflector.as_ref().is_some_and(|(_, on)| *on);
+    let contrast_on = reflector.as_ref().is_some_and(|(_, on, _)| *on);
+    let attempts = match &reflector {
+        Some((_, _, true)) => Some(mecha_core::attempts::Store::in_home(
+            &mecha_core::work::mecha_home()?,
+        )),
+        _ => None,
+    };
+    let mut attempts_judged = 0usize;
     let contrasts = (args.dry_run || contrast_on)
         .then(|| mecha_core::success::ContrastPool::at(&sessions_dir))
         .filter(|pool| !pool.is_empty());
-    let reflector = reflector.map(|(r, _)| r);
+    let reflector = reflector.map(|(r, _, _)| r);
 
     let mut sessions_mined = 0usize;
     let mut interventions_found = 0usize;
@@ -334,6 +346,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // written only when they are, so a retried session counts once.
         let mut replies = Vec::new();
         let mut failed = false;
+        // The follow-ups judged corrections, by where each sits.
+        let mut corrected: Vec<usize> = Vec::new();
         // What the session's programs read, once: the walk takes only those
         // under a call before each correction, so the file read does not
         // depend on the intervention.
@@ -415,6 +429,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     // question, a `/model` switch), and `config_covering`
                     // is the exact answer per message (found on review).
                     r.situation = Some(recorded_situation(&t, intervention));
+                    if intervention.trigger == Trigger::Followup {
+                        corrected.push(intervention.at);
+                    }
                     pending.push(r);
                 }
                 Ok(None) => {
@@ -437,6 +454,22 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
         if failed {
             continue;
+        }
+        // The verdicts before anything is marked: `Store::judge` skips one
+        // already on file, so a pass retried after a stop below writes none
+        // twice, and a store that cannot be written leaves the session
+        // unmined instead of losing the owner's verdict for good.
+        if let (Some(attempts), false) = (&attempts, corrected.is_empty()) {
+            match judge_followups(attempts, &meta.id, &convo.messages, &corrected) {
+                Ok(n) => attempts_judged += n,
+                Err(e) => {
+                    eprintln!(
+                        "· corrections not written: {e:#}\n  leaving {} unmined so a later run retries",
+                        meta.id
+                    );
+                    continue;
+                }
+            }
         }
         // Rows first: a stop after them leaves the session unmined, and the
         // retry's rows supersede these (`replies_counting`). Rows after the
@@ -598,8 +631,33 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             store.root().join("reflections.jsonl").display()
         );
         println!("reflector replies: {}", replies_tally.line());
+        if attempts.is_some() {
+            println!(
+                "corrections: {attempts_judged} earlier attempt(s) judged by the owner's next message"
+            );
+        }
     }
     Ok(())
+}
+
+/// The verdicts a session's judged follow-ups make on the attempts kept for
+/// it (`attempts::of_followup`), written to the corrections file. How many
+/// were new. A follow-up to a turn no attempt was kept for judges nothing.
+fn judge_followups(
+    attempts: &mecha_core::attempts::Store,
+    session: &str,
+    messages: &[mecha_core::message::Message],
+    corrected: &[usize],
+) -> Result<usize> {
+    let kept = attempts.load()?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let verdicts: Vec<_> = corrected
+        .iter()
+        .filter_map(|at| {
+            mecha_core::attempts::of_followup(&kept.attempts, session, messages, *at, &now)
+        })
+        .collect();
+    attempts.judge(&verdicts)
 }
 
 /// The workspace and surface one run record says its block was matched
