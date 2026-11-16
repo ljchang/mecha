@@ -2257,6 +2257,9 @@ async fn run_one(
     } else if arm.memory == Some(mecha_core::experiment::ArmMemory::Transcripts) {
         // No store to make: the home's own session files are the corpus.
         cmd.arg("--transcripts-deliver");
+    } else if arm.memory == Some(mecha_core::experiment::ArmMemory::Spans) {
+        // The same corpus, indexed under the home on the first run.
+        cmd.arg("--spans-deliver");
     } else if let Some(memory) = arm.memory {
         anyhow::ensure!(
             manifest.tasks.confirmed_goals.contains_key(&case.id),
@@ -2280,6 +2283,7 @@ async fn run_one(
             }
             ArmMemory::Everything
             | ArmMemory::Transcripts
+            | ArmMemory::Spans
             | ArmMemory::Episodes
             | ArmMemory::EpisodesAppraised
             | ArmMemory::EpisodesStore

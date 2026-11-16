@@ -69,6 +69,25 @@ pub struct Args {
     #[arg(long, conflicts_with_all = ["resume", "no_session", "images"])]
     pub transcripts_deliver: bool,
 
+    /// Have the harness look through everything this home's earlier
+    /// sessions read and said, by meaning and by words: for this task before
+    /// the first request, and again after each call that works, for what
+    /// that call returned. What is close is handed to the model; when
+    /// nothing is, nothing is said. Needs the embeddings server, and a run
+    /// that cannot reach it does not start. Arms private data and outside
+    /// content.
+    #[arg(long, conflicts_with_all = ["resume", "no_session", "images", "transcripts_deliver", "episodes_deliver"])]
+    pub spans_deliver: bool,
+
+    /// The embeddings server `--spans-deliver` asks. Loopback only.
+    #[arg(
+        long,
+        value_name = "URL",
+        default_value = "http://127.0.0.1:8081",
+        requires = "spans_deliver"
+    )]
+    pub spans_embed_url: String,
+
     /// Keep what this run finds out the hard way (a refused call, and what
     /// then worked) in the home's episode file, and before the first request
     /// hand the model the episodes earlier runs kept about the tools it has.
@@ -559,6 +578,56 @@ pub async fn execute(
         }
         _ => delivered,
     };
+    // And over the home's broad index (`--spans-deliver`): everything its
+    // earlier sessions read and said, asked by this task's words here and
+    // by each working call's result in the loop (`recall_on_result`,
+    // below). The index is brought up to date first, and a run that cannot
+    // do that does not start: it would answer as if the sessions it missed
+    // had never happened.
+    let delivered = match (&session, args.spans_deliver) {
+        (Some(recorded), true) => {
+            use mecha_core::tool::spans;
+            anyhow::ensure!(
+                delivered.is_none(),
+                "--spans-deliver and another delivery are two arms; choose one"
+            );
+            let embedder = mecha_core::embed::Embedder::new(&args.spans_embed_url)
+                .context("--spans-embed-url")?;
+            let index = std::sync::Arc::new(spans::Spans::new(
+                spans::dir_in(&mecha_core::work::mecha_home()?),
+                session_dir.clone(),
+                recorded.path.clone(),
+                embedder,
+            ));
+            let (covered, embedded) = index.refresh().await.context(
+                "--spans-deliver: the index of earlier sessions could not be brought up to date",
+            )?;
+            prepared.agent.registry_mut().insert(index);
+            let cx = mecha_core::agent::RunContext::clone(prepared.agent.context());
+            let dispatched = prepared
+                .agent
+                .dispatch_one(
+                    &cx,
+                    &mut convo,
+                    spans::NAME,
+                    spans::delivery_input(&prompt),
+                    &None,
+                )
+                .await;
+            anyhow::ensure!(
+                !dispatched.is_error,
+                "--spans-deliver: {}",
+                dispatched.content
+            );
+            let found = dispatched.content.trim() != spans::NOTHING;
+            eprintln!(
+                "mecha: spans cover {covered} earlier session(s), {embedded} passage(s) newly embedded; delivered {} bytes",
+                if found { dispatched.content.len() } else { 0 }
+            );
+            found.then(|| format!("{}{}", spans::DELIVERY_STEM, dispatched.content))
+        }
+        _ => delivered,
+    };
     // And over the home's episodes (`--episodes-deliver`): the few lines
     // earlier runs kept about the tools this one has. What this run finds
     // out is kept after it ends, below.
@@ -842,6 +911,17 @@ pub async fn execute(
             text,
             private: false,
             stem: mecha_core::tool::episodes::RETRACED_STEM.into(),
+        });
+    }
+    if args.spans_deliver && session.is_some() {
+        use mecha_core::tool::spans;
+        cx.recall_on_result = Some(mecha_core::agent::ResultRecall {
+            tool: spans::NAME.into(),
+            input: std::sync::Arc::new(spans::result_input),
+            stem: spans::CUE_STEM.into(),
+            nothing: spans::NOTHING.into(),
+            // A turn that reads a handful of records asks once for each.
+            limit: 10,
         });
     }
     #[cfg(feature = "memory-prototype")]

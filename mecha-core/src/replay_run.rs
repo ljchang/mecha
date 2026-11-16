@@ -1767,6 +1767,12 @@ mod tests {
                 PURE, // reads other sessions' files
             ),
             (
+                "mecha-core/src/tool/spans.rs",
+                "Spans",
+                None, // named by a const
+                PURE, // reads the home's index; `refresh` is the run command's, not a call's
+            ),
+            (
                 "mecha-core/src/tool/recall.rs",
                 "Recall",
                 Some("recall"),

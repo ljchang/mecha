@@ -1,0 +1,93 @@
+# Memory benchmark, held out once and development data since: the yard, with a notice that reversed
+# (docs/MEMORY-RETENTION-DESIGN.md §11.4). As memory-yard.toml, and a
+# recheck after the surveys reads a second board on which the reefer notice
+# has moved from one berth to another. The reefer probe's right berth is the
+# one the second board names.
+# Written before the stored index it is meant to measure existed, and before
+# any memory arm ran on it; not for tuning. The predictions below were
+# written with the fixtures.
+#
+# Run once as held out on 2026-11-16 (`memory-yard-superseded-h1`), every arm, with the
+# predictions below. Development data since: the berth record then gained
+# `reefer_points_fitted`, without which the reefer question had more than one
+# answer the notices allowed, and the index's ranking was changed on what
+# that run showed. A number from a later run of this file is not held out.
+#
+#   mecha exp new eval/memory-yard-superseded.toml
+#   mecha exp run memory-yard-superseded
+
+name = "memory-yard-superseded"
+kind = "lifetime"
+description = "Does a memory that holds a fact and the later fact that replaced it hand over the one that still holds."
+control = "none"
+split_seed = 23
+seeds = [1, 2, 3]
+repetitions = 1
+
+[schedule]
+reflect = 0
+validate = 0
+learn = 0
+retire = 0
+ruminate = 0
+
+[tasks]
+source = ["python3", "eval/fixtures/yard_source.py"]
+fixture = "eval/fixtures/opaque-workspace"
+ids = ["yard-survey-lengths", "yard-survey-bollards", "yard-recheck-bollards", "yard-probe-reefer-after", "yard-probe-length"]
+
+[tasks.confirmed_goals]
+yard-survey-lengths = "task:yard-survey-lengths"
+yard-survey-bollards = "task:yard-survey-bollards"
+yard-recheck-bollards = "task:yard-recheck-bollards"
+yard-probe-reefer-after = "task:yard-probe-reefer-after"
+yard-probe-length = "task:yard-probe-length"
+
+[fixtures]
+outbox_tools = []
+
+[[fixtures.mcp]]
+name = "yard"
+command = "python3"
+args = ["eval/fixtures/yard_server.py"]
+prefix_tools = false
+
+[arms.none]
+preset = "bare"
+levers_on = ["mcp"]
+
+[arms.transcripts]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "transcripts"
+
+[arms.transcripts.prediction]
+metric = "failure"
+rationale = "Written before the run: as in memory-yard, a probe's words find the earlier prompts and not the notices. Probes fail as the control does, at most one of six passing."
+
+[arms.delivered]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "delivered"
+
+[arms.delivered.prediction]
+metric = "failure"
+rationale = "Written before the run: the store holds both boards' records with nothing saying which is current. Where records come back, the reefer probe is handed the berth whose plugs have since died as often as the one that replaced it, so it passes less often than memory-yard's does: at most one of three. The length probe is as in memory-yard."
+
+[arms.episodes_store]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "episodes_store"
+
+[arms.episodes_store.prediction]
+metric = "failure"
+rationale = "Written before the run: as in memory-yard, the notices are not what is kept. Probes fail as the control does, at most one of six passing."
+
+[arms.spans]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "spans"
+
+[arms.spans.prediction]
+metric = "failure"
+rationale = "Written before the run, and after the arm was built: the index holds both boards' records and nothing in it says which is current, so the reefer probe is handed the berth whose plugs have since died about as often as the one that replaced it: at most one of three. The length probe passes as in memory-yard, at least two of three. This arm has no rule for a fact that was replaced; that rule is what the lifetime is for."

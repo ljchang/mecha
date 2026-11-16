@@ -1142,6 +1142,7 @@ fn with_memory_hash(memory: Option<ArmMemory>, original: String) -> String {
         }
         Some(ArmMemory::Episodes) => fnv64(format!("{original}|memory=episodes").as_bytes()),
         Some(ArmMemory::Transcripts) => fnv64(format!("{original}|memory=transcripts").as_bytes()),
+        Some(ArmMemory::Spans) => fnv64(format!("{original}|memory=spans").as_bytes()),
     }
 }
 
@@ -1192,6 +1193,12 @@ pub enum ArmMemory {
     /// transcripts for the task and hands the model what it found. The
     /// plain-retrieval baseline.
     Transcripts,
+    /// No store: an index over everything the home's earlier sessions read
+    /// and said, by meaning and by words, asked by the harness for the task
+    /// and again after each call that works, for what the call returned
+    /// (`tool::spans`). The second layer of
+    /// `docs/MEMORY-RETENTION-DESIGN.md` §11, with no gate in front of it.
+    Spans,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

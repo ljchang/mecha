@@ -338,6 +338,7 @@ impl Tool for Subagent {
             end_after_deferral: false,
             close_with: None,
             recall_on_error: None,
+            recall_on_result: None,
             cue_on_success: Vec::new(),
             jobs: None,
             // Never sampled per child: a subagent is work inside the

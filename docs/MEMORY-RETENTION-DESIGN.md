@@ -602,3 +602,45 @@ over them), and it is not the one
 §4.5's third bullet described: that one was over retained passages, above
 the gate. This one is over every transcript span, under the gate, and the
 gate is only safe to trust with this one under it.
+
+### 11.6 Built so far (2026-11-16)
+
+The second layer, in the form that is measured first: `tool::spans` and
+`agent::ResultRecall` (`mecha run --spans-deliver`, the experiment arm
+`spans`). The measurements are in the pull request that added them and are
+not repeated here, where they would go stale. What they changed in this
+section's own claims:
+
+- **The index is asked after a call, with what the call returned.** §11.1
+  said the second layer keeps a span findable; it did not say when it is
+  looked for. A task's words rarely name what it will turn out to need, and
+  the result of a call does: the record a run is reading is close to that
+  record's earlier reading, and a vessel's stated need is close to the
+  notice that bears on it.
+- **Meaning is the floor and words give the order.** The embeddings server
+  scores two records of one shape as the same, so meaning cannot order
+  them. With the two ranks fused evenly, a later and emptier reading of
+  every record crowded out the one reading that mattered.
+- **Being handed the right thing is not acting on it.** On the yard
+  lifetime, once retrieval was right, the model often set the hand-over
+  aside in favour of a present record that was merely silent, citing the
+  hand-over's own caution that it may no longer hold and the outside-content
+  wrapper around it. How memory is framed when it is handed over, and what
+  the harness says when a remembered fact is absent from what is in front
+  of the run, are open, and are the owner's to rule on.
+- **The yard lifetime is development data.** It was run once as held out;
+  its fixture and the index's ranking were then changed on what that run
+  showed. It also turned out to test a conflict between memory and a
+  present record, which §11.4 did not intend: the next family puts the fact
+  where the later task cannot look at all.
+- **A known blind spot: a number is not news.** The restatement rule counts
+  the words a passage adds to the query and leaves numbers out, so that an
+  acknowledgement differing only in a byte count brings nothing to mind. The
+  cost is that an earlier record differing from the present one only in a
+  number, a setting whose value changed, is taken for the record said again
+  and is not handed over. Not measured; the superseded family is where it
+  would show.
+
+Not built: the gate beside this index in the web chat, promotion (§11.2),
+and every rule of §11.3. The index is a file in the mecha home, not yet in
+the encrypted store.

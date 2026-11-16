@@ -1,0 +1,92 @@
+# Memory benchmark, held out once and development data since: the yard
+# (docs/MEMORY-RETENTION-DESIGN.md §11.4). Two surveys read berth
+# records for a routine figure while a notice rides in each; two later tasks
+# place a vessel after the board is cleared, where the plain rule picks a
+# berth a notice had ruled out.
+# Written before the stored index it is meant to measure existed, and before
+# any memory arm ran on it; not for tuning. The predictions below were
+# written with the fixtures.
+#
+# Run once as held out on 2026-11-16 (`memory-yard-h1`), every arm, with the
+# predictions below. Development data since: the berth record then gained
+# `reefer_points_fitted`, without which the reefer question had more than one
+# answer the notices allowed, and the index's ranking was changed on what
+# that run showed. A number from a later run of this file is not held out.
+#
+#   mecha exp new eval/memory-yard.toml
+#   mecha exp run memory-yard
+
+name = "memory-yard"
+kind = "lifetime"
+description = "Does something read in passing, that no task needed and nothing marked, reach a later task with another goal that can no longer read it."
+control = "none"
+split_seed = 23
+seeds = [1, 2, 3]
+repetitions = 1
+
+[schedule]
+reflect = 0
+validate = 0
+learn = 0
+retire = 0
+ruminate = 0
+
+[tasks]
+source = ["python3", "eval/fixtures/yard_source.py"]
+fixture = "eval/fixtures/opaque-workspace"
+ids = ["yard-survey-lengths", "yard-survey-bollards", "yard-probe-reefer", "yard-probe-length"]
+
+[tasks.confirmed_goals]
+yard-survey-lengths = "task:yard-survey-lengths"
+yard-survey-bollards = "task:yard-survey-bollards"
+yard-probe-reefer = "task:yard-probe-reefer"
+yard-probe-length = "task:yard-probe-length"
+
+[fixtures]
+outbox_tools = []
+
+[[fixtures.mcp]]
+name = "yard"
+command = "python3"
+args = ["eval/fixtures/yard_server.py"]
+prefix_tools = false
+
+[arms.none]
+preset = "bare"
+levers_on = ["mcp"]
+
+[arms.transcripts]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "transcripts"
+
+[arms.transcripts.prediction]
+metric = "failure"
+rationale = "Written before the run: the notices are in earlier transcripts as tool results, but a probe's own words share none of a notice's (no reefer, no plugs, no fender), so a keyword search by them returns the earlier prompts. Probes fail as the control does, at most one of six passing."
+
+[arms.delivered]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "delivered"
+
+[arms.delivered.prediction]
+metric = "failure"
+rationale = "Written before the run: every passage is stored and a probe's words include berth and length, which the stored records also hold, so some records come back with their notices and the probes they bear on pass: between two and four of six, at about twice the control's tokens."
+
+[arms.episodes_store]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "episodes_store"
+
+[arms.episodes_store.prediction]
+metric = "failure"
+rationale = "Written before the run: nothing is refused and nothing fails in the surveys, so what is kept is that the lookups worked and each run's last words, which report figures. A notice is kept only where a run happened to mention it. Probes fail as the control does, at most one of six passing."
+
+[arms.spans]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "spans"
+
+[arms.spans.prediction]
+metric = "failure"
+rationale = "Written before the run, and after the arm was built: nothing is gated, so the notices are in the index, and the harness asks it with what each call returns. The vessel's record names reefer plugs and a berth's record is its own earlier record less the notice, so the notice that bears is handed over after the call it bears on. At least four of six probes pass, for fewer tokens than delivered."
