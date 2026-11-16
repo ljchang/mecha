@@ -22,6 +22,13 @@
 # most one of three, since the line speaks for a replaced notice as readily
 # as for the one that replaced it.
 #
+# `memory-yard-superseded-d3`: own voice reefer-after 3/3 and length 2/3,
+# both predictions failed (at most one, and three). d2 and d3 searched with
+# the outside-content warning still around each result (review of #888).
+# Written before `memory-yard-superseded-d4`, which searches with the result
+# alone: own voice passes at least four of six probes, and each index arm's
+# tokens in fall.
+#
 #   mecha exp new eval/memory-yard-superseded.toml
 #   mecha exp run memory-yard-superseded
 

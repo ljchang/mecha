@@ -20,6 +20,12 @@
 # just read does not: own voice stays at six of six, and spans, which keeps
 # its envelope and its caution, gains at most one reefer probe.
 #
+# `memory-yard-d3`: 0, 4, 6; both predictions held. d2 and d3 searched with
+# the outside-content warning still around each result (review of #888).
+# Written before `memory-yard-d4`, which searches with the result alone: own
+# voice stays at six of six, spans within one probe of four, and each index
+# arm's tokens in fall, since an acknowledgement no longer asks.
+#
 #   mecha exp new eval/memory-yard.toml
 #   mecha exp run memory-yard
 

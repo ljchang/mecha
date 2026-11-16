@@ -100,6 +100,8 @@ const BATCH: usize = 16;
 const ADDS: usize = 2;
 /// The most words named as absent from the present record, a passage.
 const ABSENT_WORDS: usize = 12;
+/// What closes a list of them that was cut.
+const ABSENT_MORE: &str = "and others";
 
 /// A dispatched result of this tool without the envelope the loop put
 /// around it, for a host that hands it over as the run's own memory.
@@ -133,15 +135,20 @@ pub fn delivery_input(prompt: &str) -> Value {
 /// returned. `None` for a memory lookup, whose result is earlier hits, and
 /// for an acknowledgement too short to be about anything.
 pub fn result_input(tool: &str, _input: &Value, result: &str) -> Option<Value> {
-    if super::episodes::MEMORY_TOOLS.contains(&tool) || result.trim().len() < ASKS_BYTES {
+    // What the call returned, without the envelope the loop renders around
+    // an outside result: left on, the warning's own words were most of what
+    // a short result was searched with, and an acknowledgement was never
+    // short enough to ask nothing (review of #888).
+    let record = crate::outbox_source::unwrap_untrusted(result);
+    if super::episodes::MEMORY_TOOLS.contains(&tool) || record.trim().len() < ASKS_BYTES {
         return None;
     }
     // The whole result beside the cut one the search is made with: what a
     // passage holds that the record does not is said of the record, and a
     // word past the cut is in the record (review of #888).
     Some(json!({
-        "query": cut(result, QUERY_BYTES),
-        "record": crate::outbox_source::unwrap_untrusted(result),
+        "query": cut(record, QUERY_BYTES),
+        "record": record,
     }))
 }
 
@@ -154,12 +161,18 @@ pub fn result_input(tool: &str, _input: &Value, result: &str) -> Option<Value> {
 fn absent_from(present: &str, passage: &str) -> Vec<String> {
     let shown: BTreeSet<String> = words(present).into_iter().collect();
     let mut seen: BTreeSet<String> = BTreeSet::new();
-    words(passage)
+    let mut absent: Vec<String> = words(passage)
         .into_iter()
         .filter(|w| !shown.contains(w) && !w.chars().all(|c| c.is_ascii_digit()))
         .filter(|w| seen.insert(w.clone()))
-        .take(ABSENT_WORDS)
-        .collect()
+        .collect();
+    // A list that was cut says so: a line against reading silence as a
+    // correction must not be silent about its own end.
+    if absent.len() > ABSENT_WORDS {
+        absent.truncate(ABSENT_WORDS);
+        absent.push(ABSENT_MORE.to_string());
+    }
+    absent
 }
 
 fn words(text: &str) -> Vec<String> {
@@ -720,8 +733,9 @@ impl Tool for Spans {
             }
         };
         // The record a call just returned, whole, when the harness asks
-        // with one (`result_input`). Not in the schema: it is the harness's
-        // to give, and a line about a record is said only of one it read.
+        // with one (`result_input`). Not in the schema, and nothing more
+        // than that keeps it the harness's: a caller that names the field
+        // itself gets the line about whatever it passed.
         let record = input
             .get("record")
             .and_then(Value::as_str)
@@ -1207,6 +1221,28 @@ mod tests {
         // nothing.
         assert!(absent_from(WITH_NOTICE, r#"{"berth": "C", "length": 150}"#).is_empty());
         assert_eq!(result_input("yard_assign", &json!({}), "ok"), None);
+        // As the loop hands it over, an outside result is in an envelope:
+        // the acknowledgement inside is as short, and the search is made
+        // with the result and none of the warning.
+        let wrapped = |inner: &str| {
+            format!(
+                "<untrusted-content source=\"yard_assign\">\nquay notice header\n---\n{inner}\n</untrusted-content>"
+            )
+        };
+        assert_eq!(
+            result_input("yard_assign", &json!({}), &wrapped("ok")),
+            None
+        );
+        assert_eq!(
+            result_input("yard_berth", &json!({}), &wrapped(WITH_NOTICE)).unwrap()["query"],
+            WITH_NOTICE
+        );
+        // A list of what is absent that was cut says it was.
+        let many = "quay mole pier jetty wharf slip dock basin lock weir groyne berm sluice";
+        assert_eq!(
+            absent_from("", many).last().map(String::as_str),
+            Some(ABSENT_MORE)
+        );
         assert_eq!(result_input(NAME, &json!({}), WITH_NOTICE), None);
         assert_eq!(
             result_input("transcript_search", &json!({}), WITH_NOTICE),
