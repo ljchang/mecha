@@ -354,6 +354,37 @@ fn keep_vectors(index: &Path, rows: Vec<(i64, Vec<u8>)>, dims: usize) -> Result<
     Ok(())
 }
 
+/// The width the index's vectors were embedded at, when any were.
+fn width(index: &Path) -> Result<Option<usize>> {
+    let conn = open(index)?;
+    let had: Option<String> = conn
+        .query_row("SELECT value FROM meta WHERE key = 'dims'", [], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    Ok(had.and_then(|d| d.parse().ok()))
+}
+
+/// Drop every vector kept, for a server that now embeds at `dims`.
+fn drop_vectors(index: &Path, dims: usize) -> Result<()> {
+    let mut conn = open(index)?;
+    let tx = conn.transaction()?;
+    tx.execute("UPDATE spans SET vec = NULL", [])?;
+    tx.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('dims', ?1)",
+        [dims.to_string()],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// How many passages the index holds.
+fn count(index: &Path) -> Result<usize> {
+    let conn = open(index)?;
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM spans", [], |r| r.get(0))?;
+    Ok(n as usize)
+}
+
 /// Every embedded passage, with its vector.
 fn embedded(index: &Path) -> Result<Vec<(i64, Span, Vec<f32>)>> {
     // A call reads and never makes: an index nothing has built holds
@@ -410,14 +441,14 @@ fn choose(
             .count()
             < ADDS
     };
-    // Only vectors made the query's way: one of another length is another
-    // model's, and its cosine says nothing.
     let handed_texts: BTreeSet<String> = spans
         .iter()
         .filter(|(id, _, _)| handed.contains(id))
         .map(|(_, span, _)| squeezed(&span.text))
         .collect();
     let mut seen: BTreeSet<String> = BTreeSet::new();
+    // Only vectors made the query's way: one of another length is another
+    // model's, and its cosine says nothing.
     let near: Vec<(usize, f32)> = spans
         .iter()
         .enumerate()
@@ -516,35 +547,71 @@ impl Spans {
         let covered =
             tokio::task::spawn_blocking(move || read_sessions(&index, &sessions, &current, trial))
                 .await??;
+        // The width the server gives now, against the width the index was
+        // embedded at. Asked every time and not only when there is something
+        // new to embed: with nothing new, vectors of another width would
+        // stay, nothing would compare with them, and every search of the run
+        // would find nothing behind a count that reads as a whole index
+        // (review of #887).
         let index = self.index.clone();
-        let todo = tokio::task::spawn_blocking(move || unembedded(&index)).await??;
+        if let Some(had) = tokio::task::spawn_blocking(move || width(&index)).await?? {
+            let probe = self
+                .embedder
+                .embed(&["width".to_string()], Task::Passage)
+                .await?;
+            let now = probe.first().map(Vec::len).unwrap_or(0);
+            anyhow::ensure!(now > 0, "the embeddings server returned nothing");
+            if now != had {
+                let index = self.index.clone();
+                tokio::task::spawn_blocking(move || drop_vectors(&index, now)).await??;
+            }
+        }
         let mut done = 0usize;
-        for batch in todo.chunks(BATCH) {
-            let texts: Vec<String> = batch.iter().map(|(_, t)| t.clone()).collect();
-            let vectors = self.embedder.embed(&texts, Task::Passage).await?;
-            // Position ties a vector to its passage: a short reply is
-            // refused, never zipped short.
-            anyhow::ensure!(
-                vectors.len() == batch.len(),
-                "asked for {} embeddings, got {}",
-                batch.len(),
-                vectors.len()
-            );
-            // And each as wide as the first: one of another width would be
-            // kept, never compared with anything, and never embedded again.
-            anyhow::ensure!(
-                vectors.iter().all(|v| v.len() == vectors[0].len()),
-                "the embeddings server mixed vector widths in one batch"
-            );
-            let dims = vectors.first().map(Vec::len).unwrap_or(0);
-            let rows: Vec<(i64, Vec<u8>)> = batch
-                .iter()
-                .zip(&vectors)
-                .map(|((id, _), v)| (*id, embed::to_blob(v)))
-                .collect();
+        // Until nothing is left, and not over a list read once: a batch of
+        // a new width drops vectors that were not in the list.
+        loop {
             let index = self.index.clone();
-            tokio::task::spawn_blocking(move || keep_vectors(&index, rows, dims)).await??;
-            done += batch.len();
+            let todo = tokio::task::spawn_blocking(move || unembedded(&index)).await??;
+            if todo.is_empty() {
+                break;
+            }
+            for batch in todo.chunks(BATCH) {
+                let texts: Vec<String> = batch.iter().map(|(_, t)| t.clone()).collect();
+                let vectors = self.embedder.embed(&texts, Task::Passage).await?;
+                // Position ties a vector to its passage: a short reply is
+                // refused, never zipped short.
+                anyhow::ensure!(
+                    vectors.len() == batch.len(),
+                    "asked for {} embeddings, got {}",
+                    batch.len(),
+                    vectors.len()
+                );
+                // And each as wide as the first: one of another width would be
+                // kept, never compared with anything, and never embedded again.
+                anyhow::ensure!(
+                    vectors.iter().all(|v| v.len() == vectors[0].len()),
+                    "the embeddings server mixed vector widths in one batch"
+                );
+                let dims = vectors.first().map(Vec::len).unwrap_or(0);
+                let rows: Vec<(i64, Vec<u8>)> = batch
+                    .iter()
+                    .zip(&vectors)
+                    .map(|((id, _), v)| (*id, embed::to_blob(v)))
+                    .collect();
+                let index = self.index.clone();
+                tokio::task::spawn_blocking(move || keep_vectors(&index, rows, dims)).await??;
+                done += batch.len();
+                // A pass that could go round for ever is refused: each batch
+                // embeds passages that were unembedded, so more embedded than
+                // the index holds twice over is a server changing width under
+                // the pass.
+                let index = self.index.clone();
+                let held = tokio::task::spawn_blocking(move || count(&index)).await??;
+                anyhow::ensure!(
+                done <= held.saturating_mul(2).max(BATCH),
+                "the embeddings server kept changing vector width; the index was not brought up to date"
+            );
+            }
         }
         Ok((covered, done))
     }
@@ -649,6 +716,11 @@ mod tests {
     /// dimension per word of a small vocabulary, so two texts are alike by
     /// the words they share and a test can say which is nearer.
     async fn embeddings() -> String {
+        embeddings_padded(0).await
+    }
+
+    /// The same server, its vectors `pad` wider: another model's width.
+    async fn embeddings_padded(pad: usize) -> String {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         const VOCAB: [&str; 7] = [
             "berth", "length", "notice", "weather", "sunny", "bollards", "vessel",
@@ -694,6 +766,7 @@ mod tests {
                                 .collect();
                             // Never the zero vector, whose cosine is nothing.
                             e.push(0.1);
+                            e.extend(std::iter::repeat_n(0.0, pad));
                             json!({ "embedding": e })
                         })
                         .collect();
@@ -961,6 +1034,44 @@ mod tests {
         assert!(
             next.is_none_or(|next| noticed < next),
             "the reading with the notice is not first: {}",
+            out.content
+        );
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// A server that now embeds at another width, with nothing new to
+    /// embed: the index is embedded again at the start, and is not left
+    /// holding vectors nothing compares with behind a count that reads whole.
+    #[tokio::test]
+    async fn an_index_embedded_at_another_width_is_embedded_again_before_the_run() {
+        let home = home();
+        let sessions = home.join("sessions");
+        session(
+            &sessions,
+            SessionKind::Run,
+            looked_up("w1", "yard_berth", WITH_NOTICE).to_vec(),
+        );
+        let current = session(&sessions, SessionKind::Run, vec![]);
+        let first = Spans::new(
+            dir_in(&home),
+            sessions.clone(),
+            current.clone(),
+            Embedder::new(&embeddings().await).unwrap(),
+        );
+        let (_, embedded) = first.refresh().await.unwrap();
+        assert!(embedded > 0);
+        let wider = Spans::new(
+            dir_in(&home),
+            sessions,
+            current,
+            Embedder::new(&embeddings_padded(3).await).unwrap(),
+        );
+        // Nothing new was read, and everything is embedded again.
+        assert_eq!(wider.refresh().await.unwrap().1, embedded);
+        let out = ask(&wider, r#"{"berth": "C", "length": 200}"#).await;
+        assert!(
+            out.content.contains("fender line condemned"),
+            "{}",
             out.content
         );
         let _ = std::fs::remove_dir_all(home);
