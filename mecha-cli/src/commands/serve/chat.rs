@@ -438,7 +438,7 @@ impl Recall {
         // no such table. Not the graph server's environment variable, which
         // mecha writes for that server and never has itself (review of
         // #890).
-        let url = Config::load_global()
+        let url = mecha_core::config::Config::load_global()
             .ok()
             .and_then(|cfg| cfg.documents.map(|d| d.embed_url))
             .unwrap_or_else(|| "http://127.0.0.1:8081".to_string());
