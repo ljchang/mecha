@@ -74,15 +74,17 @@ pub struct Args {
     /// the first request, and again after each call that works, for what
     /// that call returned. What is close is handed to the model; when
     /// nothing is, nothing is said. Needs the embeddings server, and a run
-    /// that cannot reach it does not start. Arms private data and outside
-    /// content.
+    /// that cannot reach it does not start. Arms private data, and outside
+    /// content when a passage handed over was outside content in the
+    /// session that held it.
     #[arg(long, conflicts_with_all = ["resume", "no_session", "images", "transcripts_deliver", "episodes_deliver"])]
     pub spans_deliver: bool,
 
     /// Hand over what `--spans-deliver` finds as the run's own memory: no
     /// outside-content envelope around it and no caution that it may no
-    /// longer hold. Only the wording changes; what was found still counts
-    /// as outside content for the send interlock.
+    /// longer hold. Only the wording changes: what is found arms private
+    /// data always, and counts as outside content for the send interlock
+    /// when a passage in it was outside content in the session that held it.
     #[arg(long, requires = "spans_deliver")]
     pub spans_own_voice: bool,
 
