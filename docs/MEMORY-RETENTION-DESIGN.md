@@ -167,7 +167,9 @@ resource state.
 - **Then episodes:** those that support or oppose the returned concepts, and
   those tied to the same goal or entities, through edges.
 - **Then text:** hybrid keyword and vector search over retained passages, with
-  a stored vector index, as the fallback.
+  a stored vector index, as the fallback. (§11.1 widens this index: over every
+  transcript span, kept or not, which is another artifact with another
+  privacy surface and sits under the gate rather than above it.)
 
 Resource state conditions ranking on the host side only. The standing rule
 that no sensor number, setpoint or valence enters a prompt holds.
@@ -499,7 +501,7 @@ which forgetting an early turn withdrew every later one.
 The measurements behind the split are the benchmark's (PR #875 and after):
 a store of everything that the model had to ask for was never asked;
 everything delivered by keyword helped where the lesson was an observed fact,
-at about twice the tokens, and failed where the earlier run had been
+and for more tokens, and failed where the earlier run had been
 confidently wrong, because the wrong conclusion was delivered unmarked;
 appraised episodes passed both for less. Storing without discrimination cost
 nothing. Delivering without it did.
@@ -515,7 +517,14 @@ it matter:
   (§4.4 step 5), which may build episodes from turns that tripped no signal
   when they happened.
 - **Use.** A span found by the broad index and followed by a success is
-  promoted. A downstream outcome is a label that costs nothing.
+  promoted. A downstream outcome is a label that costs nothing to compute.
+  It is not free of trust: this is the first signal whose antecedent is the
+  span's own content, so fetched text that nudges a run toward what a grader
+  calls success would buy itself a place in later recalls. §8.2 has the same
+  question open for concepts and it is not answered here. Promotion by use
+  therefore classifies the span's origin as the integration's recording walk
+  does, fail-closed, promotes nothing whose origin is not clean, and is the
+  arm measured last rather than assumed.
 
 So a miss by the gate is a delay and not a loss. And whether a thing is
 meaningful is not answered once at writing: an episode has many
@@ -529,8 +538,12 @@ The two layers are pruned differently, because they fail differently.
 and a superseded entry is the worst distractor there is: closest to the
 query, and wrong.
 
-- **Rank decays with disuse.** `replay_priority` (gain × need × decay)
-  already scores this for replay; recall reads the same term.
+- **Rank decays with disuse.** Nothing scores this yet. `replay_priority`
+  (gain × need × decay) is the nearest thing and is not it: its decay is by
+  age alone, its need counts recent runs in the same situation and not uses
+  of the entry, and it ranks sessions for replay, not entries for recall. A
+  count of when an entry was last handed over and borne out has to be kept
+  per entry, and is to be built.
 - **Supersession, never overwrite.** A contradicted episode is marked invalid
   from a time and kept. It stops being handed over and stays auditable.
 - **Retirement by outcome**, as a concept already has: handed over some
@@ -540,9 +553,14 @@ query, and wrong.
 - **A cap on what may be handed over at all**, however large the store.
 
 **The recorded layer fades and is not deleted.** A mundane span is one
-nothing promoted and whose rank has decayed: it is not found, which is all
-forgetting needs to be here, and it can still be promoted. Deletion is the
-owner's alone (`forget`), and follows dependencies as now.
+nothing promoted. It has no rank of its own to decay: it is found only when
+something asked is close to it, which for most spans is never, and that is
+all forgetting needs to be here. It can still be promoted. Deletion is the
+owner's alone, by forgetting the session (`mecha-core/src/forget.rs`), which
+removes the transcript and what every store derived from it; the index of
+the second layer is one more store that walk has to be taught. The
+prototype store's own `forget` purges that store only and leaves the
+transcript, so it makes a span unfindable there and deletes nothing.
 
 ### 11.4 What is not known, and the measurement
 
@@ -552,7 +570,9 @@ owner's alone (`forget`), and follows dependencies as now.
 - The retirement and decay thresholds.
 
 One family answers the first two: a fact that was unremarkable when it
-occurred and is needed later under a different goal. Arms: the gate alone;
+occurred and is needed later under a different goal. Arms: no memory, which
+is the control and the only thing that shows the probe is not solvable
+cold; the gate alone;
 the gate with the broad index; everything delivered; and the gate with the
 index and pruning, on a lifetime long enough to hold a superseded fact.
 Predictions are written in the manifest before the run, and the family is
@@ -560,5 +580,7 @@ held out until then.
 
 ### 11.5 What this changes in the build order
 
-The stored index of §4.5's third bullet moves up beside the gate (§7 step
-2), since the gate is only safe to trust with the index under it.
+A stored index moves up beside the gate (§7 step 2), and it is not the one
+§4.5's third bullet described: that one was over retained passages, above
+the gate. This one is over every transcript span, under the gate, and the
+gate is only safe to trust with this one under it.
