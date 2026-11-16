@@ -702,6 +702,51 @@ above, the index in its own voice; probes passed):
   whole result (review of #888). The yard's records are far shorter than
   the cut, so d3 measured the same line either way.
 
+**A passage keeps its origin, and a held-out lifetime where nothing can be
+looked up (2026-11-16, later).** The owner ruled that memory is not outside
+content for being memory, and that what was outside content when a session
+read it stays so when recalled, until an offline pass can clear it. Each
+passage in the index now keeps an origin read off its own session's taint
+record: the owner's words are the owner's; a tool's result or the
+assistant's reply is clean only out of a session that nothing from outside
+entered; a session whose record cannot say is not clean. A recall counts
+as outside content exactly when a passage in it does. The origin is the
+session's and not the moment's, so a reply written before a session's first
+outside read is counted with the ones after it.
+
+The depot lifetime (`eval/memory-depot.toml`) is the family §11.4 asked for
+after the yard: two tallies read bay records while a handover note rides in
+each and the second request carries a remark of the owner's; three later
+tasks each need one of those things, and no tool gives it back. Fixtures
+and predictions were committed before any arm ran, and it was run once
+(`memory-depot-h1`, one model, three seeds, nine probes an arm):
+
+| arm | probes passed | tokens in |
+|---|---|---|
+| none | 0/9 | 14k |
+| transcripts (keyword search of earlier sessions, once, at the start) | 6/9 | 18k |
+| the index, in an envelope | 9/9 | 24k |
+| the index, own voice | 9/9 | 19k |
+
+- The index's predictions held, with room: at least five and at least six
+  of nine were predicted. The control's held. Of the transcript arm's three,
+  two held (the owner's remark found, the code mostly not) and one failed:
+  the door was predicted at most one of three and passed two.
+- **The envelope cost nothing here.** Both index arms passed every probe.
+  With the yard's result (the wrapped arm lost its probes where a present
+  record was silent on what was remembered, and own voice did not), the
+  reading is that a warning around a memory costs uptake when something in
+  front of the run argues with it, and not otherwise. Own voice still used
+  a fifth fewer tokens.
+- **The owner's remark was found by meaning** from a request about a parcel
+  to a request about a tally, in every seed of both index arms: the open
+  part of the prediction, and it came out.
+- What this does not show: a second model, a longer history in which the
+  one useful passage has more to be confused with, or a fact that was later
+  replaced. One scripted dry run before the held-out run showed the door
+  note being retrieved; nothing was changed on it. The file is development
+  data from here.
+
 Not built: the gate beside this index in the web chat, promotion (§11.2),
 and every rule of §11.3. The index is a file in the mecha home, not yet in
 the encrypted store.

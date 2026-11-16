@@ -11,6 +11,11 @@
 # before any arm ran on it; not for tuning. A number from a second run of
 # this file is development data.
 #
+# Run once as held out on 2026-11-16 (`memory-depot-h1`), every arm. Probes
+# of nine: none 0, transcripts 6, spans 9, spans_own_voice 9. Every
+# prediction below held but one: the transcripts arm's door probe was
+# predicted at most one of three and passed two. Development data since.
+#
 #   mecha exp new eval/memory-depot.toml
 #   mecha exp run memory-depot
 
