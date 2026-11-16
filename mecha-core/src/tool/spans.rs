@@ -468,6 +468,25 @@ fn count(index: &Path) -> Result<usize> {
     Ok(n as usize)
 }
 
+/// Forget a session: every passage the index holds from it, and the mark
+/// that it was read. Returns how many passages went. The index is a store
+/// that copies from transcripts, so the owner's "permanently delete"
+/// (`crate::forget`) has to reach it: a refresh would drop a gone session's
+/// passages too, but only when the next run that uses the index starts, and
+/// until then they would be found and handed over.
+pub fn forget(home: &Path, session: &str) -> Result<usize> {
+    let index = dir_in(home);
+    if !index.join("index.db").exists() {
+        return Ok(0);
+    }
+    let mut conn = open(&index)?;
+    let tx = conn.transaction()?;
+    let gone = tx.execute("DELETE FROM spans WHERE session = ?1", [session])?;
+    tx.execute("DELETE FROM sessions WHERE session = ?1", [session])?;
+    tx.commit()?;
+    Ok(gone)
+}
+
 /// Every embedded passage, with its vector.
 fn embedded(index: &Path) -> Result<Vec<(i64, Span, Vec<f32>)>> {
     // A call reads and never makes: an index nothing has built holds
@@ -1017,6 +1036,20 @@ mod tests {
             spans.refresh().await.unwrap(),
         );
         assert!(ask(&spans, wide).await.content.contains("closed"));
+        // A session the owner forgets leaves the index at once, before any
+        // refresh: its passages are not found while its file still stands.
+        let forgotten = more.file_stem().unwrap().to_string_lossy().into_owned();
+        let asking = Spans::new(
+            dir_in(&home),
+            home.join("sessions"),
+            home.join("sessions/none.jsonl"),
+            Embedder::new(&embeddings().await).unwrap(),
+        );
+        assert!(forget(&home, &forgotten).unwrap() > 0);
+        assert!(!ask(&asking, wide).await.content.contains("closed"));
+        assert_eq!(forget(&home, &forgotten).unwrap(), 0);
+        spans.refresh().await.unwrap();
+        assert!(ask(&asking, wide).await.content.contains("closed"));
         // A transcript that is gone is quoted no more.
         std::fs::remove_file(more).unwrap();
         spans.refresh().await.unwrap();

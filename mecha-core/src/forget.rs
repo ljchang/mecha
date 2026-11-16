@@ -276,6 +276,9 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
         }
     };
     report.attempt("messages", purge_mailbox(&roots.messages, id));
+    // The index of what earlier sessions read and said (`tool::spans`):
+    // passages copied out of the transcript, found by meaning.
+    report.attempt("spans", crate::tool::spans::forget(&roots.home, id));
     // Corrections: the attempts this conversation made, the owner's verdicts
     // on them, and every record of one being handed to or from it.
     report.attempt(
