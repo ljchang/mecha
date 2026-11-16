@@ -29,9 +29,11 @@
 //! between a related passage and an unrelated one.
 //!
 //! **Nothing already in front of the run is handed back to it.** A passage
-//! the query contains is the query, and so is one made almost wholly of the
-//! query's words: the acknowledgement of one write is not news after
-//! another. One handed over earlier in the run is not said twice.
+//! the query contains is the query, and so is one that adds fewer than two
+//! words to it, not counting numbers: the acknowledgement of one write is
+//! not news after another. Counted as words added and never as a share of
+//! the passage, which would ask more of a notice the wider the record it
+//! sits in. One handed over earlier in the run is not said twice.
 //!
 //! Like [`super::transcripts`], this reads other conversations, whose taint
 //! lives on conversations that are not this one: every result arms private
@@ -82,9 +84,10 @@ const QUERY_BYTES: usize = 1_500;
 const ASKS_BYTES: usize = 16;
 /// Passages embedded per request.
 const BATCH: usize = 16;
-/// A passage with at least this share of its distinct words in the query
-/// says nothing the query does not.
-const RESTATES: f32 = 0.8;
+/// A passage must add at least this many words to the query, numbers
+/// aside, to say something the query does not. Two is a field's name and
+/// one word in it.
+const ADDS: usize = 2;
 
 /// Where a home keeps the index.
 pub fn dir_in(home: &Path) -> PathBuf {
@@ -219,8 +222,11 @@ fn label_of(label: &str) -> &'static str {
     }
 }
 
-/// Read every earlier session whose file has grown since it was last read,
-/// and keep its passages. How many sessions the index now covers.
+/// Read every earlier session whose file has changed since it was last
+/// read, and keep its passages. What a session no longer holds, and every
+/// passage of a session that is gone or may no longer be quoted, is taken
+/// out: an index is not re-read from the directory on every call as
+/// `transcripts` is, so it has to be told. How many sessions it now covers.
 fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> Result<usize> {
     let mut conn = open(index)?;
     let mut paths: Vec<PathBuf> = match std::fs::read_dir(sessions) {
@@ -233,6 +239,7 @@ fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> 
     };
     paths.sort();
     let mut covered = 0usize;
+    let mut kept: BTreeSet<String> = BTreeSet::new();
     for path in paths {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
@@ -245,6 +252,7 @@ fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> 
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
+        kept.insert(session.clone());
         let read: Option<i64> = conn
             .query_row(
                 "SELECT bytes FROM sessions WHERE session = ?1",
@@ -255,8 +263,22 @@ fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> 
         if read == Some(text.len() as i64) {
             continue;
         }
+        let now = spans_of(&session, &text);
         let tx = conn.transaction()?;
-        for span in spans_of(&session, &text) {
+        // A passage the session still holds keeps its row and its vector.
+        let had: Vec<(i64, String, String)> = {
+            let mut q = tx.prepare("SELECT id, label, text FROM spans WHERE session = ?1")?;
+            let rows = q
+                .query_map([&session], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<Result<_, _>>()?;
+            rows
+        };
+        for (id, label, text) in had {
+            if !now.iter().any(|s| s.label == label && s.text == text) {
+                tx.execute("DELETE FROM spans WHERE id = ?1", [id])?;
+            }
+        }
+        for span in now {
             tx.execute(
                 "INSERT OR IGNORE INTO spans (session, label, text) VALUES (?1, ?2, ?3)",
                 params![span.session, span.label, span.text],
@@ -266,6 +288,17 @@ fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> 
             "INSERT OR REPLACE INTO sessions (session, bytes) VALUES (?1, ?2)",
             params![session, text.len() as i64],
         )?;
+        tx.commit()?;
+    }
+    let indexed: Vec<String> = {
+        let mut q = conn.prepare("SELECT session FROM sessions")?;
+        let rows = q.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        rows
+    };
+    for session in indexed.iter().filter(|s| !kept.contains(*s)) {
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM spans WHERE session = ?1", [session])?;
+        tx.execute("DELETE FROM sessions WHERE session = ?1", [session])?;
         tx.commit()?;
     }
     Ok(covered)
@@ -359,8 +392,10 @@ fn choose(
     let asked_words: BTreeSet<String> = words(&asked).into_iter().collect();
     let restates = |text: &str| {
         let has: BTreeSet<String> = words(text).into_iter().collect();
-        let shared = has.iter().filter(|w| asked_words.contains(*w)).count();
-        shared as f32 >= RESTATES * has.len() as f32
+        has.iter()
+            .filter(|w| !asked_words.contains(*w) && !w.chars().all(|c| c.is_ascii_digit()))
+            .count()
+            < ADDS
     };
     // Only vectors made the query's way: one of another length is another
     // model's, and its cosine says nothing.
@@ -467,6 +502,12 @@ impl Spans {
                 "asked for {} embeddings, got {}",
                 batch.len(),
                 vectors.len()
+            );
+            // And each as wide as the first: one of another width would be
+            // kept, never compared with anything, and never embedded again.
+            anyhow::ensure!(
+                vectors.iter().all(|v| v.len() == vectors[0].len()),
+                "the embeddings server mixed vector widths in one batch"
             );
             let dims = vectors.first().map(Vec::len).unwrap_or(0);
             let rows: Vec<(i64, Vec<u8>)> = batch
@@ -744,6 +785,30 @@ mod tests {
             ask(&spans, "wrote 17 bytes to a file").await.content,
             NOTHING
         );
+        // A notice of one word on a record with many fields is news, and is
+        // not taken for the record said again.
+        let wide =
+            r#"{"berth": "A", "length": 80, "bollards": 6, "vessel": "none", "weather": "sunny"}"#;
+        let noticed = format!("{} notice closed", wide);
+        let (more, _) = (
+            session(
+                &home.join("sessions"),
+                SessionKind::Run,
+                looked_up("w1", "yard_berth", &noticed).to_vec(),
+            ),
+            spans.refresh().await.unwrap(),
+        );
+        assert!(ask(&spans, wide).await.content.contains("closed"));
+        // A transcript that is gone is quoted no more.
+        std::fs::remove_file(more).unwrap();
+        spans.refresh().await.unwrap();
+        let again = Spans::new(
+            dir_in(&home),
+            home.join("sessions"),
+            home.join("sessions/none.jsonl"),
+            Embedder::new(&embeddings().await).unwrap(),
+        );
+        assert!(!ask(&again, wide).await.content.contains("closed"));
         // Something about nothing the sessions held is under the floor.
         assert_eq!(ask(&spans, "a vessel").await.content, NOTHING);
         let _ = std::fs::remove_dir_all(home);
