@@ -412,6 +412,12 @@ fn choose(
     };
     // Only vectors made the query's way: one of another length is another
     // model's, and its cosine says nothing.
+    let handed_texts: BTreeSet<String> = spans
+        .iter()
+        .filter(|(id, _, _)| handed.contains(id))
+        .map(|(_, span, _)| squeezed(&span.text))
+        .collect();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
     let near: Vec<(usize, f32)> = spans
         .iter()
         .enumerate()
@@ -423,6 +429,14 @@ fn choose(
         })
         .map(|(at, (_, _, vec))| (at, embed::cosine(qvec, vec)))
         .filter(|(_, likeness)| *likeness >= FLOOR)
+        // One record read in two sessions is two rows and one passage: the
+        // earliest stands for it, and none of them once any was handed
+        // over. Otherwise the same words take both places, or come back
+        // under another row's id (review of #887).
+        .filter(|(at, _)| {
+            let text = squeezed(&spans[*at].1.text);
+            !handed_texts.contains(&text) && seen.insert(text)
+        })
         .collect();
     if near.is_empty() {
         return vec![];
@@ -949,6 +963,47 @@ mod tests {
             "the reading with the notice is not first: {}",
             out.content
         );
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// A record read in two earlier sessions is one passage: it takes one
+    /// place, leaving the other to the next thing that bears, and is not
+    /// handed over a second time from the other session's row.
+    #[tokio::test]
+    async fn a_record_two_sessions_read_is_handed_over_once() {
+        let home = home();
+        let sessions = home.join("sessions");
+        for id in ["a1", "a2"] {
+            session(
+                &sessions,
+                SessionKind::Run,
+                looked_up(id, "yard_berth", WITH_NOTICE).to_vec(),
+            );
+        }
+        session(
+            &sessions,
+            SessionKind::Run,
+            looked_up("a3", "yard_berth", SIBLING).to_vec(),
+        );
+        let current = session(&sessions, SessionKind::Run, vec![]);
+        let spans = Spans::new(
+            dir_in(&home),
+            sessions,
+            current,
+            Embedder::new(&embeddings().await).unwrap(),
+        );
+        spans.refresh().await.unwrap();
+        let now = r#"{"berth": "C", "length": 200}"#;
+        let out = ask(&spans, now).await;
+        assert_eq!(
+            out.content.matches("fender line condemned").count(),
+            1,
+            "{}",
+            out.content
+        );
+        assert!(out.content.contains("reefer plugs dead"), "{}", out.content);
+        // And the other session's copy does not come back later.
+        assert_eq!(ask(&spans, now).await.content, NOTHING);
         let _ = std::fs::remove_dir_all(home);
     }
 
