@@ -1085,6 +1085,13 @@ pub fn blurb(f: crate::feature::Feature) -> &'static str {
              pass reads as a correction. Kept on this machine, and brought up when a \
              later ask in the web chat goes the same way. You are never asked for a reason."
         }
+        Feature::Recall => {
+            "Remembering what was said: your earlier web chats and one-shot runs are indexed \
+             on this machine, and when something in one bears on the chat you are in, the \
+             assistant is handed it. Only what you said, and what was said or read where \
+             nothing from outside had come in; never a persona's chat, a call or a \
+             stranger's request."
+        }
         // Parts are summarised under their parent and never stepped alone.
         Feature::Incognito
         | Feature::Tasks
@@ -2274,6 +2281,7 @@ mod tests {
                 "code",
                 "memory",
                 "corrections",
+                "recall",
                 "charter"
             ]
             .into_iter()

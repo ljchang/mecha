@@ -751,6 +751,13 @@ and predictions were committed before any arm ran, and it was run once
   note being retrieved; nothing was changed on it. The file is development
   data from here.
 
-Not built: the gate beside this index in the web chat, promotion (§11.2),
-and every rule of §11.3. The index is a file in the mecha home, not yet in
+**In the web chat (2026-11-16, later still).** `[features] recall`, off by
+default: the index asked with the owner's words before a turn and with what
+a call returned after it, clean passages only, never the chat's own turns
+(`docs/ARCHITECTURE.md` §Recall). Tested end to end with a scripted model;
+not measured with a real one, and not yet run over a real history, where
+the one passage that bears has far more to be mistaken for.
+
+Not built: an appraisal gate beside this index, promotion (§11.2), and
+every rule of §11.3. The index is a file in the mecha home, not yet in
 the encrypted store.

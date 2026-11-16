@@ -186,7 +186,7 @@ which puts the resident sum near 59 GiB rather than 50.
 | Feature | Model | Runs on | How it holds memory | Cost on the GB10 (GiB) | What it counts | Evidence |
 |---|---|---|---|---|---|---|
 | chat — every feature | Qwen3.6-35B-A3B Q4_K_M, with its vision projector | GPU | Resident | ~44.2 | the pinned files and four 262k slots' cache; an uncensored build of the same base read 41.5 GiB on the GB10 before its MTP graft and 44.7 after; not counted: the chat server's process memory, and the router's prompt cache (`cache-ram`, up to 16 GiB) | Arithmetic |
-| embeddings — `graph`, `documents`, `personas` | harrier-oss-v1-0.6b f16, 32k context | GPU | On demand | 5.8 | loaded: GPU and process memory | Measured 2026-10-02 |
+| embeddings — `graph`, `documents`, `personas`, `recall` | harrier-oss-v1-0.6b f16, 32k context | GPU | On demand | 5.8 | loaded: GPU and process memory | Measured 2026-10-02 |
 | OCR — `ocr` | PaddleOCR-VL 1.6 (GGUF and projector) | GPU | On demand | 3.4 | loaded: GPU and process memory | Measured 2026-10-02 |
 | layout — `layout` | PP-DocLayoutV3 (ONNX) | CPU | Per request | 1.1 | peak process memory | Measured 2026-09-29 |
 | image generation — `image` | Qwen-Image 2.1 int8 ConvRot, in ComfyUI | GPU | Released on idle | ~22.8 | peak, a picture from cold: ~1.1 idle after the reset and ~19.2 to load, + ~2.5 for SAM 3.1 when an edit segments (measured 2026-10-16; ~1.9 of it stays loaded); ~15.8 warm, ~14.4 loaded and idle (the Q4's measured figures, carried up by what the int8 file measured above it on 2026-10-04: ~0.7 from cold, ~0.8 warm); not counted: from the resident sum, the ~1.1 GiB ComfyUI holds between pictures after the idle reset | Arithmetic |

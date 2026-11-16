@@ -946,6 +946,8 @@ pub async fn execute(
             failed_stem: spans::FAILED_STEM.into(),
             // A turn that reads a handful of records asks once for each.
             limit: 10,
+            // Nobody is waiting on a one-shot run's turn.
+            deadline: None,
             own_voice: args.spans_own_voice,
         });
     }

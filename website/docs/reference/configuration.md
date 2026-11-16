@@ -477,6 +477,7 @@ setup` asks about it. `mecha features enable <id>` writes `true` in place; a
 # code = false       # programs over tool results (code)
 # memory = false     # the assistant's own encrypted memory of its runs
 # corrections = false  # drafts you changed or rejected, steers and next messages read as corrections, recalled on a like ask
+# recall = false     # what your earlier chats and runs said, found when it bears on a chat
 ```
 
 `mail_rules` requires `mail` and defaults off. With either switch off, the

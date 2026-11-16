@@ -121,8 +121,8 @@ const ABSENT_WORDS: usize = 12;
 /// this its passages would stay as the older rule took them for good
 /// (review of #888). 2: a tool result is taken without the envelope it was
 /// rendered in. 3: a passage
-/// keeps its origin.
-const EXTRACTION: &str = "3";
+/// keeps its origin. 4: a session's mark says whether it is a web chat.
+const EXTRACTION: &str = "4";
 /// What closes a list of them that was cut.
 const ABSENT_MORE: &str = "and others";
 
@@ -374,7 +374,7 @@ fn open(dir: &Path) -> Result<Connection> {
          PRAGMA journal_mode = WAL;
          PRAGMA secure_delete = ON;
          CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-         CREATE TABLE IF NOT EXISTS sessions (session TEXT PRIMARY KEY, bytes INTEGER NOT NULL);
+         CREATE TABLE IF NOT EXISTS sessions (session TEXT PRIMARY KEY, bytes INTEGER NOT NULL, web INTEGER NOT NULL DEFAULT 0);
          CREATE TABLE IF NOT EXISTS spans (
              id INTEGER PRIMARY KEY,
              session TEXT NOT NULL,
@@ -407,6 +407,23 @@ fn open(dir: &Path) -> Result<Connection> {
             }
         }
     }
+    // And one made before a session's mark said whether it is a web chat.
+    let marks_web = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'web'")?
+        .exists([])?;
+    if !marks_web {
+        if let Err(e) = conn.execute(
+            "ALTER TABLE sessions ADD COLUMN web INTEGER NOT NULL DEFAULT 0",
+            [],
+        ) {
+            let now = conn
+                .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'web'")?
+                .exists([])?;
+            if !now {
+                return Err(e).context("adding session kinds to the span index");
+            }
+        }
+    }
     Ok(conn)
 }
 
@@ -423,7 +440,12 @@ fn label_of(label: &str) -> &'static str {
 /// passage of a session that is gone or may no longer be quoted, is taken
 /// out: an index is not re-read from the directory on every call as
 /// `transcripts` is, so it has to be told. How many sessions it now covers.
-fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> Result<usize> {
+fn read_sessions(
+    index: &Path,
+    sessions: &Path,
+    current: Option<&Path>,
+    trial: bool,
+) -> Result<usize> {
     let mut conn = open(index)?;
     // What cannot be read stops the pass, and so the start of the run that
     // asked for it: a directory or a transcript that merely failed to read
@@ -437,7 +459,8 @@ fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> 
                 let path = entry
                     .with_context(|| format!("listing {}", sessions.display()))?
                     .path();
-                if path.extension().is_some_and(|x| x == "jsonl") && path != current {
+                if path.extension().is_some_and(|x| x == "jsonl") && Some(path.as_path()) != current
+                {
                     paths.push(path);
                 }
             }
@@ -458,8 +481,12 @@ fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> 
         })
         .optional()?;
     if taken.as_deref() != Some(EXTRACTION) {
-        let tx = conn.transaction()?;
-        tx.execute("DELETE FROM sessions", [])?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        // The marks stay and are made stale, never deleted: a mark also
+        // says whether its session is a web chat, which a search filters
+        // on, and with the marks gone for the length of the re-read every
+        // web chat's passages would have been anyone's (review of #890).
+        tx.execute("UPDATE sessions SET bytes = -1", [])?;
         tx.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('extraction', ?1)",
             [EXTRACTION],
@@ -489,9 +516,9 @@ fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> 
                 .with_context(|| format!("reading {}", path.display()))?;
             line
         };
-        if !super::transcripts::searchable(&header, trial) {
+        let Some(is_web) = admitted(&header, trial) else {
             continue;
-        }
+        };
         // A transcript is appended to and never rewritten shorter or in
         // place, so one as long as it was when it was indexed is the one
         // that was indexed: it is read no further than its header. Reading
@@ -518,7 +545,7 @@ fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> 
         covered += 1;
         kept.insert(session.clone());
         let now = spans_of(&session, &text);
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         // A passage the session still holds keeps its row and its vector.
         let had: Vec<(i64, String, String)> = {
             let mut q = tx.prepare("SELECT id, label, text FROM spans WHERE session = ?1")?;
@@ -540,8 +567,8 @@ fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> 
             )?;
         }
         tx.execute(
-            "INSERT OR REPLACE INTO sessions (session, bytes) VALUES (?1, ?2)",
-            params![session, text.len() as i64],
+            "INSERT OR REPLACE INTO sessions (session, bytes, web) VALUES (?1, ?2, ?3)",
+            params![session, text.len() as i64, is_web],
         )?;
         tx.commit()?;
     }
@@ -556,7 +583,7 @@ fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> 
         rows
     };
     for session in indexed.iter().filter(|s| !kept.contains(*s)) {
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute("DELETE FROM spans WHERE session = ?1", [session])?;
         tx.execute("DELETE FROM sessions WHERE session = ?1", [session])?;
         tx.commit()?;
@@ -579,7 +606,7 @@ fn unembedded(index: &Path) -> Result<Vec<(i64, String)>> {
 /// compares the two, and they are embedded again as the passes come round.
 fn keep_vectors(index: &Path, rows: Vec<(i64, Vec<u8>)>, dims: usize) -> Result<()> {
     let mut conn = open(index)?;
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let had: Option<String> = tx
         .query_row("SELECT value FROM meta WHERE key = 'dims'", [], |r| {
             r.get(0)
@@ -615,7 +642,7 @@ fn width(index: &Path) -> Result<Option<usize>> {
 /// Drop every vector kept, for a server that now embeds at `dims`.
 fn drop_vectors(index: &Path, dims: usize) -> Result<()> {
     let mut conn = open(index)?;
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     tx.execute("UPDATE spans SET vec = NULL", [])?;
     tx.execute(
         "INSERT OR REPLACE INTO meta (key, value) VALUES ('dims', ?1)",
@@ -632,6 +659,37 @@ fn count(index: &Path) -> Result<usize> {
     Ok(n as usize)
 }
 
+// Every write here opens its transaction as a writer from the start
+// (`Immediate`). A deferred one that reads and then writes is refused at
+// once when another connection wrote in between, whatever the busy timeout:
+// the door's refresh and a one-shot run's, or two passes of a test, then
+// fail with "database is locked" instead of waiting their turn (found when
+// the web chat's background refresh met a second one).
+
+/// Whether a session is history this index holds, and if so whether it is
+/// one of the owner's web chats: what [`super::transcripts::searchable`]
+/// admits (a one-shot run's, a trial's in its own home), and web chats. A
+/// closed list read from the session's own header: a front-door
+/// conversation, a persona's, a voice call, a delegated task, a test and
+/// anything unreadable stay out.
+///
+/// The same answer whoever asks. The index is one file for a home, and a
+/// pass drops what it does not admit: when admission turned on the caller,
+/// a one-shot run's pass deleted every web chat's passages and the next
+/// chat embedded them all again (review of #890). Which of them a caller
+/// is handed is decided when it searches (`embedded`).
+fn admitted(header: &str, trial: bool) -> Option<bool> {
+    use crate::session::{Record, SessionKind};
+    if super::transcripts::searchable(header, trial) {
+        return Some(false);
+    }
+    matches!(
+        header.lines().next().map(serde_json::from_str::<Record>),
+        Some(Ok(Record::Meta(meta))) if meta.kind == Some(SessionKind::Web)
+    )
+    .then_some(true)
+}
+
 /// Forget a session: every passage the index holds from it, and the mark
 /// that it was read. Returns how many passages went. The index is a store
 /// that copies from transcripts, so the owner's "permanently delete"
@@ -644,7 +702,7 @@ pub fn forget(home: &Path, session: &str) -> Result<usize> {
         return Ok(0);
     }
     let mut conn = open(&index)?;
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let gone = tx.execute("DELETE FROM spans WHERE session = ?1", [session])?;
     tx.execute("DELETE FROM sessions WHERE session = ?1", [session])?;
     tx.commit()?;
@@ -652,7 +710,7 @@ pub fn forget(home: &Path, session: &str) -> Result<usize> {
 }
 
 /// Every embedded passage, with its vector.
-fn embedded(index: &Path) -> Result<Vec<(i64, Span, Vec<f32>)>> {
+fn embedded(index: &Path, web: bool) -> Result<Vec<(i64, Span, Vec<f32>)>> {
     // A call reads and never makes: an index nothing has built holds
     // nothing, and asking it must not leave one behind.
     if !index.join("index.db").exists() {
@@ -660,9 +718,14 @@ fn embedded(index: &Path) -> Result<Vec<(i64, Span, Vec<f32>)>> {
     }
     let conn = open(index)?;
     let mut q = conn.prepare(
-        "SELECT id, session, label, text, vec, outside FROM spans WHERE vec IS NOT NULL ORDER BY id",
+        // A caller that does not take web chats as history is not handed
+        // their passages; they stay in the index for one that does.
+        "SELECT id, session, label, text, vec, outside FROM spans
+         WHERE vec IS NOT NULL
+           AND (?1 OR session NOT IN (SELECT session FROM sessions WHERE web = 1))
+         ORDER BY id",
     )?;
-    let rows = q.query_map([], |r| {
+    let rows = q.query_map([web], |r| {
         let label: String = r.get(2)?;
         let blob: Vec<u8> = r.get(4)?;
         Ok((
@@ -693,12 +756,29 @@ fn squeezed(text: &str) -> String {
 /// The passages to hand over for `query`: those at or over the floor by
 /// meaning and not already in front of the run, ordered by the words of the
 /// query they hold and then by meaning. Best first, with each one's id.
-fn choose(
+///
+/// A conversation that names itself has its own session's passages left
+/// out, and one that asks for clean passages only has left out, when
+/// `clean` is set, is every passage that was outside content, in any session
+/// that held the same words. With how many were left out for that.
+fn choose_for(
     spans: &[(i64, Span, Vec<f32>)],
     query: &str,
     qvec: &[f32],
     handed: &BTreeSet<i64>,
-) -> Vec<(i64, Span)> {
+    conversation: Option<&str>,
+    clean: bool,
+) -> (Vec<(i64, Span)>, usize) {
+    let outside_texts: BTreeSet<String> = if clean {
+        spans
+            .iter()
+            .filter(|(_, span, _)| span.outside)
+            .map(|(_, span, _)| squeezed(&span.text))
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
+    let withheld = std::cell::Cell::new(0usize);
     let asked = squeezed(query);
     let asked_words: BTreeSet<String> = words(&asked).into_iter().collect();
     let restates = |text: &str| {
@@ -721,6 +801,7 @@ fn choose(
         .enumerate()
         .filter(|(_, (id, span, vec))| {
             vec.len() == qvec.len()
+                && Some(span.session.as_str()) != conversation
                 && !handed.contains(id)
                 && !asked.contains(squeezed(&span.text).as_str())
                 && !restates(&span.text)
@@ -735,9 +816,18 @@ fn choose(
             let text = squeezed(&spans[*at].1.text);
             !handed_texts.contains(&text) && seen.insert(text)
         })
+        // Last, so that what is counted as withheld is what would have been
+        // a candidate: near enough, and not already said.
+        .filter(|(at, _)| {
+            let outside = outside_texts.contains(&squeezed(&spans[*at].1.text));
+            if outside {
+                withheld.set(withheld.get() + 1);
+            }
+            !outside
+        })
         .collect();
     if near.is_empty() {
-        return vec![];
+        return (vec![], withheld.get());
     }
     // By words, over the same passages: how rare each of the query's words
     // is among them, and how many of them a passage has.
@@ -774,7 +864,8 @@ fn choose(
             .then(near[*b].1.total_cmp(&near[*a].1))
             .then(near[*a].0.cmp(&near[*b].0))
     });
-    best.into_iter()
+    let hits = best
+        .into_iter()
         .take(HITS)
         .map(|i| {
             let at = near[i].0;
@@ -787,18 +878,29 @@ fn choose(
                 .any(|(_, other, _)| other.outside && squeezed(&other.text) == text);
             (spans[at].0, span)
         })
-        .collect()
+        .collect();
+    (hits, withheld.get())
 }
 
 pub struct Spans {
     index: PathBuf,
     sessions: PathBuf,
-    /// The transcript this run is being recorded in: its turns are in
-    /// context, not history.
-    current: PathBuf,
+    /// The transcript this run is being recorded in, when the tool serves
+    /// one run: its turns are in context, not history, and are not indexed.
+    /// `None` for a tool many conversations share (`Spans::shared`), which
+    /// indexes every session and leaves the asking one out of each search
+    /// by its id (`conversation` in the input).
+    current: Option<PathBuf>,
+    /// Whether the owner's web chats are history too, beside one-shot runs.
+    web: bool,
     embedder: Embedder,
-    /// What this run has been handed, so nothing is said twice.
-    handed: Mutex<BTreeSet<i64>>,
+    /// What each conversation has been handed, so nothing is said twice in
+    /// it. Keyed by the conversation's session id, and by the empty string
+    /// for the one run a tool made with [`Spans::new`] serves.
+    handed: Mutex<std::collections::BTreeMap<String, BTreeSet<i64>>>,
+    /// Passages left out of a search that asked for clean ones only because
+    /// they were outside content: counted, never said to the run.
+    withheld: std::sync::atomic::AtomicU64,
 }
 
 impl Spans {
@@ -806,10 +908,44 @@ impl Spans {
         Spans {
             index,
             sessions,
-            current,
+            current: Some(current),
+            web: false,
             embedder,
-            handed: Mutex::new(BTreeSet::new()),
+            handed: Mutex::new(Default::default()),
+            withheld: Default::default(),
         }
+    }
+
+    /// One tool for every conversation of a long-lived host (the web chat):
+    /// the owner's chats are history beside one-shot runs, every session is
+    /// indexed, and each search names the conversation asking so that its
+    /// own turns are left out and what it was handed is remembered for it.
+    pub fn shared(index: PathBuf, sessions: PathBuf, embedder: Embedder) -> Self {
+        Spans {
+            index,
+            sessions,
+            current: None,
+            web: true,
+            embedder,
+            handed: Mutex::new(Default::default()),
+            withheld: Default::default(),
+        }
+    }
+
+    /// Ask the embeddings server for one small embedding and keep nothing:
+    /// it starts on demand, and a host that knows a search is coming has it
+    /// up first. A failure is the search's to report.
+    pub async fn warm(&self) {
+        let _ = self
+            .embedder
+            .embed(&["warm".to_string()], Task::Passage)
+            .await;
+    }
+
+    /// How many passages searches that asked for clean ones only have left
+    /// out for being outside content, since this tool was made.
+    pub fn withheld(&self) -> u64 {
+        self.withheld.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Bring the index up to the home's earlier sessions and embed what is
@@ -825,9 +961,10 @@ impl Spans {
             self.current.clone(),
         );
         let trial = crate::experiment::in_experiment_home();
-        let covered =
-            tokio::task::spawn_blocking(move || read_sessions(&index, &sessions, &current, trial))
-                .await??;
+        let covered = tokio::task::spawn_blocking(move || {
+            read_sessions(&index, &sessions, current.as_deref(), trial)
+        })
+        .await??;
         // The width the server gives now, against the width the index was
         // embedded at. Asked every time and not only when there is something
         // new to embed: with nothing new, vectors of another width would
@@ -936,7 +1073,7 @@ impl Tool for Spans {
         Some(crate::tool::effect::Effect::Read)
     }
 
-    async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+    async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let query = match input.get("query").and_then(Value::as_str) {
             Some(q) if !words(q).is_empty() => cut(q, QUERY_BYTES).to_string(),
             _ => {
@@ -967,12 +1104,48 @@ impl Tool for Spans {
             .get("record")
             .and_then(Value::as_str)
             .map(str::to_string);
+        // The conversation asking, by its session id, and whether it takes
+        // clean passages only. The harness's to give, as `record` is, and
+        // as unenforced: a caller that names them gets what it asked for,
+        // which is never more than a search without them returns.
+        let conversation = input
+            .get("conversation")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let clean = input.get("clean").and_then(Value::as_bool) == Some(true);
+        // What was handed is remembered for the conversation the harness
+        // named, and for a call the model made itself, which names none,
+        // for the conversation its turn is stamped with: one bucket for
+        // every such call would have one chat's hits withheld from every
+        // other for the life of the host (review of #890). The model's own
+        // call is not kept from its own session's passages: that needs the
+        // session's id, which only the harness gives.
+        let key = conversation
+            .clone()
+            .or_else(|| ctx.conversation.clone())
+            .unwrap_or_default();
+        let web = self.web;
         let index = self.index.clone();
-        let handed = self.handed.lock().map(|h| h.clone()).unwrap_or_default();
-        let hits = tokio::task::spawn_blocking(move || -> Result<Vec<(i64, Span)>> {
-            Ok(choose(&embedded(&index)?, &query, &qvec, &handed))
-        })
-        .await??;
+        let handed = self
+            .handed
+            .lock()
+            .map(|h| h.get(&key).cloned().unwrap_or_default())
+            .unwrap_or_default();
+        let asking = conversation.clone();
+        let (hits, withheld) =
+            tokio::task::spawn_blocking(move || -> Result<(Vec<(i64, Span)>, usize)> {
+                Ok(choose_for(
+                    &embedded(&index, web)?,
+                    &query,
+                    &qvec,
+                    &handed,
+                    asking.as_deref(),
+                    clean,
+                ))
+            })
+            .await??;
+        self.withheld
+            .fetch_add(withheld as u64, std::sync::atomic::Ordering::Relaxed);
         if hits.is_empty() {
             // The tool's own words and not `.from_outside()`, on purpose:
             // unwrapped, they are what the loop and the run command compare
@@ -980,7 +1153,10 @@ impl Tool for Spans {
             return Ok(ToolOutput::ok(NOTHING));
         }
         if let Ok(mut handed) = self.handed.lock() {
-            handed.extend(hits.iter().map(|(id, _)| *id));
+            handed
+                .entry(key)
+                .or_default()
+                .extend(hits.iter().map(|(id, _)| *id));
         }
         let mut out = format!(
             "{} passage(s) from earlier sessions, closest first:\n",
@@ -1733,6 +1909,106 @@ mod tests {
         }
         let out = ask_in(torn_rewrite).await;
         assert!(out.content.contains("fender line condemned") && out.external);
+    }
+
+    /// One tool for a host's many conversations: the owner's web chats are
+    /// history, a conversation is never handed its own turns, what it was
+    /// handed is remembered for it and not for another, and a search that
+    /// takes clean passages only leaves the others out and counts them.
+    #[tokio::test]
+    async fn one_tool_serves_many_conversations_and_hands_a_chat_only_clean_passages() {
+        let home = home();
+        let sessions = home.join("sessions");
+        let web = |messages: Vec<Message>, untrusted: bool| {
+            let path = session(&sessions, SessionKind::Web, messages);
+            let line = serde_json::to_string(&Record::Taint(crate::agent::Taint {
+                private: true,
+                untrusted,
+            }))
+            .unwrap();
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            writeln!(file, "{line}").unwrap();
+            path.file_stem().unwrap().to_string_lossy().into_owned()
+        };
+        let said = web(
+            vec![Message::user(
+                "berth C has a notice, the fender line is condemned",
+            )],
+            false,
+        );
+        web(looked_up("s1", "yard_berth", SIBLING).to_vec(), true);
+        // A persona's chat, a call and a stranger's request are not history.
+        for kind in [
+            SessionKind::Voice,
+            SessionKind::Frontdoor,
+            SessionKind::Task,
+        ] {
+            session(
+                &sessions,
+                kind,
+                vec![Message::user("berth C notice weather sunny vessel")],
+            );
+        }
+        let spans = Spans::shared(
+            dir_in(&home),
+            sessions.clone(),
+            Embedder::new(&embeddings().await).unwrap(),
+        );
+        assert_eq!(spans.refresh().await.unwrap().0, 2);
+        let ctx = ToolCtx::default().with_workspace(std::env::temp_dir());
+        let query = r#"{"berth": "C", "length": 200, "notice": "?"}"#;
+        let ask_as = |conversation: &str, clean: bool| {
+            spans.call(
+                json!({ "query": query, "conversation": conversation, "clean": clean }),
+                &ctx,
+            )
+        };
+        // Another chat, clean passages only: the owner's words, and not the
+        // record out of the chat that read outside content.
+        let out = ask_as("another", true).await.unwrap();
+        assert!(
+            out.content.contains("fender line is condemned"),
+            "{}",
+            out.content
+        );
+        assert!(!out.content.contains("reefer plugs dead") && !out.external);
+        assert_eq!(spans.withheld(), 1);
+        // Said once to that chat, and still to be said to a third.
+        assert_eq!(ask_as("another", true).await.unwrap().content, NOTHING);
+        assert!(ask_as("third", true)
+            .await
+            .unwrap()
+            .content
+            .contains("fender line is condemned"));
+        // The chat that said it is not handed its own words back.
+        assert!(!ask_as(&said, true)
+            .await
+            .unwrap()
+            .content
+            .contains("fender line is condemned"));
+        // A one-shot run's pass over the same index takes nothing of the
+        // chats away, and a one-shot run is not handed them.
+        let run = Spans::new(
+            dir_in(&home),
+            sessions.clone(),
+            home.join("sessions/none.jsonl"),
+            Embedder::new(&embeddings().await).unwrap(),
+        );
+        assert_eq!(run.refresh().await.unwrap(), (2, 0));
+        assert_eq!(ask(&run, query).await.content, NOTHING);
+        assert!(ask_as("fifth", true)
+            .await
+            .unwrap()
+            .content
+            .contains("fender line is condemned"));
+        // Without the limit, the outside passage is handed over as one.
+        let all = ask_as("fourth", false).await.unwrap();
+        assert!(all.content.contains("reefer plugs dead") && all.external);
+        let _ = std::fs::remove_dir_all(home);
     }
 
     /// A record read in two earlier sessions is one passage: it takes one
