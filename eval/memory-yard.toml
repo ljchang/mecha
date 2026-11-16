@@ -26,6 +26,9 @@
 # voice stays at six of six, spans within one probe of four, and each index
 # arm's tokens in fall, since an acknowledgement no longer asks.
 #
+# `memory-yard-d4`: 0, 3, 6; pass rates held, tokens in did not fall (32k and 23k
+# against 32k and 24k), so that half of the prediction failed.
+#
 #   mecha exp new eval/memory-yard.toml
 #   mecha exp run memory-yard
 

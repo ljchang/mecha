@@ -613,6 +613,7 @@ above, the index in its own voice; probes passed):
 |---|---|---|---|
 | d2 | own voice: no outside-content envelope, no line that it may no longer hold | 0/6, 3/6, 6/6 | 0/6, 2/6, 2/6 |
 | d3 | and, in every index arm, the line naming what a passage holds that the record just read does not | 0/6, 4/6, 6/6 | 0/6, 1/6, 5/6 |
+| d4 | and the search made with the result alone, not the warning rendered around it | 0/6, 3/6, 6/6 | 0/6, 2/6, 6/6 |
 
 - **The wording was the cause of the uptake failure in the plain lifetime.**
   Retrieval was the same in both index arms; with the envelope and the
@@ -639,6 +640,19 @@ above, the index in its own voice; probes passed):
   differ, a berth's letter and `true` among them; and the search after a
   write hands back earlier acknowledgements that differ by a file's path.
   Both are spent tokens, not yet trimmed.
+- **d2 and d3 searched with the warning around each result.** The loop
+  hands the after-call search a result as it was rendered, and an outside
+  result is rendered inside the envelope, so the warning's words were in
+  every query and an acknowledgement was never short enough to ask nothing
+  (review of #888). d4 is the same arms with that fixed. Pass rates were
+  predicted to hold and did, own voice passing every probe of both
+  lifetimes; tokens in were predicted to fall and did not by more than a
+  thousand in any arm (plain own voice 24k to 23k, wrapped 32k to 32k), so
+  that half of the prediction failed: the searches an acknowledgement used
+  to make were not where the tokens went.
+- **Own voice is not no framing.** Its stems still say the passage is not
+  an instruction from anyone. What went is the envelope's order to treat
+  the text strictly as data and the caution that it may no longer hold.
 - **What the runs did not exercise.** The absence line was first computed
   against the result as cut for the search; it is now computed against the
   whole result (review of #888). The yard's records are far shorter than

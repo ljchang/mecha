@@ -29,6 +29,9 @@
 # alone: own voice passes at least four of six probes, and each index arm's
 # tokens in fall.
 #
+# `memory-yard-superseded-d4`: 0, 2, 6 of six; pass rates held, tokens in fell by
+# about a thousand an arm, which is not the fall predicted.
+#
 #   mecha exp new eval/memory-yard-superseded.toml
 #   mecha exp run memory-yard-superseded
 
