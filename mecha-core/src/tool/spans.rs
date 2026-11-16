@@ -35,10 +35,17 @@
 //! the passage, which would ask more of a notice the wider the record it
 //! sits in. One handed over earlier in the run is not said twice.
 //!
-//! Like [`super::transcripts`], this reads other conversations, whose taint
-//! lives on conversations that are not this one: every result arms private
-//! data and counts as outside content. It is registered only where the
-//! owner asked for it by flag.
+//! **A passage is what it was when it was first read.** The owner's ruling of
+//! 2026-11-16: memory is not outside content for being memory, and what was
+//! outside content when a session read it is outside content when it is
+//! recalled, until an offline pass exists that can clear it. So each passage
+//! keeps its origin, read off its own session's record: the owner's words
+//! are the owner's; what a tool returned or the assistant said is clean only
+//! in a session whose recorded taint says nothing from outside ever entered
+//! it, and a session whose record cannot say (torn, or older than the
+//! record) is not clean. A result counts as outside content exactly when a
+//! passage in it does. Every result is the owner's private data either way.
+//! It is registered only where the owner asked for it by flag.
 //!
 //! The index is a file in the mecha home beside the transcripts it is cut
 //! from, and as readable as they are. It belongs in the encrypted store once
@@ -113,8 +120,9 @@ const ABSENT_WORDS: usize = 12;
 /// transcripts again: a finished session's length never changes, so without
 /// this its passages would stay as the older rule took them for good
 /// (review of #888). 2: a tool result is taken without the envelope it was
-/// rendered in.
-const EXTRACTION: &str = "2";
+/// rendered in. 3: a passage keeps
+/// its origin.
+const EXTRACTION: &str = "3";
 /// What closes a list of them that was cut.
 const ABSENT_MORE: &str = "and others";
 
@@ -207,6 +215,37 @@ struct Span {
     session: String,
     label: &'static str,
     text: String,
+    /// Whether this was, or may have been shaped by, outside content when
+    /// its session held it. See the module's rule; unknown is `true`.
+    outside: bool,
+}
+
+/// Whether anything from outside entered a session, by its own record: the
+/// taint checkpoints every front-end writes after a run. `true` as well when
+/// the record cannot say: no checkpoint at all, or messages after the last
+/// one, which is a file torn before the run that wrote them was closed.
+/// Coarser than it could be: a reply written before the session's first
+/// outside read is counted with those after it. That errs toward caution,
+/// and the session's own taint, which only grows, errs the same way.
+fn held_outside_content(transcript: &str) -> bool {
+    use crate::session::Record;
+    let (mut untrusted, mut covered, mut any) = (false, false, false);
+    for record in transcript
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<Record>(l).ok())
+    {
+        match record {
+            Record::Taint(taint) => {
+                untrusted |= taint.untrusted;
+                covered = true;
+                any = true;
+            }
+            Record::Message(_) => covered = false,
+            _ => {}
+        }
+    }
+    untrusted || !covered || !any
 }
 
 /// The passages of one transcript: what the owner said, what the assistant
@@ -215,6 +254,7 @@ struct Span {
 /// which hold earlier tasks' words and earlier hits; not a line a harness
 /// handed over; and not a message the harness wrote.
 fn spans_of(session: &str, transcript: &str) -> Vec<Span> {
+    let tainted = held_outside_content(transcript);
     let mut lookups: BTreeSet<String> = BTreeSet::new();
     let mut out: Vec<Span> = Vec::new();
     for message in crate::session::Session::messages_ever(transcript) {
@@ -257,6 +297,9 @@ fn spans_of(session: &str, transcript: &str) -> Vec<Span> {
                 session: session.to_string(),
                 label,
                 text: text.to_string(),
+                // The owner's words are the owner's whatever else the
+                // session held. Anything else follows the session.
+                outside: label != "owner" && tainted,
             };
             // The same words read twice in one session are one passage.
             if !out.contains(&span) {
@@ -290,10 +333,24 @@ fn open(dir: &Path) -> Result<Connection> {
              label TEXT NOT NULL,
              text TEXT NOT NULL,
              vec BLOB,
+             outside INTEGER NOT NULL DEFAULT 1,
              UNIQUE (session, label, text)
          );",
     )
     .context("creating the span index")?;
+    // An index made before passages kept their origin gains the column,
+    // every passage in it counted as outside until its session is read
+    // again, which the extraction number sees to.
+    let has_origin = conn
+        .prepare("SELECT 1 FROM pragma_table_info('spans') WHERE name = 'outside'")?
+        .exists([])?;
+    if !has_origin {
+        conn.execute(
+            "ALTER TABLE spans ADD COLUMN outside INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .context("adding origins to the span index")?;
+    }
     Ok(conn)
 }
 
@@ -421,8 +478,9 @@ fn read_sessions(index: &Path, sessions: &Path, current: &Path, trial: bool) -> 
         }
         for span in now {
             tx.execute(
-                "INSERT OR IGNORE INTO spans (session, label, text) VALUES (?1, ?2, ?3)",
-                params![span.session, span.label, span.text],
+                "INSERT INTO spans (session, label, text, outside) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (session, label, text) DO UPDATE SET outside = excluded.outside",
+                params![span.session, span.label, span.text, span.outside],
             )?;
         }
         tx.execute(
@@ -546,7 +604,7 @@ fn embedded(index: &Path) -> Result<Vec<(i64, Span, Vec<f32>)>> {
     }
     let conn = open(index)?;
     let mut q = conn.prepare(
-        "SELECT id, session, label, text, vec FROM spans WHERE vec IS NOT NULL ORDER BY id",
+        "SELECT id, session, label, text, vec, outside FROM spans WHERE vec IS NOT NULL ORDER BY id",
     )?;
     let rows = q.query_map([], |r| {
         let label: String = r.get(2)?;
@@ -557,6 +615,7 @@ fn embedded(index: &Path) -> Result<Vec<(i64, Span, Vec<f32>)>> {
                 session: r.get(1)?,
                 label: label_of(&label),
                 text: r.get(3)?,
+                outside: r.get(5)?,
             },
             embed::from_blob(&blob),
         ))
@@ -663,7 +722,14 @@ fn choose(
         .take(HITS)
         .map(|i| {
             let at = near[i].0;
-            (spans[at].0, spans[at].1.clone())
+            let mut span = spans[at].1.clone();
+            // One passage standing for the same words in several sessions
+            // is outside content if it was in any of them.
+            let text = squeezed(&span.text);
+            span.outside = spans
+                .iter()
+                .any(|(_, other, _)| other.outside && squeezed(&other.text) == text);
+            (spans[at].0, span)
         })
         .collect()
 }
@@ -880,9 +946,13 @@ impl Tool for Spans {
                 ));
             }
         }
-        // Another conversation's content: where its bytes came from is not
-        // this conversation's to know.
-        Ok(ToolOutput::ok(out).from_outside())
+        // Outside content when a passage in it was: see the module's rule.
+        let out = ToolOutput::ok(out);
+        Ok(if hits.iter().any(|(_, span)| span.outside) {
+            out.from_outside()
+        } else {
+            out
+        })
     }
 }
 
@@ -1407,6 +1477,105 @@ mod tests {
             NOTHING
         );
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// A session closed by a taint record of the given kind.
+    fn closed(dir: &Path, messages: Vec<Message>, untrusted: bool) -> PathBuf {
+        let path = session(dir, SessionKind::Run, messages);
+        let line = serde_json::to_string(&Record::Taint(crate::agent::Taint {
+            private: true,
+            untrusted,
+        }))
+        .unwrap();
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(file, "{line}").unwrap();
+        path
+    }
+
+    /// Memory is not outside content for being memory. A passage is what it
+    /// was when its session held it: clean out of a session nothing from
+    /// outside entered, outside out of one something did, and outside when
+    /// the session's record cannot say. The owner's words are the owner's
+    /// in any of them.
+    #[tokio::test]
+    async fn a_passage_is_outside_content_only_when_it_was_in_its_own_session() {
+        let ask_in = |home: PathBuf| async move {
+            let spans = Spans::new(
+                dir_in(&home),
+                home.join("sessions"),
+                home.join("sessions/none.jsonl"),
+                Embedder::new(&embeddings().await).unwrap(),
+            );
+            spans.refresh().await.unwrap();
+            let out = ask(&spans, r#"{"berth": "C", "length": 200}"#).await;
+            let _ = std::fs::remove_dir_all(home);
+            out
+        };
+        let read = || looked_up("o1", "yard_berth", WITH_NOTICE).to_vec();
+
+        // Nothing from outside entered the session, and its record says so.
+        let clean = home();
+        closed(&clean.join("sessions"), read(), false);
+        let out = ask_in(clean).await;
+        assert!(
+            out.content.contains("fender line condemned"),
+            "{}",
+            out.content
+        );
+        assert!(
+            !out.external,
+            "a clean session's passage was counted outside"
+        );
+
+        // Something did.
+        let tainted = home();
+        closed(&tainted.join("sessions"), read(), true);
+        let out = ask_in(tainted).await;
+        assert!(out.content.contains("fender line condemned") && out.external);
+
+        // The record cannot say: no checkpoint closes the session.
+        let torn = home();
+        session(&torn.join("sessions"), SessionKind::Run, read());
+        assert!(ask_in(torn).await.external);
+
+        // And a checkpoint that messages were written after covers nothing
+        // that followed it.
+        let reopened = home();
+        let path = closed(&reopened.join("sessions"), vec![], false);
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            for m in read() {
+                writeln!(
+                    file,
+                    "{}",
+                    serde_json::to_string(&Record::Message(m)).unwrap()
+                )
+                .unwrap();
+            }
+        }
+        assert!(ask_in(reopened).await.external);
+
+        // The owner's words out of a session that held outside content are
+        // still the owner's.
+        let said = home();
+        closed(
+            &said.join("sessions"),
+            vec![Message::user(
+                "the berth C notice says the fender line is condemned, length 200",
+            )],
+            true,
+        );
+        let out = ask_in(said).await;
+        assert!(out.content.contains("· owner]"), "{}", out.content);
+        assert!(!out.external);
     }
 
     /// A record read in two earlier sessions is one passage: it takes one
