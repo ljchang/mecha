@@ -601,6 +601,43 @@ section's own claims:
   and is not handed over. Not measured; the superseded family is where it
   would show.
 
+**How it is handed over (2026-11-16, after the owner's rulings of that day).**
+The owner ruled that memory is trusted as it is stored, with looking for what
+was planted in it left to an offline pass, and that the harness says when
+something remembered is absent from the record in front of the run. Two
+changes follow, both on the after-call search, both development data on the
+yard lifetimes (one model, three seeds, three arms: none, the index as
+above, the index in its own voice; probes passed):
+
+| run | what changed | plain: none / index / own voice | superseded: none / index / own voice |
+|---|---|---|---|
+| d2 | own voice: no outside-content envelope, no line that it may no longer hold | 0/6, 3/6, 6/6 | 0/6, 2/6, 2/6 |
+| d3 | and, in every index arm, the line naming what a passage holds that the record just read does not | 0/6, 4/6, 6/6 | 0/6, 1/6, 5/6 |
+
+- **The wording was the cause of the uptake failure in the plain lifetime.**
+  Retrieval was the same in both index arms; with the envelope and the
+  caution gone the reefer probe went from none of three to three of three in
+  both runs, for fewer tokens in than the wrapped arm. The prediction was
+  written first and held.
+- **Only the wording changed.** `ResultRecall::own_voice` strips the
+  envelope after the search was dispatched as any call is, so what it
+  returned still counts toward the conversation's taint and a send the
+  model addresses is still refused. Whether remembered content should stop
+  counting once an offline screen exists is not decided, and no such screen
+  is built.
+- **Two predictions for d3 failed.** In the superseded lifetime the own-voice
+  reefer probe was predicted to stay at most one of three and passed three
+  of three; its length probe was predicted to reach three and stayed at two.
+  One transcript was read: the run was handed both boards' notices for the
+  berths, took the dead-plug notices for A and B as standing, and chose D.
+  Why d2 failed the same probe with the same notices in the index has not
+  been read out of its transcripts, so the gain is not yet attributed to the
+  absence line, and at three probes an arm it may not be one.
+- **What the transcript also showed.** The absence line lists whatever words
+  differ, a berth's letter and `true` among them; and the search after a
+  write hands back earlier acknowledgements that differ by a file's path.
+  Both are spent tokens, not yet trimmed.
+
 Not built: the gate beside this index in the web chat, promotion (§11.2),
 and every rule of §11.3. The index is a file in the mecha home, not yet in
 the encrypted store.
