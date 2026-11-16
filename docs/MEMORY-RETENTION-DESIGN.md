@@ -641,6 +641,67 @@ section's own claims:
   and is not handed over. Not measured; the superseded family is where it
   would show.
 
+**How it is handed over (2026-11-16, after the owner's rulings of that day).**
+The owner ruled that memory is trusted as it is stored, with looking for what
+was planted in it left to an offline pass, and that the harness says when
+something remembered is absent from the record in front of the run. Two
+changes follow, both on the after-call search, both development data on the
+yard lifetimes (one model, three seeds, three arms: none, the index as
+above, the index in its own voice; probes passed):
+
+| run | what changed | plain: none / index / own voice | superseded: none / index / own voice |
+|---|---|---|---|
+| d2 | own voice: no outside-content envelope, no line that it may no longer hold | 0/6, 3/6, 6/6 | 0/6, 2/6, 2/6 |
+| d3 | and, in every index arm, the line naming what a passage holds that the record just read does not | 0/6, 4/6, 6/6 | 0/6, 1/6, 5/6 |
+| d4 | d3's arms again (see below: the change it was run for touched nothing these runs do) | 0/6, 3/6, 6/6 | 0/6, 2/6, 6/6 |
+
+- **The wording was the cause of the uptake failure in the plain lifetime.**
+  Retrieval was the same in both index arms; with the envelope and the
+  caution gone the reefer probe went from none of three to three of three in
+  both runs, for fewer tokens in than the wrapped arm. The prediction was
+  written first and held.
+- **Only the wording changed.** `ResultRecall::own_voice` strips the
+  envelope after the search was dispatched as any call is, so what it
+  returned still counts toward the conversation's taint and a send the
+  model addresses is still refused. Whether remembered content should stop
+  counting once an offline screen exists is not decided, and no such screen
+  is built.
+- **Two predictions for d3 failed.** In the superseded lifetime the own-voice
+  reefer probe was predicted to stay at most one of three and passed three
+  of three; its length probe was predicted to reach three and stayed at two.
+  One transcript was read: the run was handed both boards' notices for the
+  berths, took the dead-plug notices for A and B as standing, and chose D.
+  One d2 transcript of the same probe was read afterwards: the run recalled
+  that B's plugs were dead, read B again, said the record in front of it
+  showed no adverse notice, and kept B. That is the behaviour the absence
+  line is for, and it is one transcript a run: consistent with the line
+  being the cause, and at three probes an arm not shown to be.
+- **What the transcript also showed.** The absence line lists whatever words
+  differ, a berth's letter and `true` among them; and the search after a
+  write hands back earlier acknowledgements that differ by a file's path.
+  Both are spent tokens, not yet trimmed.
+- **d4 changed nothing that these runs exercise, and is a replicate.** A
+  review of #888 found that the after-call search was handed a result as
+  the loop renders it, envelope and all when the result came from outside,
+  and that fix is what d4 was run for. An earlier version of this section
+  said d2 and d3 had therefore searched with the warning in every query.
+  They had not: none of the 243 sessions of the six runs holds a yard
+  result in an envelope (counted from the session files), so in these
+  lifetimes the fix changed no query. The pass-rate prediction for d4 held
+  for that reason, and the prediction that tokens in would fall failed for
+  the same one. What d4 is, then, is a second run of d3's arms: own voice
+  passed 6 and 6 of the plain probes, and 5 and 6 of the superseded ones.
+  The fix, and the same one for a passage indexed out of an enveloped
+  result, are for homes whose tools' results are rendered in envelopes,
+  which no run here measured.
+- **Own voice is not no framing.** Its stems still say the passage is not
+  an instruction from anyone. What went is the envelope's order to treat
+  the text strictly as data and the caution that it may no longer hold.
+- **What the runs did not exercise.** The absence line was first computed
+  against the result as cut for the search; it is now computed against the
+  whole result (review of #888). The yard's records are far shorter than
+  the cut, so d3 measured the same line either way.
+
 Not built: the gate beside this index in the web chat, promotion (§11.2),
 and every rule of §11.3. The index is a file in the mecha home, not yet in
 the encrypted store.

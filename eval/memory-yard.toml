@@ -13,6 +13,26 @@
 # answer the notices allowed, and the index's ranking was changed on what
 # that run showed. A number from a later run of this file is not held out.
 #
+# Development runs, 2026-11-16, arms none / spans / spans_own_voice, probes
+# of six an arm. `memory-yard-d2`: 0, 3, 6 (reefer 0/3, 0/3, 3/3); the
+# own-voice prediction held. Written before `memory-yard-d3`, which adds to
+# the after-call search the line naming what a passage holds that the record
+# just read does not: own voice stays at six of six, and spans, which keeps
+# its envelope and its caution, gains at most one reefer probe.
+#
+# `memory-yard-d3`: 0, 4, 6; both predictions held. d2 and d3 searched with
+# the outside-content warning still around each result (review of #888).
+# Written before `memory-yard-d4`, which searches with the result alone: own
+# voice stays at six of six, spans within one probe of four, and each index
+# arm's tokens in fall, since an acknowledgement no longer asks.
+#
+# `memory-yard-d4`: 0, 3, 6; pass rates held, tokens in did not fall (32k and 23k
+# against 32k and 24k), so that half of the prediction failed.
+#
+# Correction: no yard result in d2, d3 or d4 was recorded in an envelope, so
+# the statement above that d2 and d3 searched with the warning is wrong for
+# these runs, and d4 is a replicate of d3 (docs/MEMORY-RETENTION-DESIGN.md §11.6).
+#
 #   mecha exp new eval/memory-yard.toml
 #   mecha exp run memory-yard
 
@@ -90,3 +110,12 @@ memory = "spans"
 [arms.spans.prediction]
 metric = "failure"
 rationale = "Written before the run, and after the arm was built: nothing is gated, so the notices are in the index, and the harness asks it with what each call returns. The vessel's record names reefer plugs and a berth's record is its own earlier record less the notice, so the notice that bears is handed over after the call it bears on. At least four of six probes pass, for fewer tokens than delivered."
+
+[arms.spans_own_voice]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "spans_own_voice"
+
+[arms.spans_own_voice.prediction]
+metric = "failure"
+rationale = "Written before the arm ran, on development data (2026-11-16, after memory-yard-d1): the spans arm's retrieval handed the right notice after the right call and the model set it aside, citing the outside-content envelope and the line that it may no longer hold. With both gone and the passage said as the run's own memory, the reefer probe passes at least two of three where spans passed none, the length probe stays at three of three, and tokens in stay within a tenth of the spans arm's. If reefer stays at none, the wording was not the cause and the conflict with a silent present record is."

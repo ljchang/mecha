@@ -79,6 +79,13 @@ pub struct Args {
     #[arg(long, conflicts_with_all = ["resume", "no_session", "images", "transcripts_deliver", "episodes_deliver"])]
     pub spans_deliver: bool,
 
+    /// Hand over what `--spans-deliver` finds as the run's own memory: no
+    /// outside-content envelope around it and no caution that it may no
+    /// longer hold. Only the wording changes; what was found still counts
+    /// as outside content for the send interlock.
+    #[arg(long, requires = "spans_deliver")]
+    pub spans_own_voice: bool,
+
     /// The embeddings server `--spans-deliver` asks. Loopback only.
     #[arg(
         long,
@@ -624,7 +631,17 @@ pub async fn execute(
                 "mecha: spans cover {covered} earlier session(s), {embedded} passage(s) newly embedded; delivered {} bytes",
                 if found { dispatched.content.len() } else { 0 }
             );
-            found.then(|| format!("{}{}", spans::DELIVERY_STEM, dispatched.content))
+            found.then(|| {
+                if args.spans_own_voice {
+                    format!(
+                        "{}{}",
+                        spans::OWN_DELIVERY_STEM,
+                        spans::in_own_voice(&dispatched.content)
+                    )
+                } else {
+                    format!("{}{}", spans::DELIVERY_STEM, dispatched.content)
+                }
+            })
         }
         _ => delivered,
     };
@@ -918,10 +935,16 @@ pub async fn execute(
         cx.recall_on_result = Some(mecha_core::agent::ResultRecall {
             tool: spans::NAME.into(),
             input: std::sync::Arc::new(spans::result_input),
-            stem: spans::CUE_STEM.into(),
+            stem: if args.spans_own_voice {
+                spans::OWN_CUE_STEM.into()
+            } else {
+                spans::CUE_STEM.into()
+            },
             nothing: spans::NOTHING.into(),
+            failed_stem: spans::FAILED_STEM.into(),
             // A turn that reads a handful of records asks once for each.
             limit: 10,
+            own_voice: args.spans_own_voice,
         });
     }
     #[cfg(feature = "memory-prototype")]

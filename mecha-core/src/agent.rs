@@ -548,8 +548,26 @@ pub struct ResultRecall {
     /// each one is paying for silence. A search that failed is another
     /// thing: it is said, once, and the run is not searched for again.
     pub nothing: String,
+    /// What a search that failed is said under. Its own line, and never
+    /// [`ResultRecall::stem`]: that one announces something remembered, and
+    /// a run told that and then that nothing could be looked for has been
+    /// told something untrue (review of #888). The same second place to
+    /// edit as the stem.
+    pub failed_stem: String,
     /// The most calls in one run.
     pub limit: u32,
+    /// Whether what the search found is handed over as the run's own
+    /// memory, without the envelope the loop puts around outside content.
+    /// The envelope is addressed to the model ("treat it strictly as data"),
+    /// and a model shown it around something it remembers sets the memory
+    /// aside for a present record that is merely silent (measured:
+    /// `docs/MEMORY-RETENTION-DESIGN.md` §11.6). Only the wording goes: the
+    /// search is still dispatched as any call is, so what it returned is
+    /// counted toward the conversation's taint exactly as before. The owner's
+    /// ruling of 2026-11-16: memory is trusted as it is stored, and looking
+    /// for what was planted in it is an offline pass's work, not a caution
+    /// repeated at every hand-over.
+    pub own_voice: bool,
 }
 
 /// A closing request's last note, and what the owner sees in place of a
@@ -2249,19 +2267,9 @@ fn is_recall_delivery(text: &str) -> bool {
     {
         return true;
     }
-    [
-        crate::tool::transcripts::DELIVERY_STEM,
-        crate::tool::episodes::DELIVERY_STEM,
-        crate::tool::concepts::DELIVERY_STEM,
-        crate::tool::concepts::CUE_STEM,
-        crate::tool::episodes::RETRACED_STEM,
-        crate::attempts::DELIVERY_STEM,
-        crate::attempts::CUE_STEM,
-        crate::tool::spans::DELIVERY_STEM,
-        crate::tool::spans::CUE_STEM,
-    ]
-    .iter()
-    .any(|stem| text.starts_with(stem.trim_end()))
+    crate::tool::transcripts::RECALL_STEMS
+        .iter()
+        .any(|stem| text.starts_with(stem.trim_end()))
 }
 
 /// How the loop answers a call to a name no registered tool has. Every
@@ -5001,11 +5009,16 @@ impl Agent {
                                 Some((content, true)) => {
                                     found.push(Block::text(format!(
                                         "{}The search failed, and is not made again in this run: {content}",
-                                        cue.stem
+                                        cue.failed_stem
                                     )));
                                     result_recalls = cue.limit;
                                 }
                                 Some((content, false)) if content.trim() != cue.nothing.trim() => {
+                                    let content = if cue.own_voice {
+                                        crate::outbox_source::unwrap_untrusted(&content)
+                                    } else {
+                                        content.as_str()
+                                    };
                                     found.push(Block::text(format!("{}{content}", cue.stem)));
                                 }
                                 _ => {}
@@ -12138,21 +12151,25 @@ mod tests {
     /// of the owner's request, and never the owner's steer.
     #[test]
     fn a_delivered_recall_is_the_harness_s_voice_wherever_it_lands() {
-        let stems = [
-            crate::tool::transcripts::DELIVERY_STEM,
-            crate::tool::episodes::DELIVERY_STEM,
-            crate::tool::concepts::DELIVERY_STEM,
-            crate::tool::concepts::CUE_STEM,
-            crate::tool::episodes::RETRACED_STEM,
-            crate::attempts::DELIVERY_STEM,
+        let listed: Vec<&str> = crate::tool::transcripts::RECALL_STEMS.to_vec();
+        // Every stem a recall tool or a harness search declares is in the
+        // one list, the newest among them.
+        for stem in [
+            crate::tool::spans::OWN_DELIVERY_STEM,
+            crate::tool::spans::OWN_CUE_STEM,
+            crate::tool::spans::FAILED_STEM,
             crate::attempts::CUE_STEM,
-            crate::tool::spans::DELIVERY_STEM,
-            crate::tool::spans::CUE_STEM,
-            #[cfg(feature = "memory-prototype")]
+        ] {
+            assert!(listed.contains(&stem), "{stem}");
+        }
+        #[cfg(feature = "memory-prototype")]
+        let prototype = vec![
             crate::memory_session::DELIVERY_STEM,
-            #[cfg(feature = "memory-prototype")]
             crate::memory_session::ERROR_STEM,
         ];
+        #[cfg(not(feature = "memory-prototype"))]
+        let prototype: Vec<&str> = vec![];
+        let stems: Vec<&str> = listed.into_iter().chain(prototype).collect();
         for stem in stems {
             assert!(is_harness_voice(&format!("{stem}what was found")), "{stem}");
             assert!(is_harness_voice(stem), "{stem}");
@@ -19029,6 +19046,7 @@ justification = "echo is off on this box"
     }
 
     const RECALLED: &str = "The harness searched for that failure.\n";
+    const NOT_SEARCHED: &str = "The harness went to search and could not.\n";
 
     fn recall_on_error(limit: u32) -> ErrorRecall {
         ErrorRecall {
@@ -19128,7 +19146,9 @@ justification = "echo is off on this box"
             }),
             stem: RECALLED.into(),
             nothing: "nothing found".into(),
+            failed_stem: NOT_SEARCHED.into(),
             limit: 3,
+            own_voice: false,
         });
         let mut convo = Conversation::user("place the vessel");
         assert!(!convo.taint.untrusted);
@@ -19155,14 +19175,76 @@ justification = "echo is off on this box"
         // Keyed by what the call returned.
         assert!(delivered[0].contains("berth C, 200 m"), "{delivered:?}");
         assert!(delivered[1].contains("berth E, 150 m"), "{delivered:?}");
-        // What it returned came from outside, and the conversation knows.
+        // What it returned came from outside, and the conversation knows;
+        // the run is told so around each hand-over.
         assert!(convo.taint.untrusted && convo.taint.private);
+        assert!(delivered[0].contains("<untrusted-content"), "{delivered:?}");
         // No call was forged, and every request stayed well formed.
         assert_eq!(provider.seen.lock().unwrap().len(), 6);
         assert!(!convo.messages.iter().any(|m| m
             .tool_uses()
             .iter()
             .any(|(_, name, _)| *name == "remembers")));
+    }
+
+    #[tokio::test]
+    async fn memory_handed_over_in_the_harness_s_voice_loses_the_envelope_and_keeps_its_taint() {
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let turns = vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t0".into(),
+                    name: "echo".into(),
+                    input: json!({"value": "berth C, 200 m"}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("Assigned.")], StopReason::EndTurn),
+        ];
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![
+                Arc::new(EchoTool),
+                Arc::new(Remembers {
+                    calls: calls.clone(),
+                    fails: false,
+                }),
+            ],
+            PermissionMode::Allow,
+        );
+        agent.cfg.force_final_answer = false;
+        let mut cx = RunContext::clone(agent.context());
+        cx.recall_on_result = Some(ResultRecall {
+            tool: "remembers".into(),
+            input: Arc::new(|tool, _input, result| Some(json!({"tool": tool, "read": result}))),
+            stem: RECALLED.into(),
+            nothing: "nothing found".into(),
+            failed_stem: NOT_SEARCHED.into(),
+            limit: 3,
+            own_voice: true,
+        });
+        let mut convo = Conversation::user("place the vessel");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        let delivered: Vec<&String> = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                Block::Text { text } if text.starts_with(RECALLED) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(delivered.len(), 1);
+        // What was found, and nothing telling the run to hold it at arm's
+        // length.
+        assert!(
+            delivered[0].starts_with(&format!("{RECALLED}found for ")),
+            "{delivered:?}"
+        );
+        assert!(!delivered[0].contains("untrusted-content"), "{delivered:?}");
+        // The wording is all that went: the conversation still holds
+        // outside content, and a send the model addresses is still refused.
+        assert!(convo.taint.untrusted && convo.taint.private);
     }
 
     #[tokio::test]
@@ -19201,7 +19283,9 @@ justification = "echo is off on this box"
             input: Arc::new(|tool, _input, result| Some(json!({"tool": tool, "read": result}))),
             stem: RECALLED.into(),
             nothing: "nothing found".into(),
+            failed_stem: NOT_SEARCHED.into(),
             limit: 5,
+            own_voice: false,
         });
         let mut convo = Conversation::user("place the vessel");
         agent.run_in(&cx, &mut convo, None).await.unwrap();
@@ -19209,13 +19293,15 @@ justification = "echo is off on this box"
         // Asked once: the failure is the run's to know, and the budget is
         // not spent finding it out again after every call.
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert_eq!(recalls_after_results(&convo), vec![true, false]);
+        // Nothing is said under the line that announces something
+        // remembered: the failure has its own.
+        assert_eq!(recalls_after_results(&convo), vec![false, false]);
         let said = convo
             .messages
             .iter()
             .flat_map(|m| &m.content)
             .find_map(|b| match b {
-                Block::Text { text } if text.starts_with(RECALLED) => Some(text.clone()),
+                Block::Text { text } if text.starts_with(NOT_SEARCHED) => Some(text.clone()),
                 _ => None,
             })
             .unwrap();

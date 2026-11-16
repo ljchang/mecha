@@ -13,6 +13,29 @@
 # answer the notices allowed, and the index's ranking was changed on what
 # that run showed. A number from a later run of this file is not held out.
 #
+# Development runs, 2026-11-16, arms none / spans / spans_own_voice.
+# `memory-yard-superseded-d2`: length 0/3, 2/3, 2/3; reefer-after 0/3 in
+# every arm; both own-voice predictions held, and spans passed length twice
+# where d1 had it at none. Written before `memory-yard-superseded-d3`, which
+# adds the line naming what a passage holds that the record just read does
+# not: own-voice length reaches three of three, and reefer-after stays at
+# most one of three, since the line speaks for a replaced notice as readily
+# as for the one that replaced it.
+#
+# `memory-yard-superseded-d3`: own voice reefer-after 3/3 and length 2/3,
+# both predictions failed (at most one, and three). d2 and d3 searched with
+# the outside-content warning still around each result (review of #888).
+# Written before `memory-yard-superseded-d4`, which searches with the result
+# alone: own voice passes at least four of six probes, and each index arm's
+# tokens in fall.
+#
+# `memory-yard-superseded-d4`: 0, 2, 6 of six; pass rates held, tokens in fell by
+# about a thousand an arm, which is not the fall predicted.
+#
+# Correction: no yard result in d2, d3 or d4 was recorded in an envelope, so
+# the statement above that d2 and d3 searched with the warning is wrong for
+# these runs, and d4 is a replicate of d3 (docs/MEMORY-RETENTION-DESIGN.md §11.6).
+#
 #   mecha exp new eval/memory-yard-superseded.toml
 #   mecha exp run memory-yard-superseded
 
@@ -91,3 +114,12 @@ memory = "spans"
 [arms.spans.prediction]
 metric = "failure"
 rationale = "Written before the run, and after the arm was built: the index holds both boards' records and nothing in it says which is current, so the reefer probe is handed the berth whose plugs have since died about as often as the one that replaced it: at most one of three. The length probe passes as in memory-yard, at least two of three. This arm has no rule for a fact that was replaced; that rule is what the lifetime is for."
+
+[arms.spans_own_voice]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "spans_own_voice"
+
+[arms.spans_own_voice.prediction]
+metric = "failure"
+rationale = "Written before the arm ran, on development data (2026-11-16, after memory-yard-superseded-d1): the length probe passes at least two of three, where spans passed none, since its notice was handed over and set aside. The reefer probe stays at most one of three: the index holds both boards' notices with nothing saying which is current, and trusting memory more makes the replaced notice as persuasive as the one that replaced it. That is the pruning rule's work, not this arm's."
