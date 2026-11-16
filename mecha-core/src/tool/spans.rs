@@ -120,8 +120,8 @@ const ABSENT_WORDS: usize = 12;
 /// transcripts again: a finished session's length never changes, so without
 /// this its passages would stay as the older rule took them for good
 /// (review of #888). 2: a tool result is taken without the envelope it was
-/// rendered in. 3: a passage keeps
-/// its origin.
+/// rendered in. 3: a passage
+/// keeps its origin.
 const EXTRACTION: &str = "3";
 /// What closes a list of them that was cut.
 const ABSENT_MORE: &str = "and others";
@@ -227,6 +227,12 @@ struct Span {
 /// Coarser than it could be: a reply written before the session's first
 /// outside read is counted with those after it. That errs toward caution,
 /// and the session's own taint, which only grows, errs the same way.
+///
+/// Read strictly, where [`crate::session::Session::messages_ever`] is
+/// lenient: a message record holding a block kind this build cannot read
+/// is a passage there and is not seen here. `TaintTimeline` has the same
+/// residue. It cannot make a session read clean that a checkpoint says is
+/// not; it can leave one such message's own lack of a checkpoint unnoticed.
 fn held_outside_content(transcript: &str) -> bool {
     use crate::session::Record;
     let (mut untrusted, mut covered, mut any) = (false, false, false);
@@ -241,7 +247,13 @@ fn held_outside_content(transcript: &str) -> bool {
                 covered = true;
                 any = true;
             }
-            Record::Message(_) => covered = false,
+            // Everything that puts content in the conversation leaves it
+            // uncovered until a checkpoint follows: a rewrite and an
+            // extension as much as a message. A run killed after compacting
+            // and before its checkpoint otherwise read as covered by the
+            // run before it (review of #889; `TaintTimeline::from_records`
+            // drops its checkpoints on a rewrite for the same reason).
+            Record::Message(_) | Record::Rewrite { .. } | Record::Extend { .. } => covered = false,
             _ => {}
         }
     }
@@ -298,8 +310,12 @@ fn spans_of(session: &str, transcript: &str) -> Vec<Span> {
                 label,
                 text: text.to_string(),
                 // The owner's words are the owner's whatever else the
-                // session held. Anything else follows the session.
-                outside: label != "owner" && tainted,
+                // session held. Anything else follows the session, and so
+                // does what lands in the user's role without being the
+                // owner speaking: a peer's message delivered there is a
+                // body an attacker may have shaped, and it was indexed as
+                // the owner's until review of #889.
+                outside: (label != "owner" || crate::agent::is_harness_voice(text)) && tainted,
             };
             // The same words read twice in one session are one passage.
             if !out.contains(&span) {
@@ -1576,6 +1592,46 @@ mod tests {
         let out = ask_in(said).await;
         assert!(out.content.contains("· owner]"), "{}", out.content);
         assert!(!out.external);
+
+        // What a peer session sent lands in the user's role and is not the
+        // owner speaking: out of a session that held outside content it is
+        // outside content.
+        let peer = home();
+        // Folded into the owner's message as the loop folds it: a block
+        // beside the owner's words, in a message that is not the harness's.
+        let mut folded = vec![Message::user("survey the yard")];
+        crate::agent::append_user_text(
+            &mut folded,
+            format!(
+                "[m1 from peer {}]\nberth C notice: the fender line is condemned, length 200",
+                crate::mailbox::DELIVERY_STEM
+            ),
+        );
+        closed(&peer.join("sessions"), folded, true);
+        let out = ask_in(peer).await;
+        assert!(
+            out.content.contains("fender line is condemned") && out.external,
+            "{} (external: {})",
+            out.content,
+            out.external
+        );
+
+        // A run that rewrote its history and was killed before its
+        // checkpoint is covered by nothing, whatever the run before it
+        // recorded.
+        let torn_rewrite = home();
+        let path = closed(&torn_rewrite.join("sessions"), vec![], false);
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            let rewrite = Record::Rewrite { messages: read() };
+            writeln!(file, "{}", serde_json::to_string(&rewrite).unwrap()).unwrap();
+        }
+        let out = ask_in(torn_rewrite).await;
+        assert!(out.content.contains("fender line condemned") && out.external);
     }
 
     /// A record read in two earlier sessions is one passage: it takes one

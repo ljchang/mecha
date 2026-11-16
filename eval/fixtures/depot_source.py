@@ -71,7 +71,12 @@ def grade(task, workspace):
             return False, "the figures written are not numbers by bay"
         right = got == want
         return right, "the figures written " + ("are the records'" if right else "are not the records'")
-    for folder in stores():
+    found = list(stores())
+    # One depot a trial: graded on the first of several would be graded on
+    # whichever the walk happened to yield.
+    if len(found) > 1:
+        return False, f"{len(found)} depot states were found where one was expected"
+    for folder in found:
         with open(os.path.join(folder, world.STATE)) as f:
             did = json.load(f).get(task["where"], {}).get(task["parcel"])
         # Each probe has its own parcel, so what an earlier task did is never
