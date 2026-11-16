@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn an_earlier_delivery_is_not_a_passage() {
-        for stem in RECALL_STEMS.iter().copied() {
+        for stem in RECALL_STEMS {
             let delivered = Block::text(format!("{stem}the quartz rule"));
             assert!(block_doc("a", &Role::User, &delivered).is_none(), "{stem}");
             assert!(block_doc("a", &Role::Assistant, &delivered).is_some());
