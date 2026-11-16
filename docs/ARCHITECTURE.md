@@ -11829,9 +11829,16 @@ for the whole door (`serve::chat::Recall`).
   an argument: its own session is left out of its searches and what it was
   handed is remembered under its id. The tool is on the agent only while
   the switch is on, so the tool list does not change per chat.
-- **A turn never waits on the index.** The search before a turn runs under
-  the brief's deadline and hands nothing over when it is late or fails,
-  with a log line; the refresh is once a chat and in the background, so a
+- **A chat that is told nothing is left as it was.** `span_recall` declares
+  private data for what it may return, and a dispatch arms on what is
+  declared; the door and the loop both put the conversation's taint back
+  when a search hands nothing over, as corrections does. A hand-over marks
+  the chat private, and `Taint::arm_for_content` reads the same off the
+  transcript, since the record of it is best effort.
+- **A turn never waits on the index.** The search before a turn and each
+  one after a call run under the brief's deadline and hand nothing over
+  when late or failed (after a call: said once, and not made again that
+  turn), with a log line; the refresh is once a chat and in the background, so a
   chat begun during a long first embedding is handed less and not held up.
   This is the one place a search may answer from an index that is behind:
   `mecha run --spans-deliver` still refuses to start on one.

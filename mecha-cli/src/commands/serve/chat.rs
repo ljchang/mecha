@@ -4167,6 +4167,13 @@ fn begin_turn(
                 // Under the brief's deadline: the turn does not wait on a
                 // slow embeddings server. Late or failed, nothing is handed
                 // over before this turn, and the log says which.
+                //
+                // The conversation holds the owner's earlier words once
+                // they are handed over, and not because the index was
+                // asked: a chat that was told nothing is left as it was,
+                // as corrections leaves it. The tool declares private data
+                // for what it may return, and the dispatch arms on that.
+                let unasked = conversation.taint;
                 let found = tokio::time::timeout(
                     crate::setup::BRIEF_BOARD_TIMEOUT_INTERACTIVE,
                     agent.dispatch_one(&cx, &mut conversation, spans::NAME, input, &None),
@@ -4174,6 +4181,7 @@ fn begin_turn(
                 .await;
                 match found {
                     Ok(d) if d.is_error => {
+                        conversation.taint = unasked;
                         tracing::warn!("recall could not search for this turn: {}", d.content)
                     }
                     Ok(d) if d.content.trim() != spans::NOTHING => {
@@ -4198,8 +4206,11 @@ fn begin_turn(
                         }
                         before = conversation.messages.clone().into();
                     }
-                    Ok(_) => {}
-                    Err(_) => tracing::warn!("recall did not answer in time; nothing handed over"),
+                    Ok(_) => conversation.taint = unasked,
+                    Err(_) => {
+                        conversation.taint = unasked;
+                        tracing::warn!("recall did not answer in time; nothing handed over")
+                    }
                 }
             }
             let asking = chat.clone();
@@ -4215,6 +4226,9 @@ fn begin_turn(
                 nothing: spans::NOTHING.into(),
                 failed_stem: spans::FAILED_STEM.into(),
                 limit: RECALLS_A_TURN,
+                // A person is waiting on the turn: the same bound as the
+                // search before it.
+                deadline: Some(crate::setup::BRIEF_BOARD_TIMEOUT_INTERACTIVE),
                 own_voice: true,
             });
         }

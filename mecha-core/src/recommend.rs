@@ -491,7 +491,12 @@ pub const SLOTS: &[Slot] = &[
     Slot {
         id: "embeddings",
         label: "embeddings",
-        needed_by: &[Feature::Graph, Feature::Documents, Feature::Personas],
+        needed_by: &[
+            Feature::Graph,
+            Feature::Documents,
+            Feature::Personas,
+            Feature::Recall,
+        ],
         runs_on: RunsOn::Gpu,
         residency: Residency::OnDemand,
         mac_rows: &[],
@@ -1306,6 +1311,7 @@ mod tests {
         for shown in [
             &[Feature::Graph][..],
             &[Feature::Personas],
+            &[Feature::Recall],
             &[Feature::Graph, Feature::Documents, Feature::Personas],
         ] {
             let b = budget(m, shown);

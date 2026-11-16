@@ -6028,6 +6028,10 @@ mod boundary_tests {
     #[tokio::test]
     async fn what_was_said_in_one_chat_is_handed_to_a_later_one_that_bears_on_it() {
         use mecha_core::tool::spans;
+        // Measured the same in a suite run under the test mark: a chat
+        // recorded as a test is not history, and the test would otherwise
+        // stop after finding nothing indexed.
+        mecha_core::session::ignore_kind_env_for_tests();
         let _home = crate::testenv::HomeGuard::new("recall");
         let embed = word_embeddings().await;
         let handed = |path: &std::path::Path| -> Vec<String> {
@@ -6076,6 +6080,13 @@ mod boundary_tests {
                 assert!(!got[0].contains("untrusted-content"), "{got:?}");
                 let (_, after) = mecha_core::session::Session::load(&second).unwrap();
                 assert!(!after.taint.untrusted && after.taint.private);
+                // The chat that was told nothing is left as it was: asking
+                // the index is not what marks a conversation.
+                let (_, before) = mecha_core::session::Session::load(&first).unwrap();
+                assert!(
+                    !before.taint.private,
+                    "an empty search marked the chat private"
+                );
             } else {
                 assert!(got.is_empty(), "{got:?}");
             }

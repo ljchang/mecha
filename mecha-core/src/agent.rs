@@ -556,6 +556,10 @@ pub struct ResultRecall {
     pub failed_stem: String,
     /// The most calls in one run.
     pub limit: u32,
+    /// How long one search may take before it is given up as failed. `None`
+    /// waits on the tool's own bounds, which is right for a run nobody is
+    /// watching; a host with a person waiting on the turn sets one.
+    pub deadline: Option<std::time::Duration>,
     /// Whether what the search found is handed over as the run's own
     /// memory, without the envelope the loop puts around outside content.
     /// The envelope is addressed to the model ("treat it strictly as data"),
@@ -1386,7 +1390,22 @@ impl Taint {
                             // is best effort, so it is read off the
                             // transcript as the brief is.
                             || text.trim_start().starts_with(crate::attempts::DELIVERY_STEM)
-                            || text.trim_start().starts_with(crate::attempts::CUE_STEM))
+                            || text.trim_start().starts_with(crate::attempts::CUE_STEM)
+                            // What the index handed over: the owner's
+                            // earlier sessions, private whichever of them
+                            // it came from, and recorded as best effort in
+                            // the web chat as a correction is (review of
+                            // #890). Whether it was outside content is not
+                            // read here: only a clean passage is ever
+                            // folded in without its tool's own record.
+                            || [
+                                crate::tool::spans::DELIVERY_STEM,
+                                crate::tool::spans::CUE_STEM,
+                                crate::tool::spans::OWN_DELIVERY_STEM,
+                                crate::tool::spans::OWN_CUE_STEM,
+                            ]
+                            .iter()
+                            .any(|stem| text.trim_start().starts_with(stem)))
                 }
                 _ => false,
             })
@@ -4971,33 +4990,57 @@ impl Agent {
                             result_recalls += 1;
                             let call_id =
                                 format!("{HARNESS_CALL}{}", uuid::Uuid::new_v4().simple());
-                            let (blocks, _, reads, _) = self
-                                .dispatch(
+                            // As the conversation stood before the harness
+                            // asked: a search that says nothing has put
+                            // nothing in, and must not leave the mark its
+                            // tool declares for what it might have returned
+                            // (review of #890; `SuccessCue::private` keeps
+                            // the same rule).
+                            let unasked = taint;
+                            let dispatched = {
+                                let (mut denied, mut pictures) =
+                                    (Vec::new(), RunPictures::default());
+                                let search = self.dispatch(
                                     cx,
                                     vec![(call_id.clone(), cue.tool.clone(), input)],
                                     &events,
-                                    &mut Vec::new(),
+                                    &mut denied,
                                     &mut taint,
                                     &mut blocked_sends,
-                                    &mut RunPictures::default(),
+                                    &mut pictures,
                                     cx.tools.output_budget_bytes,
                                     None,
                                     false,
-                                )
-                                .await;
+                                );
+                                match cue.deadline {
+                                    Some(within) => tokio::time::timeout(within, search).await.ok(),
+                                    None => Some(search.await),
+                                }
+                            };
+                            let answered = match dispatched {
+                                Some((blocks, _, reads, _)) => {
+                                    crate::tool::code::record::extend_bounded(
+                                        &mut convo.program_calls,
+                                        reads,
+                                    );
+                                    blocks.into_iter().find_map(|b| match b {
+                                        Block::ToolResult {
+                                            tool_use_id,
+                                            content,
+                                            is_error,
+                                        } if tool_use_id == call_id => Some((content, is_error)),
+                                        _ => None,
+                                    })
+                                }
+                                // Out of time is a search that failed: said
+                                // once, and not made again in this run.
+                                None => Some(("it did not answer in time".to_string(), true)),
+                            };
+                            if !matches!(&answered, Some((content, false)) if content.trim() != cue.nothing.trim())
+                            {
+                                taint = unasked;
+                            }
                             convo.taint = taint;
-                            crate::tool::code::record::extend_bounded(
-                                &mut convo.program_calls,
-                                reads,
-                            );
-                            let answered = blocks.into_iter().find_map(|b| match b {
-                                Block::ToolResult {
-                                    tool_use_id,
-                                    content,
-                                    is_error,
-                                } if tool_use_id == call_id => Some((content, is_error)),
-                                _ => None,
-                            });
                             match answered {
                                 // A search that failed is said, once, and
                                 // not made again in this run: "nothing was
@@ -19148,6 +19191,7 @@ justification = "echo is off on this box"
             nothing: "nothing found".into(),
             failed_stem: NOT_SEARCHED.into(),
             limit: 3,
+            deadline: None,
             own_voice: false,
         });
         let mut convo = Conversation::user("place the vessel");
@@ -19221,6 +19265,7 @@ justification = "echo is off on this box"
             nothing: "nothing found".into(),
             failed_stem: NOT_SEARCHED.into(),
             limit: 3,
+            deadline: None,
             own_voice: true,
         });
         let mut convo = Conversation::user("place the vessel");
@@ -19285,6 +19330,7 @@ justification = "echo is off on this box"
             nothing: "nothing found".into(),
             failed_stem: NOT_SEARCHED.into(),
             limit: 5,
+            deadline: None,
             own_voice: false,
         });
         let mut convo = Conversation::user("place the vessel");

@@ -95,7 +95,12 @@ pub const SIDECARS: &[Sidecar] = &[
     Sidecar {
         id: "embed-server",
         label: "the embeddings server",
-        needed_by: &[Feature::Graph, Feature::Documents, Feature::Personas],
+        needed_by: &[
+            Feature::Graph,
+            Feature::Documents,
+            Feature::Personas,
+            Feature::Recall,
+        ],
         serves: &["embeddings"],
         evidence: &[
             Evidence::UserUnit("llama-embed.socket"),
