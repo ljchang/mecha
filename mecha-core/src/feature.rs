@@ -178,7 +178,8 @@ impl Feature {
             Feature::Code => "Code mode (programs over tool results)",
             Feature::Memory => "Memory (what the assistant keeps from its own runs)",
             Feature::Corrections => {
-                "Corrections (drafts you changed or rejected and steers, recalled on a like ask)"
+                "Corrections (drafts you changed or rejected, steers and next messages read as \
+                 corrections, recalled on a like ask)"
             }
         }
     }

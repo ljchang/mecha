@@ -73,6 +73,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         Some(store.lock()?)
     };
     let mined = store.mined_sessions()?;
+    // A mined session is read again when its transcript has grown since a
+    // pass last read it to the end: the web chat is one conversation over
+    // days, and a correction typed after its first pass was read by nothing.
+    // The moments already put to the reflector are left out by their keys.
+    let lengths = store.mined_lengths()?;
+    let mut asked = store.asked_moments()?;
 
     // The backfill re-visits exactly the sessions whose lessons the gate
     // excluded; its dedup key is (session, intervention text) against the
@@ -125,13 +131,29 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // experiment session in the store, reprinted each pass — worded so, and
     // deliberately not marked: a session mislabelled `Test` must stay
     // re-admittable once the label is fixed.
+    // A session mined before lengths were kept is given one now, with its
+    // moments marked asked, and no model call: it is then read again only
+    // for what is added after this. Not on a dry run, which writes nothing.
+    if !args.dry_run && !args.remine_untrusted {
+        let known = record_unmeasured(&store, &sessions, &mined, &lengths, &mut asked)?;
+        if known > 0 {
+            println!(
+                "recorded where {known} already-mined session(s) end, to read what is added later"
+            );
+        }
+    }
+    let grown = |meta: &SessionMeta, path: &Path| {
+        lengths
+            .get(&meta.id)
+            .is_some_and(|read| std::fs::metadata(path).is_ok_and(|now| now.len() > *read))
+    };
     let candidates: Vec<_> = sessions
         .into_iter()
-        .filter(|(meta, _)| {
+        .filter(|(meta, path)| {
             if args.remine_untrusted {
                 excluded_sessions.contains(&meta.id)
             } else {
-                !mined.contains(&meta.id)
+                !mined.contains(&meta.id) || grown(meta, path)
             }
         })
         .collect();
@@ -206,6 +228,27 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // (found on review). Free when there is nothing to apply.
     reconcile_recorded_keys(&store, &paths, unreadable_sessions, args.dry_run)?;
 
+    // Stamped on every reply row: a pass that stops after a source's rows
+    // and before its mined mark is superseded by the retry's rows.
+    let pass = mecha_core::session::Session::new_id();
+    // A mined session that grew by nothing to ask about is finished here,
+    // before a provider is needed: every live chat grows daily, and a pass
+    // with nothing to ask must go on needing no provider (found on review
+    // of #886).
+    if !args.dry_run && !args.remine_untrusted {
+        let mut still = Vec::with_capacity(todo.len());
+        for (meta, path) in todo {
+            if mined.contains(&meta.id) {
+                if let Some(bytes) = nothing_new(&meta.id, &path, &asked) {
+                    store.finish_pass(&meta.id, Some(&pass), bytes, &[])?;
+                    continue;
+                }
+            }
+            still.push((meta, path));
+        }
+        todo = still;
+    }
+
     if todo.is_empty() && outbox_todo.is_empty() {
         println!("nothing to mine: every session and sent draft is already reflected on");
         return Ok(());
@@ -223,27 +266,35 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let model = global.model.clone().or_else(|| provider_cfg.model.clone());
         let reflector = Reflector::new(provider, model).with_contrast(cfg.agent.contrast_evidence);
         eprintln!("reflecting with {} ({name})", reflector.model());
-        Some((reflector, cfg.agent.contrast_evidence))
+        // Corrections (`mecha_core::attempts`): a follow-up this pass judges
+        // a correction is also the owner's verdict on the attempt before
+        // it. Only with the feature on, as the web chat keeps attempts.
+        let corrections =
+            mecha_core::feature::switched_on(&cfg, mecha_core::feature::Feature::Corrections);
+        Some((reflector, cfg.agent.contrast_evidence, corrections))
     };
     // Contrast evidence (row 2e-4b-2, R43): the verified successes a
     // correction in their region is reflected beside, read once per pass —
     // with the lever on, or on a dry run, which is its shadow readout (each
     // listed correction names the success it would be shown). Off, nothing
     // is read and the reflector's prompt is the bytes it was.
-    let contrast_on = reflector.as_ref().is_some_and(|(_, on)| *on);
+    let contrast_on = reflector.as_ref().is_some_and(|(_, on, _)| *on);
+    let attempts = match &reflector {
+        Some((_, _, true)) => Some(mecha_core::attempts::Store::in_home(
+            &mecha_core::work::mecha_home()?,
+        )),
+        _ => None,
+    };
+    let mut attempts_judged = 0usize;
     let contrasts = (args.dry_run || contrast_on)
         .then(|| mecha_core::success::ContrastPool::at(&sessions_dir))
         .filter(|pool| !pool.is_empty());
-    let reflector = reflector.map(|(r, _)| r);
+    let reflector = reflector.map(|(r, _, _)| r);
 
     let mut sessions_mined = 0usize;
     let mut interventions_found = 0usize;
     let mut reflections_written = 0usize;
     let mut replies_tally = mecha_core::learning::ReplyTally::default();
-    // Stamped on every reply row: a pass that stops after a source's rows
-    // and before its mined mark is superseded by the retry's rows.
-    let pass = mecha_core::session::Session::new_id();
-
     for (meta, path) in &todo {
         // The workspace the session's rules block was matched against, off
         // its run record — the key a match presents. Never the session's
@@ -279,6 +330,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             &convo.messages,
             &t.outcome_positions,
         ));
+        // The moments of this session not yet put to the reflector. The
+        // backfill keeps its own key and visits what it visited before.
+        let keys = mecha_core::learning::moment_keys(&meta.id, &interventions);
+        if !args.remine_untrusted {
+            let mut fresh = keys.iter().map(|k| !asked.contains(k));
+            interventions.retain(|_| fresh.next().unwrap_or(true));
+        }
         interventions_found += interventions.len();
 
         // Provenance, read from the transcript's recorded taint — not from
@@ -334,6 +392,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // written only when they are, so a retried session counts once.
         let mut replies = Vec::new();
         let mut failed = false;
+        // The follow-ups judged corrections, by where each sits.
+        let mut corrected: Vec<usize> = Vec::new();
         // What the session's programs read, once: the walk takes only those
         // under a call before each correction, so the file read does not
         // depend on the intervention.
@@ -415,6 +475,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     // question, a `/model` switch), and `config_covering`
                     // is the exact answer per message (found on review).
                     r.situation = Some(recorded_situation(&t, intervention));
+                    if intervention.trigger == Trigger::Followup {
+                        corrected.push(intervention.at);
+                    }
                     pending.push(r);
                 }
                 Ok(None) => {
@@ -438,6 +501,22 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         if failed {
             continue;
         }
+        // The verdicts before anything is marked: `Store::judge` skips one
+        // already on file, so a pass retried after a stop below writes none
+        // twice, and a store that cannot be written leaves the session
+        // unmined instead of losing the owner's verdict for good.
+        if let (Some(attempts), false) = (&attempts, corrected.is_empty()) {
+            match judge_followups(attempts, &meta.id, &convo.messages, &corrected) {
+                Ok(n) => attempts_judged += n,
+                Err(e) => {
+                    eprintln!(
+                        "· corrections not written: {e:#}\n  leaving {} unmined so a later run retries",
+                        meta.id
+                    );
+                    continue;
+                }
+            }
+        }
         // Rows first: a stop after them leaves the session unmined, and the
         // retry's rows supersede these (`replies_counting`). Rows after the
         // reflections would leave a reflection whose reply was never
@@ -453,7 +532,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
 
         if !args.remine_untrusted {
-            store.mark_mined(&meta.id)?;
+            // One line says the session was read to here and which
+            // moments were asked on the way. "Asked" includes a moment the
+            // loop above passed over on its provenance before the
+            // reflector saw it: recorded taint does not change, so it would
+            // be passed over again on every later pass.
+            let new: Vec<String> = keys.into_iter().filter(|k| !asked.contains(k)).collect();
+            store.finish_pass(&meta.id, Some(&pass), text.len() as u64, &new)?;
+            asked.extend(new);
         }
         sessions_mined += 1;
     }
@@ -598,8 +684,103 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             store.root().join("reflections.jsonl").display()
         );
         println!("reflector replies: {}", replies_tally.line());
+        if attempts.is_some() {
+            println!(
+                "corrections: {attempts_judged} earlier attempt(s) judged by the owner's next message"
+            );
+        }
     }
     Ok(())
+}
+
+/// How long a mined session's transcript is, when every moment in it has
+/// been asked about already. `None` when it holds a new one, or cannot be
+/// read, which the pass itself reports.
+fn nothing_new(
+    session: &str,
+    path: &Path,
+    asked: &std::collections::HashSet<String>,
+) -> Option<u64> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let t = Session::parse(path, &text).ok()?;
+    let mut interventions = extract_interventions(&t.convo.messages);
+    interventions.extend(mecha_core::learning::extract_mismatches(
+        &t.convo.messages,
+        &t.outcome_positions,
+    ));
+    mecha_core::learning::moment_keys(session, &interventions)
+        .iter()
+        .all(|k| asked.contains(k))
+        .then_some(text.len() as u64)
+}
+
+/// Give every mined session that has no length on record one: where its
+/// transcript ends now, its moments marked asked, and the pass whose
+/// replies counted for it. No model call. A transcript that cannot be read
+/// is left without, and tried again on the next pass. How many were given
+/// one.
+fn record_unmeasured(
+    store: &LearningStore,
+    sessions: &[(SessionMeta, PathBuf)],
+    mined: &std::collections::HashSet<String>,
+    lengths: &std::collections::HashMap<String, u64>,
+    asked: &mut std::collections::HashSet<String>,
+) -> Result<usize> {
+    let todo: Vec<_> = sessions
+        .iter()
+        .filter(|(meta, _)| mined.contains(&meta.id) && !lengths.contains_key(&meta.id))
+        .collect();
+    if todo.is_empty() {
+        return Ok(0);
+    }
+    let last = store.last_reply_passes()?;
+    let mut known = 0usize;
+    for (meta, path) in todo {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(t) = Session::parse(path, &text) else {
+            continue;
+        };
+        let mut interventions = extract_interventions(&t.convo.messages);
+        interventions.extend(mecha_core::learning::extract_mismatches(
+            &t.convo.messages,
+            &t.outcome_positions,
+        ));
+        let keys: Vec<String> = mecha_core::learning::moment_keys(&meta.id, &interventions)
+            .into_iter()
+            .filter(|k| !asked.contains(k))
+            .collect();
+        store.finish_pass(
+            &meta.id,
+            last.get(&meta.id).and_then(|p| p.as_deref()),
+            text.len() as u64,
+            &keys,
+        )?;
+        asked.extend(keys);
+        known += 1;
+    }
+    Ok(known)
+}
+
+/// The verdicts a session's judged follow-ups make on the attempts kept for
+/// it (`attempts::of_followup`), written to the corrections file. How many
+/// were new. A follow-up to a turn no attempt was kept for judges nothing.
+fn judge_followups(
+    attempts: &mecha_core::attempts::Store,
+    session: &str,
+    messages: &[mecha_core::message::Message],
+    corrected: &[usize],
+) -> Result<usize> {
+    let kept = attempts.load()?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let verdicts: Vec<_> = corrected
+        .iter()
+        .filter_map(|at| {
+            mecha_core::attempts::of_followup(&kept.attempts, session, messages, *at, &now)
+        })
+        .collect();
+    attempts.judge(&verdicts)
 }
 
 /// The workspace and surface one run record says its block was matched

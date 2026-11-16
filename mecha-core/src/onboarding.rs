@@ -1081,7 +1081,8 @@ pub fn blurb(f: crate::feature::Feature) -> &'static str {
         }
         Feature::Corrections => {
             "Learning from what you do with the assistant's work: a draft you changed or \
-             rejected, a time you stepped in. Kept on this machine, and brought up when a \
+             rejected, a time you stepped in, and a next message of yours that a nightly \
+             pass reads as a correction. Kept on this machine, and brought up when a \
              later ask in the web chat goes the same way. You are never asked for a reason."
         }
         // Parts are summarised under their parent and never stepped alone.
