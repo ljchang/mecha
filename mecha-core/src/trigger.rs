@@ -284,7 +284,8 @@ pub struct Trigger {
     ///
     /// A trigger run otherwise starts from nothing, taint included. With
     /// this on it starts from one thing: the final answer of this trigger's
-    /// most recent `ok` run, read from that run's transcript, folded into
+    /// most recent `ok` run that ended with one, read from that run's
+    /// transcript, folded into
     /// the first user turn under a stem the harness chose
     /// ([`render_last_answer`]) — and the taint that run recorded comes with
     /// it. The harness reads the transcript; the model is never asked what
@@ -352,15 +353,6 @@ pub fn render_last_answer(said_at: DateTime<Utc>, tz: Tz, untrusted: bool, answe
          say what is new or has changed, and where something in it still \
          stands, one line saying so is enough.)\n\n{body}{cut}"
     )
-}
-
-/// The run a carrying trigger reads its last answer from: the most recent
-/// `ok` one of this trigger that recorded a transcript, scheduled or run by
-/// hand — the owner read either.
-pub fn last_answered<'a>(runs: &'a [RunRecord], trigger: &str) -> Option<&'a RunRecord> {
-    runs.iter()
-        .filter(|r| r.trigger == trigger && r.status == RunStatus::Ok && r.session_id.is_some())
-        .max_by_key(|r| r.started_at)
 }
 
 /// A trigger's `serves`, read **strictly**: the file is owner-written, so a
@@ -1461,48 +1453,6 @@ mod tests {
         assert_eq!(block.matches('x').count(), LAST_ANSWER_MAX_CHARS);
         let short = render_last_answer(at, chrono_tz::UTC, false, "short");
         assert!(!short.contains("not carried"));
-    }
-
-    #[test]
-    fn the_run_carried_from_is_the_newest_ok_one_of_this_trigger_with_a_transcript() {
-        let at = |s: &str| s.parse::<DateTime<Utc>>().unwrap();
-        let run = |trigger: &str, when: &str, status: RunStatus, session: Option<&str>| {
-            let mut r = RunRecord::started(trigger, None, false);
-            r.started_at = at(when);
-            r.status = status;
-            r.session_id = session.map(str::to_string);
-            r
-        };
-        let runs = vec![
-            run(
-                "morning",
-                "2026-03-01T12:00:00Z",
-                RunStatus::Ok,
-                Some("old"),
-            ),
-            run(
-                "morning",
-                "2026-03-02T12:00:00Z",
-                RunStatus::Ok,
-                Some("want"),
-            ),
-            run(
-                "morning",
-                "2026-03-03T12:00:00Z",
-                RunStatus::Error,
-                Some("failed"),
-            ),
-            run("morning", "2026-03-04T12:00:00Z", RunStatus::Ok, None),
-            run(
-                "evening",
-                "2026-03-05T12:00:00Z",
-                RunStatus::Ok,
-                Some("other"),
-            ),
-        ];
-        let got = last_answered(&runs, "morning").unwrap();
-        assert_eq!(got.session_id.as_deref(), Some("want"));
-        assert!(last_answered(&runs, "weekly").is_none());
     }
 
     #[test]

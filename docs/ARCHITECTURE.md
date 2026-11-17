@@ -7919,27 +7919,28 @@ Five decisions, each of which is a bug if undone:
 
 **A run starts from nothing, taint included, unless its file asks for its
 last answer** (`carry_last_answer`, owner ruling 2026-11-17). Then the runner
-reads the final answer of that trigger's most recent `ok` run from its
-transcript (`trigger::last_answered`) and folds it into the first user turn
-as its own block beside the prompt (`trigger::render_last_answer`), so a
-daily briefing can say what changed rather than repeat itself. Three things
-hold it up:
+folds what that trigger last told the owner into the first user turn as its
+own block beside the prompt (`trigger::render_last_answer`), so a daily
+briefing can say what changed rather than repeat itself. It is a trifecta
+switch, and what it arms and costs is `TRIFECTA.md`'s row for it. What holds
+it up here:
 
 - **The harness reads the transcript; the model is never asked what it
   said.** A note a run leaves for tomorrow's run is that run's account of
   itself, and the answer the owner actually received is on disk.
-- **The last run's taint comes with its words.** The block's stem says
-  whether that run had read anything from outside, taken from the ledger row
-  and the session together, since either can be silent on an old row and a
-  silent record is not a clean run. Both stems arm `private`.
-  `Taint::arm_for_content` reads the stem, so the fold and a resume agree,
-  and `agent::is_harness_voice` knows it, so the block is never mined as the
-  owner's correction.
-- **A carry that could not happen is said, and the run still runs.** An
-  unreadable transcript records `carry_error` on the ledger row beside
-  `notify_error`, for the same reason: a briefing quietly back to repeating
-  itself reads exactly like one that works. A first run records neither
-  field.
+- **The ledger is read from its tail** (`TriggerStore::scan_runs_rev`), for
+  the newest `ok` runs of this trigger. One torn line from months ago fails
+  the whole-file parse and would switch the carry off for good.
+- **A night cut short is stepped over, a few runs back at most.** A run that
+  timed out mid-call records `ok` with no final answer; the carry takes the
+  newest run that did answer, and the ledger row names the session it came
+  from (`carried_from`).
+- **Carrying nothing is said, unless there was never a run.** No earlier
+  `ok` run is a first run and records neither field. Every other case —
+  none of the runs looked at had an answer, or their transcripts are gone —
+  records `carry_error` beside `notify_error`, and the run still runs: a
+  briefing quietly back to repeating itself reads exactly like one that
+  works.
 
 Two smaller ones worth not re-litigating. The cron parser is hand-rolled
 because every available crate speaks Quartz's dialect where the first field is
