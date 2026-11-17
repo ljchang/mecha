@@ -112,9 +112,7 @@ impl SeenEvents {
         let Some(path) = self.path.clone() else {
             return;
         };
-        // An id is one line. Slack's are alphanumeric; one that is not would
-        // forge a second row, so it is remembered in memory only.
-        if event_id.contains(['\n', '\r']) {
+        if !one_row(event_id) {
             return;
         }
         let write = || -> std::io::Result<()> {
@@ -149,24 +147,34 @@ impl SeenEvents {
             return;
         };
         let tmp = path.with_extension("tmp");
-        let write = || -> std::io::Result<()> {
+        let write = || -> std::io::Result<usize> {
             let mut body = String::new();
-            for id in &self.ring {
+            let mut rows = 0;
+            for id in self.ring.iter().filter(|id| one_row(id)) {
                 body.push_str(id);
                 body.push('\n');
+                rows += 1;
             }
             std::fs::write(&tmp, body)?;
             mecha_slack::store::set_owner_only(&tmp)?;
-            std::fs::rename(&tmp, path)
+            std::fs::rename(&tmp, path)?;
+            Ok(rows)
         };
         match write() {
-            Ok(()) => self.lines = self.ring.len(),
+            Ok(rows) => self.lines = rows,
             Err(e) => {
                 let _ = std::fs::remove_file(&tmp);
                 tracing::warn!("could not compact {}: {e}", path.display());
             }
         }
     }
+}
+
+/// An id is one line of the file. Slack's are alphanumeric; one that is not
+/// would be read back as two ids, so it is remembered in memory only — by
+/// both writers, the append and the compaction.
+fn one_row(event_id: &str) -> bool {
+    !event_id.contains(['\n', '\r'])
 }
 
 #[cfg(test)]
@@ -257,6 +265,29 @@ mod tests {
             after.first_time("Ev2"),
             "a forged row was read back as seen"
         );
+    }
+
+    #[test]
+    fn compaction_writes_no_forged_row_either() {
+        // The ring holds the id whole; the file must hold none of it, on the
+        // rewrite as on the append.
+        let path = scratch("newline-compact");
+        let mut seen = SeenEvents::open(&path);
+        for i in 0..COMPACT_AT - 2 {
+            assert!(seen.first_time(&format!("Ev{i}")));
+        }
+        assert!(seen.first_time("EvA\nEvB"));
+        assert!(seen.first_time("EvX"));
+        assert!(seen.first_time("EvY"), "this append trips the compaction");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), SEEN_EVENTS - 1, "the rewrite ran");
+        drop(seen);
+        let mut after = SeenEvents::open(&path);
+        assert!(
+            after.first_time("EvB"),
+            "a forged row was read back as seen"
+        );
+        assert!(!after.first_time("EvY"));
     }
 
     #[test]
