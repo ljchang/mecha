@@ -1471,6 +1471,16 @@ impl Taint {
                         self.private |= private;
                         self.untrusted |= untrusted;
                     }
+                    // **And a trigger's last answer, carried into its next
+                    // run** (`Trigger::carry_last_answer`): written for the
+                    // owner about their own affairs, so private; untrusted
+                    // when the run that wrote it had read something from
+                    // outside, said by the stem the harness chose. The words
+                    // of a tainted run are that run's taint rearranged.
+                    if let Some((private, untrusted)) = crate::trigger::last_answer_stem_of(text) {
+                        self.private |= private;
+                        self.untrusted |= untrusted;
+                    }
                 }
             }
         }
@@ -2197,6 +2207,9 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         || text == "A declared plan check was not run; completion remains unverified."
         || text == "The declared plan check did not establish completion. Review its result before claiming the step is verified."
         || text.starts_with(crate::boredom::NOTICE_STEM)
+        // A trigger's last answer, carried into its next run: the harness's
+        // block holding the model's earlier words, never the owner's.
+        || crate::trigger::last_answer_stem_of(text).is_some()
         || text.contains(crate::mailbox::DELIVERY_STEM)
         || text.starts_with(crate::step::STEP_ESCALATION_STEM)
         || text.starts_with(crate::step::CHECK_FEEDBACK_STEM)
