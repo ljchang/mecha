@@ -828,6 +828,11 @@ fn note_search(index: &Path, withheld: usize, took: std::time::Duration) -> Resu
         return Ok(());
     }
     let mut conn = open(index)?;
+    // Counted inside the time a turn gives its search, and beside a pass
+    // that may hold the writer's lock for as long as that: wait a moment
+    // for it and no more, so that keeping the count cannot cost the search
+    // it counts (review of #891).
+    conn.execute_batch("PRAGMA busy_timeout = 250;")?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     for (key, add) in [("searches", 1u64), ("withheld", withheld as u64)] {
         tx.execute(
@@ -1169,7 +1174,16 @@ impl Spans {
         }
         let index = self.index.clone();
         let took = started.elapsed();
-        tokio::task::spawn_blocking(move || note_pass(&index, took)).await??;
+        // The readout's, and not the pass's to fail on: everything the
+        // pass is for has been kept by now, and a caller stops on an error
+        // here with words that would be untrue (review of #891). The row
+        // then says the count it last kept, with its time.
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = note_pass(&index, took) {
+                tracing::warn!("a pass of the span index was not counted: {e:#}");
+            }
+        })
+        .await?;
         Ok((covered, done))
     }
 }

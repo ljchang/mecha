@@ -791,12 +791,17 @@ fn recall_detail(standing: &crate::tool::spans::Standing) -> String {
         }
         None => "an index in the mecha home, not counted since it began keeping a count".into(),
     };
-    match standing.search_ms {
-        Some(ms) => out.push_str(&format!(
-            "; {} search(es) since, {} passage(s) held back from a chat as outside content, the last search {ms} ms",
+    // In all, and not since that count: a pass does not start them again.
+    if standing.searches == 0 {
+        out.push_str("; no search counted yet");
+    } else {
+        out.push_str(&format!(
+            "; {} search(es) in all, {} passage(s) held back from a chat as outside content",
             standing.searches, standing.withheld
-        )),
-        None => out.push_str("; no search counted yet"),
+        ));
+        if let Some(ms) = standing.search_ms {
+            out.push_str(&format!(", the last search {ms} ms"));
+        }
     }
     out
 }
@@ -2729,7 +2734,7 @@ mod tests {
             "340 passage(s) from 12 chat(s) and run(s)",
             "71 of them outside content",
             "40 not yet embedded",
-            "9 search(es) since",
+            "9 search(es) in all",
             "4 passage(s) held back",
             "18 ms",
         ] {
