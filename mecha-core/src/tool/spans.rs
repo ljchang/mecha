@@ -277,10 +277,15 @@ fn held_outside_content(transcript: &str) -> bool {
             | Record::SpokenDirection(_)
             // What a late delivery writes after its own checkpoint: the
             // harness's line owed to the next run, and the count of a call
-            // that failed late. Neither is in the conversation (the late
-            // result is, and stays unnamed here: it leaves the session
-            // uncovered until the delivery's checkpoint, which is written
-            // straight after it and before the note). Left unnamed, the
+            // that failed late. Neither is a message, so neither can become
+            // a passage, and the note leaves out the result's text when the
+            // result came from outside. The note does reach the next run,
+            // and is safe to name for that reason and no other: it arrives
+            // there as `Record::Notes`, which is not named here, so that
+            // run is uncovered until its own checkpoint says what entered.
+            // (The late result is content, and stays unnamed too: it leaves
+            // the session uncovered until the delivery's checkpoint, written
+            // straight after it and before the note.) Left unnamed, the
             // note closed every chat that made a picture and was not
             // written in again: in the first real index, 195 passages of
             // nine chats that nothing from outside had entered.
