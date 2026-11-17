@@ -1192,12 +1192,14 @@ impl Spans {
         // pass is for has been kept by now, and a caller stops on an error
         // here with words that would be untrue (review of #891). The row
         // then says the count it last kept, with its time.
-        tokio::task::spawn_blocking(move || {
+        // Nor on the task not finishing, which a runtime shutting down
+        // gives as readily as a panic.
+        let _ = tokio::task::spawn_blocking(move || {
             if let Err(e) = note_pass(&index, took) {
                 tracing::warn!("a pass of the span index was not counted: {e:#}");
             }
         })
-        .await?;
+        .await;
         Ok((covered, done))
     }
 }
@@ -1237,7 +1239,13 @@ impl Tool for Spans {
     }
 
     fn effect(&self) -> Option<crate::tool::effect::Effect> {
-        Some(crate::tool::effect::Effect::Read)
+        // It reads, and records that it read: each search adds to the
+        // index's own count of searches (`note_search`). Not a pure read
+        // since that count (review of #891), and not among replay's
+        // `READ_ONLY_WRITERS`, which are tools whose write is an act a
+        // replay must stop before: this one's is a tally in the home it
+        // reads, as the graph's reads are.
+        Some(crate::tool::effect::Effect::ReadThatRecords)
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -1299,25 +1307,24 @@ impl Tool for Spans {
             .map(|h| h.get(&key).cloned().unwrap_or_default())
             .unwrap_or_default();
         let asking = conversation.clone();
-        let (hits, _) =
-            tokio::task::spawn_blocking(move || -> Result<(Vec<(i64, Span)>, usize)> {
-                let started = std::time::Instant::now();
-                let (hits, withheld) = choose_for(
-                    &embedded(&index, web)?,
-                    &query,
-                    &qvec,
-                    &handed,
-                    asking.as_deref(),
-                    clean,
-                );
-                // The readout's, and not the search's to fail on: a count
-                // that could not be kept leaves the passages found as found.
-                if let Err(e) = note_search(&index, withheld, started.elapsed()) {
-                    tracing::warn!("a search of the span index was not counted: {e:#}");
-                }
-                Ok((hits, withheld))
-            })
-            .await??;
+        let hits = tokio::task::spawn_blocking(move || -> Result<Vec<(i64, Span)>> {
+            let started = std::time::Instant::now();
+            let (hits, withheld) = choose_for(
+                &embedded(&index, web)?,
+                &query,
+                &qvec,
+                &handed,
+                asking.as_deref(),
+                clean,
+            );
+            // The readout's, and not the search's to fail on: a count
+            // that could not be kept leaves the passages found as found.
+            if let Err(e) = note_search(&index, withheld, started.elapsed()) {
+                tracing::warn!("a search of the span index was not counted: {e:#}");
+            }
+            Ok(hits)
+        })
+        .await??;
         if hits.is_empty() {
             // The tool's own words and not `.from_outside()`, on purpose:
             // unwrapped, they are what the loop and the run command compare
