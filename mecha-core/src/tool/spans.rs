@@ -731,10 +731,14 @@ pub struct Standing {
     /// What the last finished pass counted, and `None` when no pass has
     /// finished since the index began keeping this: not counted is not zero.
     pub counted: Option<Counted>,
-    /// Searches made since the index began keeping this.
-    pub searches: u64,
-    /// Passages those searches left out of a chat for being outside content.
-    pub withheld: u64,
+    /// Searches made since the index began keeping this, and `None` when
+    /// it has kept none: an index from before the count was searched and
+    /// has no number for it, which is not a search count of zero (review
+    /// of #891).
+    pub searches: Option<u64>,
+    /// Passages those searches left out of a chat for being outside
+    /// content. Kept with `searches`, and `None` with it.
+    pub withheld: Option<u64>,
     /// How long the last search took once it had the query's embedding:
     /// reading the index and choosing from it.
     pub search_ms: Option<u64>,
@@ -784,8 +788,8 @@ pub fn standing(home: &Path) -> Result<Option<Standing>> {
     })();
     Ok(Some(Standing {
         counted,
-        searches: n("searches").unwrap_or(0),
-        withheld: n("withheld").unwrap_or(0),
+        searches: n("searches"),
+        withheld: n("withheld"),
         search_ms: n("search_ms"),
     }))
 }
@@ -2151,9 +2155,10 @@ mod tests {
         let counted = stands.counted.clone().unwrap();
         assert_eq!((counted.sessions, counted.outside), (2, 1), "{stands:?}");
         assert!(counted.passages >= 2 && counted.embedded == counted.passages);
+        // No search has been counted, which is not a count of none.
         assert_eq!(
             (stands.searches, stands.withheld, stands.search_ms),
-            (0, 0, None)
+            (None, None, None)
         );
         // A pass that changes nothing keeps the time and the duration of
         // the one that did: marked here as long ago, and still so after.
@@ -2190,7 +2195,11 @@ mod tests {
         // What was held back is counted in the index, for a readout that
         // is not a log.
         let stands = standing(&home).unwrap().unwrap();
-        assert_eq!((stands.searches, stands.withheld), (1, 1), "{stands:?}");
+        assert_eq!(
+            (stands.searches, stands.withheld),
+            (Some(1), Some(1)),
+            "{stands:?}"
+        );
         assert!(stands.search_ms.is_some());
         // Said once to that chat, and still to be said to a third.
         assert_eq!(ask_as("another", true).await.unwrap().content, NOTHING);

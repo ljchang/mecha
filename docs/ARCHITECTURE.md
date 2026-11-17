@@ -11825,10 +11825,11 @@ for the whole door (`serve::chat::Recall`).
   `clean: true`; what that leaves out is counted in the index itself and
   never said to the run. **The index's readout is its own file, not a
   log** (`spans::standing`, the `recall` row of `mecha features`): what the
-  last finished pass counted (sessions, passages, how many are embedded,
-  how many were outside content, when, how long) and what searches have
-  done since (how many, how many passages held back, how long the last
-  took once it had its embedding). `mecha serve` logs at `warn`, and the
+  index holds (sessions, passages, how many are embedded, how many were
+  outside content), when a pass last changed that and how long that pass
+  took, and what searches have done in all since the index began counting
+  them (how many, how many passages held back, how long the last took once
+  it had its embedding). `mecha serve` logs at `warn`, and the
   first version said its counts at `info`, where nobody saw them (review
   of #890). A count the index did not keep is said as not kept, never as
   zero, and `standing` opens the file read-only so that asking makes no

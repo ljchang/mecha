@@ -778,7 +778,7 @@ fn recall_detail(standing: &crate::tool::spans::Standing) -> String {
                 .map(|t| t.format("%Y-%m-%d %H:%MZ").to_string())
                 .unwrap_or_else(|| "at a time that could not be read".into());
             let mut line = format!(
-                "{} passage(s) from {} chat(s) and run(s), {} of them outside content and kept from chats; counted {when} in {} s",
+                "{} passage(s) from {} chat(s) and run(s), {} of them outside content and kept from chats; last changed {when}, by a pass that took {} s",
                 c.passages, c.sessions, c.outside, c.secs
             );
             if c.embedded < c.passages {
@@ -791,17 +791,19 @@ fn recall_detail(standing: &crate::tool::spans::Standing) -> String {
         }
         None => "an index in the mecha home, not counted since it began keeping a count".into(),
     };
-    // In all, and not since that count: a pass does not start them again.
-    if standing.searches == 0 {
-        out.push_str("; no search counted yet");
-    } else {
-        out.push_str(&format!(
-            "; {} search(es) in all, {} passage(s) held back from a chat as outside content",
-            standing.searches, standing.withheld
-        ));
-        if let Some(ms) = standing.search_ms {
-            out.push_str(&format!(", the last search {ms} ms"));
+    // Counted from when the index began keeping a count, and not from the
+    // pass named before them: a pass does not start them again. An index
+    // that kept none says so, and never that it was not searched.
+    match (standing.searches, standing.withheld) {
+        (Some(searches), Some(withheld)) => {
+            out.push_str(&format!(
+                "; {searches} search(es) counted in all, {withheld} passage(s) held back from a chat as outside content"
+            ));
+            if let Some(ms) = standing.search_ms {
+                out.push_str(&format!(", the last search {ms} ms"));
+            }
         }
+        _ => out.push_str("; no count of searches kept yet"),
     }
     out
 }
@@ -2710,7 +2712,7 @@ mod tests {
             panic!("an index is on")
         };
         assert!(
-            detail.contains("not counted") && detail.contains("no search counted yet"),
+            detail.contains("not counted") && detail.contains("no count of searches kept yet"),
             "{detail}"
         );
         assert!(!detail.chars().any(|c| c.is_ascii_digit()), "{detail}");
@@ -2723,8 +2725,8 @@ mod tests {
                 at: 1_794_875_000,
                 secs: 33,
             }),
-            searches: 9,
-            withheld: 4,
+            searches: Some(9),
+            withheld: Some(4),
             search_ms: Some(18),
         });
         let State::On { detail } = recall(&facts) else {
@@ -2734,7 +2736,8 @@ mod tests {
             "340 passage(s) from 12 chat(s) and run(s)",
             "71 of them outside content",
             "40 not yet embedded",
-            "9 search(es) in all",
+            "9 search(es) counted in all",
+            "by a pass that took 33 s",
             "4 passage(s) held back",
             "18 ms",
         ] {
