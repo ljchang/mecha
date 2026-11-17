@@ -122,7 +122,9 @@ const ABSENT_WORDS: usize = 12;
 /// (review of #888). 2: a tool result is taken without the envelope it was
 /// rendered in. 3: a passage
 /// keeps its origin. 4: a session's mark says whether it is a web chat.
-const EXTRACTION: &str = "4";
+/// 5: what a late delivery writes after its checkpoint no longer makes a
+/// session one that held outside content.
+const EXTRACTION: &str = "5";
 /// What closes a list of them that was cut.
 const ABSENT_MORE: &str = "and others";
 
@@ -272,7 +274,18 @@ fn held_outside_content(transcript: &str) -> bool {
             // written after a run's checkpoint in ordinary use (a title is,
             // in the owner's own store), and neither is in the conversation.
             | Record::Title { .. }
-            | Record::SpokenDirection(_) => {}
+            | Record::SpokenDirection(_)
+            // What a late delivery writes after its own checkpoint: the
+            // harness's line owed to the next run, and the count of a call
+            // that failed late. Neither is in the conversation (the late
+            // result is, and stays unnamed here: it leaves the session
+            // uncovered until the delivery's checkpoint, which is written
+            // straight after it and before the note). Left unnamed, the
+            // note closed every chat that made a picture and was not
+            // written in again: in the first real index, 195 passages of
+            // nine chats that nothing from outside had entered.
+            | Record::PendingNote { .. }
+            | Record::LateFailure { .. } => {}
             // And anything else leaves the session uncovered: a record kind
             // added later has to be named above to count as carrying
             // nothing, and one that carries content (a late result does)
@@ -1903,6 +1916,21 @@ mod tests {
                 title: "the quay register".into(),
             };
             writeln!(file, "{}", serde_json::to_string(&title).unwrap()).unwrap();
+            // And what a late delivery leaves after its own checkpoint: the
+            // line owed to the next run, and a late failure's count. A chat
+            // that made a picture and was not written in again ends on
+            // these.
+            for late in [
+                Record::PendingNote {
+                    note: "the chart reached the owner".into(),
+                },
+                Record::LateFailure {
+                    run: 0,
+                    tool_use_id: "o9".into(),
+                },
+            ] {
+                writeln!(file, "{}", serde_json::to_string(&late).unwrap()).unwrap();
+            }
         }
         let out = ask_in(clean).await;
         assert!(

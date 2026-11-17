@@ -11812,7 +11812,12 @@ for the whole door (`serve::chat::Recall`).
   off its own session's `Record::Taint` checkpoints when it is indexed
   (`held_outside_content`): the owner's words are the owner's; a tool's
   result or the assistant's reply is clean only out of a session nothing
-  from outside entered; a record that cannot say is not clean. A result is
+  from outside entered; a record that cannot say is not clean. What
+  carries nothing into the conversation is named record by record, and
+  that list includes what a late delivery writes after its own checkpoint
+  (`PendingNote`, `LateFailure`): unnamed, the note marked every chat that
+  made a picture and was not written in again as unknown, 195 passages of
+  nine chats in the first real index. A result is
   `.from_outside()` exactly when a passage in it is. Memory is not outside
   content for being memory (the owner's ruling, 2026-11-16), and nothing
   here clears an origin: that waits on an offline pass.
