@@ -167,6 +167,10 @@ pub struct AddArgs {
     /// Command run with the answer on stdin.
     #[arg(long)]
     pub notify: Option<String>,
+    /// Hand each run what the last one told you, so it can say what changed
+    /// rather than repeat itself. The last run's taint comes with it.
+    #[arg(long)]
+    pub carry_last_answer: bool,
     /// Create it switched off.
     #[arg(long)]
     pub disabled: bool,
@@ -384,6 +388,9 @@ fn show(name: &str, last: bool) -> Result<()> {
     if let Some(n) = &t.notify {
         println!("  notify      {n}");
     }
+    if t.carry_last_answer {
+        println!("  carries     its last answer, and that run's taint, into the next run");
+    }
     // The run's own anchor is always `trigger:<name>`; this is the owner's
     // optional link from it to a standing priority, checked at load.
     println!(
@@ -522,6 +529,11 @@ fn print_run(r: &RunRecord) {
     if let Some(e) = &r.notify_error {
         println!("    notify: {e}");
     }
+    // The same for a carry that did not happen: the run answered, without
+    // what the last one said in front of it.
+    if let Some(e) = &r.carry_error {
+        println!("    carry: {e}");
+    }
 }
 
 // ----------------------------------------------------------------- authoring
@@ -585,6 +597,7 @@ fn add(global: &GlobalOpts, a: AddArgs) -> Result<()> {
         t.catch_up = c.parse::<CatchUp>()?;
     }
     t.notify = a.notify;
+    t.carry_last_answer = a.carry_last_answer;
     t.enabled = !a.disabled;
     t.provider = global.provider.clone();
     t.model = global.model.clone();
@@ -898,7 +911,31 @@ async fn fire(
     // path out, including the failure one.
     let _ = store.mark_running(&t.name, slot);
 
-    match run_agent(global, t, &mut record, stop).await {
+    // What the last run told the owner, when the file asks for it. Resolved
+    // here, before the run, from the ledger and that run's transcript.
+    let carried = if t.carry_last_answer {
+        match last_answer(store, t) {
+            Ok(Some((from, block))) => {
+                record.carried_from = Some(from);
+                Some(block)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                // The run still happens: a briefing that repeats itself is
+                // better than none. But it is said, here and in the ledger.
+                eprintln!(
+                    "mecha: trigger `{}` could not carry its last answer — {e:#}",
+                    t.name
+                );
+                record.carry_error = Some(format!("{e:#}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    match run_agent(global, t, &mut record, carried, stop).await {
         Ok(text) => {
             record.status = RunStatus::Ok;
             record.summary = first_line(&text);
@@ -926,10 +963,65 @@ fn stop_this_fire_on_switch_now(held: &mecha_core::hold::Held, fire: &CancelHand
     held.on_cancel(move || fire.cancel(mecha_core::agent::CancelReason::Stopped));
 }
 
+/// The block a carrying trigger's next run starts with, and the session it
+/// was read from. `Ok(None)` when there is no earlier `ok` run, or that run
+/// said nothing — a first run has nothing to carry and that is not a fault.
+///
+/// The answer is read from the transcript, which is the record. The taint is
+/// the union of what the ledger row and the session each recorded: either
+/// alone can be missing on an old row, and a missing record must not read as
+/// clean.
+fn last_answer(store: &TriggerStore, t: &Trigger) -> Result<Option<(String, String)>> {
+    let runs = store.runs()?;
+    let Some(run) = mecha_core::trigger::last_answered(&runs, &t.name) else {
+        return Ok(None);
+    };
+    let id = run.session_id.clone().unwrap_or_default();
+    let dir = Session::default_dir()?;
+    let path = Session::find(&dir, &id)
+        .with_context(|| format!("the last run's transcript ({id}) was not found"))?;
+    let (_, convo) = Session::load(&path)
+        .with_context(|| format!("the last run's transcript ({id}) could not be read"))?;
+    Ok(carried_block(run, &convo, t.tz(config_tz())).map(|block| (id, block)))
+}
+
+/// The carried block for `run`, whose transcript loaded as `convo`. `None`
+/// when that run's last word was empty.
+fn carried_block(run: &RunRecord, convo: &Conversation, tz: chrono_tz::Tz) -> Option<String> {
+    let answer = convo
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == mecha_core::Role::Assistant)
+        .map(|m| m.text())
+        .unwrap_or_default();
+    if answer.trim().is_empty() {
+        return None;
+    }
+    let untrusted = run.taint.untrusted || convo.taint.untrusted;
+    Some(mecha_core::trigger::render_last_answer(
+        run.finished_at.unwrap_or(run.started_at),
+        tz,
+        untrusted,
+        &answer,
+    ))
+}
+
+/// A trigger run's first turn: the prompt, and beside it — as its own block,
+/// because a stem is matched at the start of one — what the last run said.
+fn first_turn(prompt: &str, carried: Option<String>) -> Message {
+    let mut user = Message::user(prompt);
+    if let Some(block) = carried {
+        user.content.push(mecha_core::Block::text(block));
+    }
+    user
+}
+
 async fn run_agent(
     global: &GlobalOpts,
     t: &Trigger,
     record: &mut RunRecord,
+    carried: Option<String>,
     stop: Option<&CancellationToken>,
 ) -> Result<String> {
     // The global config only — a scheduled run must not inherit the tool
@@ -1059,14 +1151,19 @@ async fn run_agent(
     }
 
     // A fresh conversation, so nothing — including taint — carries over from
-    // yesterday's run of the same trigger.
+    // yesterday's run of the same trigger, unless the trigger's file asks for
+    // its last answer (`carry_last_answer`). Then exactly that carries, as
+    // its own block beside the prompt, and that run's taint with it.
     let mut convo = Conversation::new();
     // The trigger itself is the run's goal (`APPRAISAL-WIRING-DESIGN.md` S1):
     // the owner wrote the file, so the pointer is structural, never a
     // model's. What the trigger serves further up — its optional charter
     // `serves` — stays on the trigger file and is read from there.
     super::run::seed_goal_anchor(&mut convo, trigger_goal, Some(&session))?;
-    let user = Message::user(&t.prompt);
+    let user = first_turn(&t.prompt, carried);
+    // Armed at the fold, from the stem the harness chose; the same rule a
+    // resume reads off the transcript.
+    convo.taint.arm_for_content(std::slice::from_ref(&user));
     convo.push(user.clone());
     session.append(&Record::Message(user))?;
     let recorded = convo.messages.clone();
@@ -1400,6 +1497,71 @@ mod tests {
 
     use super::*;
     use clap::CommandFactory;
+
+    fn answered(untrusted: bool) -> (RunRecord, Conversation) {
+        let mut run = RunRecord::started("morning", None, false);
+        run.session_id = Some("s1".into());
+        run.taint.untrusted = untrusted;
+        let mut convo = Conversation::new();
+        convo.push(Message::user("brief me"));
+        convo.push(Message::assistant(vec![mecha_core::Block::text(
+            "Two meetings, and the grant report is due Friday.",
+        )]));
+        (run, convo)
+    }
+
+    #[test]
+    fn a_carrying_trigger_s_first_turn_holds_the_last_answer_and_arms_for_it() {
+        let (run, convo) = answered(false);
+        let block = carried_block(&run, &convo, chrono_tz::UTC).expect("an answer to carry");
+        let turn = first_turn("brief me", Some(block));
+        assert_eq!(turn.content.len(), 2, "the prompt, then the block");
+        assert!(turn.text().contains("the grant report is due Friday"));
+
+        let mut taint = mecha_core::agent::Taint::default();
+        taint.arm_for_content(std::slice::from_ref(&turn));
+        assert!(taint.private, "an answer written for the owner is private");
+        assert!(
+            !taint.untrusted,
+            "the run it came from read nothing outside"
+        );
+    }
+
+    #[test]
+    fn a_trigger_that_does_not_carry_starts_clean() {
+        // The negative of the test above: the prompt alone arms nothing.
+        let turn = first_turn("brief me", None);
+        assert_eq!(turn.content.len(), 1);
+        let mut taint = mecha_core::agent::Taint::default();
+        taint.arm_for_content(std::slice::from_ref(&turn));
+        assert!(!taint.private && !taint.untrusted);
+    }
+
+    #[test]
+    fn the_last_run_s_taint_comes_with_its_answer_from_either_record() {
+        // The ledger row says it.
+        let (run, convo) = answered(true);
+        let turn = first_turn("brief me", carried_block(&run, &convo, chrono_tz::UTC));
+        let mut taint = mecha_core::agent::Taint::default();
+        taint.arm_for_content(std::slice::from_ref(&turn));
+        assert!(taint.private && taint.untrusted);
+
+        // The row is silent and the transcript says it.
+        let (run, mut convo) = answered(false);
+        convo.taint.untrusted = true;
+        let turn = first_turn("brief me", carried_block(&run, &convo, chrono_tz::UTC));
+        let mut taint = mecha_core::agent::Taint::default();
+        taint.arm_for_content(std::slice::from_ref(&turn));
+        assert!(taint.untrusted, "a silent ledger row is not a clean run");
+    }
+
+    #[test]
+    fn a_last_run_that_said_nothing_carries_nothing() {
+        let (run, mut convo) = answered(false);
+        convo.messages.pop();
+        convo.push(Message::assistant(vec![mecha_core::Block::text("   ")]));
+        assert!(carried_block(&run, &convo, chrono_tz::UTC).is_none());
+    }
 
     fn trigger_with_notify(command: &str) -> Trigger {
         let mut t = Trigger::new("t", "0 7 * * *".parse().unwrap(), "p");
