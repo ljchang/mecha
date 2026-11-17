@@ -11812,13 +11812,28 @@ for the whole door (`serve::chat::Recall`).
   off its own session's `Record::Taint` checkpoints when it is indexed
   (`held_outside_content`): the owner's words are the owner's; a tool's
   result or the assistant's reply is clean only out of a session nothing
-  from outside entered; a record that cannot say is not clean. A result is
+  from outside entered; a record that cannot say is not clean. What
+  carries nothing into the conversation is named record by record, and
+  that list includes what a late delivery writes after its own checkpoint
+  (`PendingNote`, `LateFailure`): unnamed, the note marked every chat that
+  made a picture and was not written in again as unknown, 195 passages of
+  nine chats in the first real index. A result is
   `.from_outside()` exactly when a passage in it is. Memory is not outside
   content for being memory (the owner's ruling, 2026-11-16), and nothing
   here clears an origin: that waits on an offline pass.
 - **The web chat is handed clean passages only.** The door asks with
-  `clean: true`; what that leaves out is counted (`Spans::withheld`) and
-  logged, never said to the run. A model that calls `span_recall` itself
+  `clean: true`; what that leaves out is counted in the index itself and
+  never said to the run. **The index's readout is its own file, not a
+  log** (`spans::standing`, the `recall` row of `mecha features`): what the
+  index holds (sessions, passages, how many are embedded, how many were
+  outside content), when a pass last changed that and how long that pass
+  took, and what searches have done in all since the index began counting
+  them (how many, how many passages held back, how long the last took once
+  it had its embedding). `mecha serve` logs at `warn`, and the
+  first version said its counts at `info`, where nobody saw them (review
+  of #890). A count the index did not keep is said as not kept, never as
+  zero, and `standing` opens the file read-only so that asking makes no
+  index. A model that calls `span_recall` itself
   gets outside passages as outside content, envelope and taint and all.
 - **Which sessions are history is a closed list read from each header**
   (`quotable`): one-shot runs, and web chats for the shared index. A

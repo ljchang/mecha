@@ -122,7 +122,9 @@ const ABSENT_WORDS: usize = 12;
 /// (review of #888). 2: a tool result is taken without the envelope it was
 /// rendered in. 3: a passage
 /// keeps its origin. 4: a session's mark says whether it is a web chat.
-const EXTRACTION: &str = "4";
+/// 5: what a late delivery writes after its checkpoint no longer makes a
+/// session one that held outside content.
+const EXTRACTION: &str = "5";
 /// What closes a list of them that was cut.
 const ABSENT_MORE: &str = "and others";
 
@@ -272,7 +274,23 @@ fn held_outside_content(transcript: &str) -> bool {
             // written after a run's checkpoint in ordinary use (a title is,
             // in the owner's own store), and neither is in the conversation.
             | Record::Title { .. }
-            | Record::SpokenDirection(_) => {}
+            | Record::SpokenDirection(_)
+            // What a late delivery writes after its own checkpoint: the
+            // harness's line owed to the next run, and the count of a call
+            // that failed late. Neither is a message, so neither can become
+            // a passage, and the note leaves out the result's text when the
+            // result came from outside. The note does reach the next run,
+            // and is safe to name for that reason and no other: it arrives
+            // there as `Record::Notes`, which is not named here, so that
+            // run is uncovered until its own checkpoint says what entered.
+            // (The late result is content, and stays unnamed too: it leaves
+            // the session uncovered until the delivery's checkpoint, written
+            // straight after it and before the note.) Left unnamed, the
+            // note closed every chat that made a picture and was not
+            // written in again: in the first real index, 195 passages of
+            // nine chats that nothing from outside had entered.
+            | Record::PendingNote { .. }
+            | Record::LateFailure { .. } => {}
             // And anything else leaves the session uncovered: a record kind
             // added later has to be named above to count as carrying
             // nothing, and one that carries content (a late result does)
@@ -709,6 +727,158 @@ pub fn forget(home: &Path, session: &str) -> Result<usize> {
     Ok(gone)
 }
 
+/// What the index says of itself, read from its own file and no server:
+/// what the last pass that brought it up to date left it holding, and what
+/// searches have done since. The readout of a store that otherwise only a
+/// model reads; a host that logs at `warn` says none of this.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Standing {
+    /// What the last finished pass counted, and `None` when no pass has
+    /// finished since the index began keeping this: not counted is not zero.
+    pub counted: Option<Counted>,
+    /// Searches made since the index began keeping this, and `None` when
+    /// it has kept none: an index from before the count was searched and
+    /// has no number for it, which is not a search count of zero (review
+    /// of #891).
+    pub searches: Option<u64>,
+    /// Passages those searches left out of a chat for being outside
+    /// content. Kept with `searches`, and `None` with it.
+    pub withheld: Option<u64>,
+    /// How long the last search took once it had the query's embedding:
+    /// reading the index and choosing from it.
+    pub search_ms: Option<u64>,
+}
+
+/// One finished pass's count of the index.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Counted {
+    pub sessions: u64,
+    pub passages: u64,
+    /// Passages with a vector: the ones a search can find.
+    pub embedded: u64,
+    /// Passages that were outside content in the session that held them.
+    pub outside: u64,
+    /// When the last pass that changed any of these counts finished, in
+    /// seconds since the epoch.
+    pub at: u64,
+    /// How long that pass took.
+    pub secs: u64,
+}
+
+/// The standing of a home's index, and `None` when it has none yet. Opens
+/// the file to read only: asking must not make an index, nor change one.
+pub fn standing(home: &Path) -> Result<Option<Standing>> {
+    let path = dir_in(home).join("index.db");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let conn = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("opening the span index at {}", path.display()))?;
+    conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
+    let mut q = conn.prepare("SELECT key, value FROM meta")?;
+    let meta: std::collections::BTreeMap<String, String> = q
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    let n = |key: &str| meta.get(key).and_then(|v| v.parse::<u64>().ok());
+    // Whole or absent: a pass writes all six in one transaction.
+    let counted = (|| {
+        Some(Counted {
+            sessions: n("counted_sessions")?,
+            passages: n("counted_passages")?,
+            embedded: n("counted_embedded")?,
+            outside: n("counted_outside")?,
+            at: n("counted_at")?,
+            secs: n("counted_secs")?,
+        })
+    })();
+    Ok(Some(Standing {
+        counted,
+        searches: n("searches"),
+        withheld: n("withheld"),
+        search_ms: n("search_ms"),
+    }))
+}
+
+/// Keep a finished pass's count of the index, for [`standing`].
+fn note_pass(index: &Path, took: std::time::Duration) -> Result<()> {
+    let mut conn = open(index)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let (passages, embedded, outside): (i64, i64, i64) = tx.query_row(
+        "SELECT COUNT(*), COUNT(vec), COALESCE(SUM(outside), 0) FROM spans",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    let sessions: i64 = tx.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))?;
+    let counts = [
+        ("counted_sessions", sessions.to_string()),
+        ("counted_passages", passages.to_string()),
+        ("counted_embedded", embedded.to_string()),
+        ("counted_outside", outside.to_string()),
+    ];
+    // A pass that found the index as the last one left it keeps that one's
+    // time and duration: every chat's first turn makes a pass, nearly all
+    // of them change nothing and take no time, and the row would otherwise
+    // say when a chat was last opened and "in 0 s" for good (review of
+    // #891).
+    let mut same = true;
+    for (key, value) in &counts {
+        let had: Option<String> = tx
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+            .optional()?;
+        same &= had.as_deref() == Some(value.as_str());
+    }
+    if same {
+        return Ok(());
+    }
+    // A clock that cannot say is a count not kept, never the epoch.
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("reading the time for the span index's count")?
+        .as_secs();
+    for (key, value) in counts.into_iter().chain([
+        ("counted_at", at.to_string()),
+        ("counted_secs", took.as_secs().to_string()),
+    ]) {
+        tx.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Keep one search's part of [`standing`]: that it was made, what it left
+/// out, and how long reading and choosing took. Only in an index that
+/// exists: a search reads and never makes one.
+fn note_search(index: &Path, withheld: usize, took: std::time::Duration) -> Result<()> {
+    if !index.join("index.db").exists() {
+        return Ok(());
+    }
+    let mut conn = open(index)?;
+    // Counted inside the time a turn gives its search, and beside a pass
+    // that may hold the writer's lock for as long as that: wait a moment
+    // for it and no more, so that keeping the count cannot cost the search
+    // it counts (review of #891).
+    conn.execute_batch("PRAGMA busy_timeout = 250;")?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    for (key, add) in [("searches", 1u64), ("withheld", withheld as u64)] {
+        // `value` is a text column: the sum goes back in as text, which is
+        // what `standing` parses.
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = CAST(value AS INTEGER) + ?2",
+            params![key, add.to_string()],
+        )?;
+    }
+    tx.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('search_ms', ?1)",
+        [took.as_millis().to_string()],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Every embedded passage, with its vector.
 fn embedded(index: &Path, web: bool) -> Result<Vec<(i64, Span, Vec<f32>)>> {
     // A call reads and never makes: an index nothing has built holds
@@ -898,9 +1068,6 @@ pub struct Spans {
     /// it. Keyed by the conversation's session id, and by the empty string
     /// for the one run a tool made with [`Spans::new`] serves.
     handed: Mutex<std::collections::BTreeMap<String, BTreeSet<i64>>>,
-    /// Passages left out of a search that asked for clean ones only because
-    /// they were outside content: counted, never said to the run.
-    withheld: std::sync::atomic::AtomicU64,
 }
 
 impl Spans {
@@ -912,7 +1079,6 @@ impl Spans {
             web: false,
             embedder,
             handed: Mutex::new(Default::default()),
-            withheld: Default::default(),
         }
     }
 
@@ -928,7 +1094,6 @@ impl Spans {
             web: true,
             embedder,
             handed: Mutex::new(Default::default()),
-            withheld: Default::default(),
         }
     }
 
@@ -940,12 +1105,6 @@ impl Spans {
             .embedder
             .embed(&["warm".to_string()], Task::Passage)
             .await;
-    }
-
-    /// How many passages searches that asked for clean ones only have left
-    /// out for being outside content, since this tool was made.
-    pub fn withheld(&self) -> u64 {
-        self.withheld.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Bring the index up to the home's earlier sessions and embed what is
@@ -960,6 +1119,7 @@ impl Spans {
             self.sessions.clone(),
             self.current.clone(),
         );
+        let started = std::time::Instant::now();
         let trial = crate::experiment::in_experiment_home();
         let covered = tokio::task::spawn_blocking(move || {
             read_sessions(&index, &sessions, current.as_deref(), trial)
@@ -1031,6 +1191,20 @@ impl Spans {
             );
             }
         }
+        let index = self.index.clone();
+        let took = started.elapsed();
+        // The readout's, and not the pass's to fail on: everything the
+        // pass is for has been kept by now, and a caller stops on an error
+        // here with words that would be untrue (review of #891). The row
+        // then says the count it last kept, with its time.
+        // Nor on the task not finishing, which a runtime shutting down
+        // gives as readily as a panic.
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Err(e) = note_pass(&index, took) {
+                tracing::warn!("a pass of the span index was not counted: {e:#}");
+            }
+        })
+        .await;
         Ok((covered, done))
     }
 }
@@ -1070,7 +1244,13 @@ impl Tool for Spans {
     }
 
     fn effect(&self) -> Option<crate::tool::effect::Effect> {
-        Some(crate::tool::effect::Effect::Read)
+        // It reads, and records that it read: each search adds to the
+        // index's own count of searches (`note_search`). Not a pure read
+        // since that count (review of #891), and not among replay's
+        // `READ_ONLY_WRITERS`, which are tools whose write is an act a
+        // replay must stop before: this one's is a tally in the home it
+        // reads, as the graph's reads are.
+        Some(crate::tool::effect::Effect::ReadThatRecords)
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -1132,20 +1312,24 @@ impl Tool for Spans {
             .map(|h| h.get(&key).cloned().unwrap_or_default())
             .unwrap_or_default();
         let asking = conversation.clone();
-        let (hits, withheld) =
-            tokio::task::spawn_blocking(move || -> Result<(Vec<(i64, Span)>, usize)> {
-                Ok(choose_for(
-                    &embedded(&index, web)?,
-                    &query,
-                    &qvec,
-                    &handed,
-                    asking.as_deref(),
-                    clean,
-                ))
-            })
-            .await??;
-        self.withheld
-            .fetch_add(withheld as u64, std::sync::atomic::Ordering::Relaxed);
+        let hits = tokio::task::spawn_blocking(move || -> Result<Vec<(i64, Span)>> {
+            let started = std::time::Instant::now();
+            let (hits, withheld) = choose_for(
+                &embedded(&index, web)?,
+                &query,
+                &qvec,
+                &handed,
+                asking.as_deref(),
+                clean,
+            );
+            // The readout's, and not the search's to fail on: a count
+            // that could not be kept leaves the passages found as found.
+            if let Err(e) = note_search(&index, withheld, started.elapsed()) {
+                tracing::warn!("a search of the span index was not counted: {e:#}");
+            }
+            Ok(hits)
+        })
+        .await??;
         if hits.is_empty() {
             // The tool's own words and not `.from_outside()`, on purpose:
             // unwrapped, they are what the loop and the run command compare
@@ -1770,6 +1954,21 @@ mod tests {
                 title: "the quay register".into(),
             };
             writeln!(file, "{}", serde_json::to_string(&title).unwrap()).unwrap();
+            // And what a late delivery leaves after its own checkpoint: the
+            // line owed to the next run, and a late failure's count. A chat
+            // that made a picture and was not written in again ends on
+            // these.
+            for late in [
+                Record::PendingNote {
+                    note: "the chart reached the owner".into(),
+                },
+                Record::LateFailure {
+                    run: 0,
+                    tool_use_id: "o9".into(),
+                },
+            ] {
+                writeln!(file, "{}", serde_json::to_string(&late).unwrap()).unwrap();
+            }
         }
         let out = ask_in(clean).await;
         assert!(
@@ -1958,7 +2157,36 @@ mod tests {
             sessions.clone(),
             Embedder::new(&embeddings().await).unwrap(),
         );
+        // Asked of before there is one, the index says so and is not made.
+        assert_eq!(standing(&home).unwrap(), None);
+        assert!(!dir_in(&home).exists());
         assert_eq!(spans.refresh().await.unwrap().0, 2);
+        // What the pass left, by the index's own count: both chats, every
+        // passage embedded, and the one that was outside content.
+        let stands = standing(&home).unwrap().unwrap();
+        let counted = stands.counted.clone().unwrap();
+        assert_eq!((counted.sessions, counted.outside), (2, 1), "{stands:?}");
+        assert!(counted.passages >= 2 && counted.embedded == counted.passages);
+        // No search has been counted, which is not a count of none.
+        assert_eq!(
+            (stands.searches, stands.withheld, stands.search_ms),
+            (None, None, None)
+        );
+        // A pass that changes nothing keeps the time and the duration of
+        // the one that did: marked here as long ago, and still so after.
+        let mark = |at: &str| {
+            open(&dir_in(&home))
+                .unwrap()
+                .execute(
+                    "UPDATE meta SET value = ?1 WHERE key IN ('counted_at', 'counted_secs')",
+                    [at],
+                )
+                .unwrap()
+        };
+        assert_eq!(mark("7"), 2);
+        assert_eq!(spans.refresh().await.unwrap(), (2, 0));
+        let kept = standing(&home).unwrap().unwrap().counted.unwrap();
+        assert_eq!((kept.at, kept.secs), (7, 7), "{kept:?}");
         let ctx = ToolCtx::default().with_workspace(std::env::temp_dir());
         let query = r#"{"berth": "C", "length": 200, "notice": "?"}"#;
         let ask_as = |conversation: &str, clean: bool| {
@@ -1976,7 +2204,15 @@ mod tests {
             out.content
         );
         assert!(!out.content.contains("reefer plugs dead") && !out.external);
-        assert_eq!(spans.withheld(), 1);
+        // What was held back is counted in the index, for a readout that
+        // is not a log.
+        let stands = standing(&home).unwrap().unwrap();
+        assert_eq!(
+            (stands.searches, stands.withheld),
+            (Some(1), Some(1)),
+            "{stands:?}"
+        );
+        assert!(stands.search_ms.is_some());
         // Said once to that chat, and still to be said to a third.
         assert_eq!(ask_as("another", true).await.unwrap().content, NOTHING);
         assert!(ask_as("third", true)
@@ -2000,6 +2236,15 @@ mod tests {
         );
         assert_eq!(run.refresh().await.unwrap(), (2, 0));
         assert_eq!(ask(&run, query).await.content, NOTHING);
+        // And one that changes the count says when it did.
+        web(
+            vec![Message::user("the pilot ladder on berth F is short")],
+            false,
+        );
+        spans.refresh().await.unwrap();
+        let now = standing(&home).unwrap().unwrap().counted.unwrap();
+        assert_eq!(now.sessions, 3);
+        assert!(now.at > 7, "{now:?}");
         assert!(ask_as("fifth", true)
             .await
             .unwrap()

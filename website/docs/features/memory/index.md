@@ -547,7 +547,8 @@ It is off until you turn it on.
 
 - Only clean passages are handed over: your own words, and what was said or
   read in a session that nothing from outside (a web page, mail, an external
-  server) had entered. What is left out is counted in the server's log.
+  server) had entered. What is left out is counted, and `mecha features`
+  shows the count on the `recall` line beside what the index holds.
 - Persona chats, calls, delegated tasks, front-door conversations and test
   sessions are never indexed.
 - The index lives under the mecha home (`spans/`) and is embedded by the
