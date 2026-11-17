@@ -19407,9 +19407,11 @@ justification = "echo is off on this box"
         // The search was made, and said nothing.
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(recalls_after_results(&convo), vec![false]);
-        // The tool it ran through can return private data and outside
-        // content, and dispatching it arms both. Nothing entered the
-        // conversation, so neither stays: a chat that was handed nothing
+        // The tool it ran through can return private data, and dispatching
+        // it arms that. (Its "nothing found" is the tool's own words and
+        // not outside content, so the other axis is never armed here and
+        // is asserted only as not having moved.) Nothing entered the
+        // conversation, so it does not stay: a chat that was handed nothing
         // must not lose its sends for a search the owner never saw.
         assert!(
             !convo.taint.private && !convo.taint.untrusted,
@@ -19513,7 +19515,11 @@ justification = "echo is off on this box"
         assert_eq!(said.len(), 1, "{said:?}");
         assert!(said[0].contains("it did not answer in time"), "{said:?}");
         assert_eq!(recalls_after_results(&convo), vec![false, false]);
-        // Nothing it might have found entered the conversation.
+        // The dropped search armed nothing: a result arms the conversation
+        // after its call returns, and this one never did. Not cover for the
+        // restore after a search that says nothing, which the test above
+        // is; this holds against arming from a tool's declaration before
+        // its call.
         assert!(
             !convo.taint.private && !convo.taint.untrusted,
             "{:?}",

@@ -749,9 +749,10 @@ pub struct Counted {
     pub embedded: u64,
     /// Passages that were outside content in the session that held them.
     pub outside: u64,
-    /// When the pass finished, in seconds since the epoch.
+    /// When the last pass that changed any of these counts finished, in
+    /// seconds since the epoch.
     pub at: u64,
-    /// How long the pass took.
+    /// How long that pass took.
     pub secs: u64,
 }
 
@@ -799,18 +800,36 @@ fn note_pass(index: &Path, took: std::time::Duration) -> Result<()> {
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
     let sessions: i64 = tx.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))?;
-    let at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    for (key, value) in [
+    let counts = [
         ("counted_sessions", sessions.to_string()),
         ("counted_passages", passages.to_string()),
         ("counted_embedded", embedded.to_string()),
         ("counted_outside", outside.to_string()),
+    ];
+    // A pass that found the index as the last one left it keeps that one's
+    // time and duration: every chat's first turn makes a pass, nearly all
+    // of them change nothing and take no time, and the row would otherwise
+    // say when a chat was last opened and "in 0 s" for good (review of
+    // #891).
+    let mut same = true;
+    for (key, value) in &counts {
+        let had: Option<String> = tx
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+            .optional()?;
+        same &= had.as_deref() == Some(value.as_str());
+    }
+    if same {
+        return Ok(());
+    }
+    // A clock that cannot say is a count not kept, never the epoch.
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("reading the time for the span index's count")?
+        .as_secs();
+    for (key, value) in counts.into_iter().chain([
         ("counted_at", at.to_string()),
         ("counted_secs", took.as_secs().to_string()),
-    ] {
+    ]) {
         tx.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
             params![key, value],
@@ -835,6 +854,8 @@ fn note_search(index: &Path, withheld: usize, took: std::time::Duration) -> Resu
     conn.execute_batch("PRAGMA busy_timeout = 250;")?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     for (key, add) in [("searches", 1u64), ("withheld", withheld as u64)] {
+        // `value` is a text column: the sum goes back in as text, which is
+        // what `standing` parses.
         tx.execute(
             "INSERT INTO meta (key, value) VALUES (?1, ?2)
              ON CONFLICT (key) DO UPDATE SET value = CAST(value AS INTEGER) + ?2",
@@ -1038,9 +1059,6 @@ pub struct Spans {
     /// it. Keyed by the conversation's session id, and by the empty string
     /// for the one run a tool made with [`Spans::new`] serves.
     handed: Mutex<std::collections::BTreeMap<String, BTreeSet<i64>>>,
-    /// Passages left out of a search that asked for clean ones only because
-    /// they were outside content: counted, never said to the run.
-    withheld: std::sync::atomic::AtomicU64,
 }
 
 impl Spans {
@@ -1052,7 +1070,6 @@ impl Spans {
             web: false,
             embedder,
             handed: Mutex::new(Default::default()),
-            withheld: Default::default(),
         }
     }
 
@@ -1068,7 +1085,6 @@ impl Spans {
             web: true,
             embedder,
             handed: Mutex::new(Default::default()),
-            withheld: Default::default(),
         }
     }
 
@@ -1080,12 +1096,6 @@ impl Spans {
             .embedder
             .embed(&["warm".to_string()], Task::Passage)
             .await;
-    }
-
-    /// How many passages searches that asked for clean ones only have left
-    /// out for being outside content, since this tool was made.
-    pub fn withheld(&self) -> u64 {
-        self.withheld.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Bring the index up to the home's earlier sessions and embed what is
@@ -1285,7 +1295,7 @@ impl Tool for Spans {
             .map(|h| h.get(&key).cloned().unwrap_or_default())
             .unwrap_or_default();
         let asking = conversation.clone();
-        let (hits, withheld) =
+        let (hits, _) =
             tokio::task::spawn_blocking(move || -> Result<(Vec<(i64, Span)>, usize)> {
                 let started = std::time::Instant::now();
                 let (hits, withheld) = choose_for(
@@ -1304,8 +1314,6 @@ impl Tool for Spans {
                 Ok((hits, withheld))
             })
             .await??;
-        self.withheld
-            .fetch_add(withheld as u64, std::sync::atomic::Ordering::Relaxed);
         if hits.is_empty() {
             // The tool's own words and not `.from_outside()`, on purpose:
             // unwrapped, they are what the loop and the run command compare
@@ -2147,6 +2155,21 @@ mod tests {
             (stands.searches, stands.withheld, stands.search_ms),
             (0, 0, None)
         );
+        // A pass that changes nothing keeps the time and the duration of
+        // the one that did: marked here as long ago, and still so after.
+        let mark = |at: &str| {
+            open(&dir_in(&home))
+                .unwrap()
+                .execute(
+                    "UPDATE meta SET value = ?1 WHERE key IN ('counted_at', 'counted_secs')",
+                    [at],
+                )
+                .unwrap()
+        };
+        assert_eq!(mark("7"), 2);
+        assert_eq!(spans.refresh().await.unwrap(), (2, 0));
+        let kept = standing(&home).unwrap().unwrap().counted.unwrap();
+        assert_eq!((kept.at, kept.secs), (7, 7), "{kept:?}");
         let ctx = ToolCtx::default().with_workspace(std::env::temp_dir());
         let query = r#"{"berth": "C", "length": 200, "notice": "?"}"#;
         let ask_as = |conversation: &str, clean: bool| {
@@ -2164,8 +2187,8 @@ mod tests {
             out.content
         );
         assert!(!out.content.contains("reefer plugs dead") && !out.external);
-        assert_eq!(spans.withheld(), 1);
-        // And the index keeps the count, for a readout that is not a log.
+        // What was held back is counted in the index, for a readout that
+        // is not a log.
         let stands = standing(&home).unwrap().unwrap();
         assert_eq!((stands.searches, stands.withheld), (1, 1), "{stands:?}");
         assert!(stands.search_ms.is_some());
@@ -2192,6 +2215,15 @@ mod tests {
         );
         assert_eq!(run.refresh().await.unwrap(), (2, 0));
         assert_eq!(ask(&run, query).await.content, NOTHING);
+        // And one that changes the count says when it did.
+        web(
+            vec![Message::user("the pilot ladder on berth F is short")],
+            false,
+        );
+        spans.refresh().await.unwrap();
+        let now = standing(&home).unwrap().unwrap().counted.unwrap();
+        assert_eq!(now.sessions, 3);
+        assert!(now.at > 7, "{now:?}");
         assert!(ask_as("fifth", true)
             .await
             .unwrap()
