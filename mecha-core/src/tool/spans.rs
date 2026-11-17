@@ -709,6 +709,128 @@ pub fn forget(home: &Path, session: &str) -> Result<usize> {
     Ok(gone)
 }
 
+/// What the index says of itself, read from its own file and no server:
+/// what the last pass that brought it up to date left it holding, and what
+/// searches have done since. The readout of a store that otherwise only a
+/// model reads; a host that logs at `warn` says none of this.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Standing {
+    /// What the last finished pass counted, and `None` when no pass has
+    /// finished since the index began keeping this: not counted is not zero.
+    pub counted: Option<Counted>,
+    /// Searches made since the index began keeping this.
+    pub searches: u64,
+    /// Passages those searches left out of a chat for being outside content.
+    pub withheld: u64,
+    /// How long the last search took once it had the query's embedding:
+    /// reading the index and choosing from it.
+    pub search_ms: Option<u64>,
+}
+
+/// One finished pass's count of the index.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Counted {
+    pub sessions: u64,
+    pub passages: u64,
+    /// Passages with a vector: the ones a search can find.
+    pub embedded: u64,
+    /// Passages that were outside content in the session that held them.
+    pub outside: u64,
+    /// When the pass finished, in seconds since the epoch.
+    pub at: u64,
+    /// How long the pass took.
+    pub secs: u64,
+}
+
+/// The standing of a home's index, and `None` when it has none yet. Opens
+/// the file to read only: asking must not make an index, nor change one.
+pub fn standing(home: &Path) -> Result<Option<Standing>> {
+    let path = dir_in(home).join("index.db");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let conn = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("opening the span index at {}", path.display()))?;
+    conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
+    let mut q = conn.prepare("SELECT key, value FROM meta")?;
+    let meta: std::collections::BTreeMap<String, String> = q
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    let n = |key: &str| meta.get(key).and_then(|v| v.parse::<u64>().ok());
+    // Whole or absent: a pass writes all six in one transaction.
+    let counted = (|| {
+        Some(Counted {
+            sessions: n("counted_sessions")?,
+            passages: n("counted_passages")?,
+            embedded: n("counted_embedded")?,
+            outside: n("counted_outside")?,
+            at: n("counted_at")?,
+            secs: n("counted_secs")?,
+        })
+    })();
+    Ok(Some(Standing {
+        counted,
+        searches: n("searches").unwrap_or(0),
+        withheld: n("withheld").unwrap_or(0),
+        search_ms: n("search_ms"),
+    }))
+}
+
+/// Keep a finished pass's count of the index, for [`standing`].
+fn note_pass(index: &Path, took: std::time::Duration) -> Result<()> {
+    let mut conn = open(index)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let (passages, embedded, outside): (i64, i64, i64) = tx.query_row(
+        "SELECT COUNT(*), COUNT(vec), COALESCE(SUM(outside), 0) FROM spans",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    let sessions: i64 = tx.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))?;
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    for (key, value) in [
+        ("counted_sessions", sessions.to_string()),
+        ("counted_passages", passages.to_string()),
+        ("counted_embedded", embedded.to_string()),
+        ("counted_outside", outside.to_string()),
+        ("counted_at", at.to_string()),
+        ("counted_secs", took.as_secs().to_string()),
+    ] {
+        tx.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Keep one search's part of [`standing`]: that it was made, what it left
+/// out, and how long reading and choosing took. Only in an index that
+/// exists: a search reads and never makes one.
+fn note_search(index: &Path, withheld: usize, took: std::time::Duration) -> Result<()> {
+    if !index.join("index.db").exists() {
+        return Ok(());
+    }
+    let mut conn = open(index)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    for (key, add) in [("searches", 1u64), ("withheld", withheld as u64)] {
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = CAST(value AS INTEGER) + ?2",
+            params![key, add.to_string()],
+        )?;
+    }
+    tx.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('search_ms', ?1)",
+        [took.as_millis().to_string()],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Every embedded passage, with its vector.
 fn embedded(index: &Path, web: bool) -> Result<Vec<(i64, Span, Vec<f32>)>> {
     // A call reads and never makes: an index nothing has built holds
@@ -960,6 +1082,7 @@ impl Spans {
             self.sessions.clone(),
             self.current.clone(),
         );
+        let started = std::time::Instant::now();
         let trial = crate::experiment::in_experiment_home();
         let covered = tokio::task::spawn_blocking(move || {
             read_sessions(&index, &sessions, current.as_deref(), trial)
@@ -1031,6 +1154,9 @@ impl Spans {
             );
             }
         }
+        let index = self.index.clone();
+        let took = started.elapsed();
+        tokio::task::spawn_blocking(move || note_pass(&index, took)).await??;
         Ok((covered, done))
     }
 }
@@ -1134,14 +1260,21 @@ impl Tool for Spans {
         let asking = conversation.clone();
         let (hits, withheld) =
             tokio::task::spawn_blocking(move || -> Result<(Vec<(i64, Span)>, usize)> {
-                Ok(choose_for(
+                let started = std::time::Instant::now();
+                let (hits, withheld) = choose_for(
                     &embedded(&index, web)?,
                     &query,
                     &qvec,
                     &handed,
                     asking.as_deref(),
                     clean,
-                ))
+                );
+                // The readout's, and not the search's to fail on: a count
+                // that could not be kept leaves the passages found as found.
+                if let Err(e) = note_search(&index, withheld, started.elapsed()) {
+                    tracing::warn!("a search of the span index was not counted: {e:#}");
+                }
+                Ok((hits, withheld))
             })
             .await??;
         self.withheld
@@ -1958,7 +2091,20 @@ mod tests {
             sessions.clone(),
             Embedder::new(&embeddings().await).unwrap(),
         );
+        // Asked of before there is one, the index says so and is not made.
+        assert_eq!(standing(&home).unwrap(), None);
+        assert!(!dir_in(&home).exists());
         assert_eq!(spans.refresh().await.unwrap().0, 2);
+        // What the pass left, by the index's own count: both chats, every
+        // passage embedded, and the one that was outside content.
+        let stands = standing(&home).unwrap().unwrap();
+        let counted = stands.counted.clone().unwrap();
+        assert_eq!((counted.sessions, counted.outside), (2, 1), "{stands:?}");
+        assert!(counted.passages >= 2 && counted.embedded == counted.passages);
+        assert_eq!(
+            (stands.searches, stands.withheld, stands.search_ms),
+            (0, 0, None)
+        );
         let ctx = ToolCtx::default().with_workspace(std::env::temp_dir());
         let query = r#"{"berth": "C", "length": 200, "notice": "?"}"#;
         let ask_as = |conversation: &str, clean: bool| {
@@ -1977,6 +2123,10 @@ mod tests {
         );
         assert!(!out.content.contains("reefer plugs dead") && !out.external);
         assert_eq!(spans.withheld(), 1);
+        // And the index keeps the count, for a readout that is not a log.
+        let stands = standing(&home).unwrap().unwrap();
+        assert_eq!((stands.searches, stands.withheld), (1, 1), "{stands:?}");
+        assert!(stands.search_ms.is_some());
         // Said once to that chat, and still to be said to a third.
         assert_eq!(ask_as("another", true).await.unwrap().content, NOTHING);
         assert!(ask_as("third", true)

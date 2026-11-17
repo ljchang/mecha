@@ -19365,6 +19365,169 @@ justification = "echo is off on this box"
     }
 
     #[tokio::test]
+    async fn a_search_that_finds_nothing_leaves_the_conversation_as_it_was() {
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let turns = vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t0".into(),
+                    name: "echo".into(),
+                    input: json!({"value": "quiet"}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("Assigned.")], StopReason::EndTurn),
+        ];
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![
+                Arc::new(EchoTool),
+                Arc::new(Remembers {
+                    calls: calls.clone(),
+                    fails: false,
+                }),
+            ],
+            PermissionMode::Allow,
+        );
+        agent.cfg.force_final_answer = false;
+        let mut cx = RunContext::clone(agent.context());
+        cx.recall_on_result = Some(ResultRecall {
+            tool: "remembers".into(),
+            input: Arc::new(|tool, _input, result| Some(json!({"tool": tool, "read": result}))),
+            stem: RECALLED.into(),
+            nothing: "nothing found".into(),
+            failed_stem: NOT_SEARCHED.into(),
+            limit: 3,
+            deadline: None,
+            own_voice: true,
+        });
+        let mut convo = Conversation::user("place the vessel");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        // The search was made, and said nothing.
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(recalls_after_results(&convo), vec![false]);
+        // The tool it ran through can return private data and outside
+        // content, and dispatching it arms both. Nothing entered the
+        // conversation, so neither stays: a chat that was handed nothing
+        // must not lose its sends for a search the owner never saw.
+        assert!(
+            !convo.taint.private && !convo.taint.untrusted,
+            "{:?}",
+            convo.taint
+        );
+    }
+
+    /// A search that takes longer than any turn should wait.
+    struct Dawdles {
+        calls: Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    #[async_trait]
+    impl Tool for Dawdles {
+        fn name(&self) -> &str {
+            "remembers"
+        }
+        fn description(&self) -> &str {
+            "Search what earlier runs found, slowly."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        fn capabilities(&self) -> crate::tool::Capabilities {
+            crate::tool::Capabilities::default().private().untrusted()
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            Ok(ToolOutput::ok("found, far too late").from_outside())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_search_past_its_deadline_is_a_search_that_failed() {
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let echo = |id: &str, value: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "echo".into(),
+                    input: json!({"value": value}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let turns = vec![
+            echo("t0", "berth C, 200 m"),
+            echo("t1", "berth E, 150 m"),
+            assistant(vec![Block::text("Assigned.")], StopReason::EndTurn),
+        ];
+        let (mut agent, provider) = agent_with_tools(
+            turns,
+            vec![
+                Arc::new(EchoTool),
+                Arc::new(Dawdles {
+                    calls: calls.clone(),
+                }),
+            ],
+            PermissionMode::Allow,
+        );
+        agent.cfg.force_final_answer = false;
+        let mut cx = RunContext::clone(agent.context());
+        cx.recall_on_result = Some(ResultRecall {
+            tool: "remembers".into(),
+            input: Arc::new(|tool, _input, result| Some(json!({"tool": tool, "read": result}))),
+            stem: RECALLED.into(),
+            nothing: "nothing found".into(),
+            failed_stem: NOT_SEARCHED.into(),
+            limit: 5,
+            deadline: Some(std::time::Duration::from_millis(50)),
+            own_voice: true,
+        });
+        let mut convo = Conversation::user("place the vessel");
+        let started = std::time::Instant::now();
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        // The turn went on without it, and did not wait the search out.
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(provider.seen.lock().unwrap().len(), 3);
+        // Asked once and not again after the second call: out of time is a
+        // search that failed.
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let said: Vec<String> = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                Block::Text { text } if text.starts_with(NOT_SEARCHED) => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].contains("it did not answer in time"), "{said:?}");
+        assert_eq!(recalls_after_results(&convo), vec![false, false]);
+        // Nothing it might have found entered the conversation.
+        assert!(
+            !convo.taint.private && !convo.taint.untrusted,
+            "{:?}",
+            convo.taint
+        );
+        // Every result still answers a call the model made, and no call was
+        // left for the search.
+        assert!(!convo.messages.iter().any(|m| m
+            .tool_uses()
+            .iter()
+            .any(|(_, name, _)| *name == "remembers")));
+    }
+
+    #[tokio::test]
     async fn a_failed_call_is_followed_by_one_harness_recall_up_to_the_limit() {
         let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let turns = vec![

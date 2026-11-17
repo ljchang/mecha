@@ -688,6 +688,9 @@ pub struct Facts {
     /// What the home holds of a memory store (`memory_home::store`): none of
     /// it, all of it, some of it, or unreadable. Never an open.
     pub memory_store: crate::memory_home::Store,
+    /// What the home's recall index says of itself
+    /// (`tool::spans::standing`): a read of its own file, never a search.
+    pub recall_index: RecallIndex,
     /// The **global** configuration — the only one any row reads.
     ///
     /// Carried here, rather than taken beside `Facts`, so the rule is the
@@ -744,9 +747,58 @@ impl Facts {
                     .is_ok_and(|m| m.is_file() && m.len() == pin.binary_bytes)
             }),
             memory_store: crate::memory_home::store(home),
+            recall_index: match crate::tool::spans::standing(home) {
+                Ok(None) => RecallIndex::Absent,
+                Ok(Some(standing)) => RecallIndex::Held(standing),
+                Err(e) => RecallIndex::Unreadable(format!("{e:#}")),
+            },
             config: global.clone(),
         }
     }
+}
+
+/// What the disk says of the recall index.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum RecallIndex {
+    /// No index yet: the first chat that asks makes it.
+    #[default]
+    Absent,
+    /// There is one and it could not be read. Never an empty one.
+    Unreadable(String),
+    Held(crate::tool::spans::Standing),
+}
+
+/// The recall row's words for an index that was read: what it holds, when
+/// that was counted, and what searches have done. A number is said only
+/// where the index kept one.
+fn recall_detail(standing: &crate::tool::spans::Standing) -> String {
+    let mut out = match &standing.counted {
+        Some(c) => {
+            let when = chrono::DateTime::<chrono::Utc>::from_timestamp(c.at as i64, 0)
+                .map(|t| t.format("%Y-%m-%d %H:%MZ").to_string())
+                .unwrap_or_else(|| "at a time that could not be read".into());
+            let mut line = format!(
+                "{} passage(s) from {} chat(s) and run(s), {} of them outside content and kept from chats; counted {when} in {} s",
+                c.passages, c.sessions, c.outside, c.secs
+            );
+            if c.embedded < c.passages {
+                line.push_str(&format!(
+                    "; {} not yet embedded and not found by a search",
+                    c.passages - c.embedded
+                ));
+            }
+            line
+        }
+        None => "an index in the mecha home, not counted since it began keeping a count".into(),
+    };
+    match standing.search_ms {
+        Some(ms) => out.push_str(&format!(
+            "; {} search(es) since, {} passage(s) held back from a chat as outside content, the last search {ms} ms",
+            standing.searches, standing.withheld
+        )),
+        None => out.push_str("; no search counted yet"),
+    }
+    out
 }
 
 /// Does `dir` hold a persona — a directory with a `persona.toml`, which is
@@ -2074,8 +2126,19 @@ fn own_state(facts: &Facts, f: Feature) -> State {
         // the first attempt kept.
         Feature::Corrections => on("attempts and your verdicts on them, in the mecha home"),
         // Nothing to set up past the switch: the index is made by the first
-        // chat that asks, and embedded by the embeddings server.
-        Feature::Recall => on("an index of what your chats and runs said, in the mecha home"),
+        // chat that asks, and embedded by the embeddings server. What the
+        // row says is the index's own count of itself, since a server that
+        // logs at `warn` says nothing of what was indexed or held back
+        // (owed from the review of #890).
+        Feature::Recall => match &facts.recall_index {
+            RecallIndex::Absent => on(
+                "no index yet: the first chat or run that asks makes it, in the mecha home's spans/",
+            ),
+            RecallIndex::Held(standing) => on(recall_detail(standing)),
+            RecallIndex::Unreadable(why) => State::Unknown {
+                reason: format!("the recall index could not be read: {why}"),
+            },
+        },
     }
 }
 
@@ -2621,6 +2684,63 @@ mod tests {
         assert_eq!(memory(&facts).word(), "on");
         set_switch(&mut facts.config, Feature::Memory, false);
         assert_eq!(memory(&facts).word(), "off");
+    }
+
+    /// Recall's row is the index's own count of itself: what no log at the
+    /// server's default level says, and never a number the index did not
+    /// keep.
+    #[test]
+    fn recall_says_what_its_index_holds_and_what_it_held_back() {
+        use crate::tool::spans::{Counted, Standing};
+        let recall = |facts: &Facts| state(facts, Feature::Recall);
+        let mut facts = empty_machine();
+        set_switch(&mut facts.config, Feature::Recall, true);
+        let State::On { detail } = recall(&facts) else {
+            panic!("on past the switch, with nothing to set up")
+        };
+        assert!(detail.contains("no index yet"), "{detail}");
+        // An index nothing has counted or searched says so, with no number.
+        facts.recall_index = RecallIndex::Held(Standing::default());
+        let State::On { detail } = recall(&facts) else {
+            panic!("an index is on")
+        };
+        assert!(
+            detail.contains("not counted") && detail.contains("no search counted yet"),
+            "{detail}"
+        );
+        assert!(!detail.chars().any(|c| c.is_ascii_digit()), "{detail}");
+        facts.recall_index = RecallIndex::Held(Standing {
+            counted: Some(Counted {
+                sessions: 12,
+                passages: 340,
+                embedded: 300,
+                outside: 71,
+                at: 1_794_875_000,
+                secs: 33,
+            }),
+            searches: 9,
+            withheld: 4,
+            search_ms: Some(18),
+        });
+        let State::On { detail } = recall(&facts) else {
+            panic!("an index is on")
+        };
+        for said in [
+            "340 passage(s) from 12 chat(s) and run(s)",
+            "71 of them outside content",
+            "40 not yet embedded",
+            "9 search(es) since",
+            "4 passage(s) held back",
+            "18 ms",
+        ] {
+            assert!(detail.contains(said), "{said}: {detail}");
+        }
+        // Could not be read: a finding, never an empty index.
+        facts.recall_index = RecallIndex::Unreadable("the file is not a database".into());
+        let State::Unknown { reason } = recall(&facts) else {
+            panic!("an unreadable index is unknown")
+        };
+        assert!(reason.contains("not a database"), "{reason}");
     }
 
     #[test]

@@ -11817,8 +11817,17 @@ for the whole door (`serve::chat::Recall`).
   content for being memory (the owner's ruling, 2026-11-16), and nothing
   here clears an origin: that waits on an offline pass.
 - **The web chat is handed clean passages only.** The door asks with
-  `clean: true`; what that leaves out is counted (`Spans::withheld`) and
-  logged, never said to the run. A model that calls `span_recall` itself
+  `clean: true`; what that leaves out is counted in the index itself and
+  never said to the run. **The index's readout is its own file, not a
+  log** (`spans::standing`, the `recall` row of `mecha features`): what the
+  last finished pass counted (sessions, passages, how many are embedded,
+  how many were outside content, when, how long) and what searches have
+  done since (how many, how many passages held back, how long the last
+  took once it had its embedding). `mecha serve` logs at `warn`, and the
+  first version said its counts at `info`, where nobody saw them (review
+  of #890). A count the index did not keep is said as not kept, never as
+  zero, and `standing` opens the file read-only so that asking makes no
+  index. A model that calls `span_recall` itself
   gets outside passages as outside content, envelope and taint and all.
 - **Which sessions are history is a closed list read from each header**
   (`quotable`): one-shot runs, and web chats for the shared index. A

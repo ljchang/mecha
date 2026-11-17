@@ -417,9 +417,12 @@ pub(super) struct Recall {
     warmed: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 
-/// How long a warming is taken to last. The embeddings server stops after
-/// ten idle minutes (`docs/LLAMA-SERVER.md`); a page that is open asks for
-/// its transcript far more often than this.
+/// How long a warming is taken to last: half the ten idle minutes after
+/// which the embeddings server stops (`docs/LLAMA-SERVER.md`). A warming is
+/// asked for when a chat's transcript is asked for, which is when its page
+/// opens or comes back, and not while it sits open: a page left idle past
+/// the server's stop meets a cold one on its next message, which
+/// `RECALL_DEADLINE` is long enough to let through.
 const WARM_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// The most searches the harness makes after calls in one turn of a chat.
@@ -495,8 +498,10 @@ impl Recall {
 
     /// Bring the index up to date for a chat's first turn, without waiting.
     /// What a search finds meanwhile is what was indexed before: a chat
-    /// started while a long first embedding runs is handed less, and the
-    /// log says when the pass ends and what it covered.
+    /// started while a long first embedding runs is handed less. The pass
+    /// leaves its count in the index, which `mecha features` reads
+    /// (`tool::spans::standing`); the line here is below the server's
+    /// default log level.
     fn refresh_once_for(&self, chat: &str) {
         let first = self
             .refreshed
@@ -4210,15 +4215,18 @@ fn begin_turn(
         // and never this chat's own. An ordinary web chat only, for the
         // reasons corrections has; and only where the tool is on the agent,
         // which it is while the switch is on.
-        let recall = state_for_task.recall.clone().zip(session.kept().filter(|s| {
-            s.meta.kind == Some(mecha_core::session::SessionKind::Web)
-                && workflow.is_none()
-                && draw.is_none()
-                && agent
-                    .registry()
-                    .get(mecha_core::tool::spans::NAME)
-                    .is_some()
-        }));
+        let recall = state_for_task
+            .recall
+            .clone()
+            .zip(session.kept().filter(|s| {
+                s.meta.kind == Some(mecha_core::session::SessionKind::Web)
+                    && workflow.is_none()
+                    && draw.is_none()
+                    && agent
+                        .registry()
+                        .get(mecha_core::tool::spans::NAME)
+                        .is_some()
+            }));
         if let Some((recall, kept)) = &recall {
             use mecha_core::tool::spans;
             let chat = kept.meta.id.clone();
@@ -4296,14 +4304,6 @@ fn begin_turn(
             });
         }
         let outcome = agent.run_in(&cx, &mut conversation, Some(tx)).await;
-        if let Some((recall, _)) = &recall {
-            let withheld = recall.index.withheld();
-            if withheld > 0 {
-                tracing::info!(
-                    "recall has withheld {withheld} passage(s) from chats since this serve started, for holding outside content"
-                );
-            }
-        }
         let _ = forwarder.await;
         if let Some((store, id, _guard)) = &workflow {
             if let Err(e) = store.finish_task(
