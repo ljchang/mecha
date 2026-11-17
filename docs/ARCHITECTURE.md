@@ -5964,6 +5964,15 @@ catastrophic for the answer that decides whether to start a run. It fails
 closed on a record it cannot read and skips a thing that was never a record;
 conflating those two is one stray `.DS_Store` disabling the whole feature.
 
+**The events already handled are remembered across a restart**
+(`slack::seen::SeenEvents`, `~/.mecha/slack/seen-events`, one id per line).
+Acks precede the handler and Slack's redelivery is undocumented, so an event
+is deduplicated by its `event_id`; held only in memory, a redelivery to the
+restarted connector was a first sighting and a second run. It is a dedupe and
+never a gate: a file that cannot be read or written is a warning and the ring
+carries on in memory, because refusing events whose ids could not be recorded
+would turn a disk fault into a connector that answers nobody.
+
 **Inbound text is a prompt, never a command.** `/model` rebuilds the agent,
 `/clear` drops the conversation and its taint, and `!` runs a shell command
 with no approver in front of it. Those are affordances of sitting at the
