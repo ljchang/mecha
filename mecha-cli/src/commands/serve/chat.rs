@@ -1132,9 +1132,10 @@ impl ChatState {
                         mecha_core::followup::due_to_wake(w, chrono::Utc::now()),
                         "no longer due to wake"
                     );
-                    let now = chrono::Utc::now();
-                    w.woken_at = Some(now);
-                    w.record(FOLLOW_UP_WOKEN, session_id.clone(), now);
+                    // The mark alone: the event waits until the turn has
+                    // started, so a claim given back leaves nothing behind
+                    // (review of #897).
+                    w.woken_at = Some(chrono::Utc::now());
                     Ok(())
                 })
                 .map_err(|_| WakeSkip::Later)?;
@@ -1180,6 +1181,12 @@ impl ChatState {
                 )));
             }
         };
+        if let Err(e) = store.update(&w.id, |w| {
+            w.record(FOLLOW_UP_WOKEN, session_id.clone(), chrono::Utc::now());
+            Ok(())
+        }) {
+            tracing::warn!(workflow = %w.id, "could not record that a follow-up woke: {e:#}");
+        }
         let (kind, detail) = match started.done.await {
             Ok(Ok(_)) => (FOLLOW_UP_ANSWERED, session_id),
             Ok(Err(e)) => (FOLLOW_UP_FAILED, e),
@@ -9838,6 +9845,10 @@ mod wake_tests {
         assert!(seen.lock().unwrap().is_empty());
         let w = WorkflowStore::default_store().unwrap().get(&id).unwrap();
         assert!(w.woken_at.is_none(), "the claim was not given back");
+        assert!(
+            !w.events.iter().any(|e| e.kind == FOLLOW_UP_WOKEN),
+            "a turn that never started left a woken event behind"
+        );
         assert!(mecha_core::followup::due_to_wake(&w, chrono::Utc::now()));
         assert_eq!(
             w.events.last().map(|e| e.kind.as_str()),
@@ -9876,6 +9887,18 @@ mod wake_tests {
         assert!(
             js.contains(&format!("'{}'", followup::WAKE_STEM)),
             "web/src/lib/chat-wake.js's WAKE_STEM no longer matches core's"
+        );
+        // And the wrapper the page parses the proposed words out of
+        // (` — "…", proposed `), from core's own rendering (review of #897).
+        let turn = followup::render_wake("check the build", chrono::Utc::now(), chrono_tz::UTC);
+        let rest = turn.strip_prefix(followup::WAKE_STEM).unwrap();
+        assert!(
+            rest.starts_with(" — \"check the build\", proposed "),
+            "render_wake's wrapper changed; web/src/lib/chat-wake.js parses ` — \"…\", proposed `: {rest}"
+        );
+        assert!(
+            js.contains(r#"^ — "(.*?)", proposed "#),
+            "chat-wake.js's pattern moved"
         );
     }
 }
