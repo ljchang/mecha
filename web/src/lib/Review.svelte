@@ -11,7 +11,7 @@
   import { isShown, refuses } from './features.js';
 
   let { initial = null, navigate = () => {} } = $props();
-  // The three proposal stores are panes in their own right rather than one
+  // The four proposal stores are panes in their own right rather than one
   // `proposals` pane with hidden state: each is a card on the home page, and
   // a card has to land on the store it names. They share one component and
   // one tab — six tabs on a phone is a scroller nobody reads.

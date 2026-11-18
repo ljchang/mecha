@@ -2285,15 +2285,7 @@ async fn completion(
     // `propose_follow_up`; it is withheld here until the follow-up design
     // reaches voice (F4's order), so the call neither refuses falsely nor
     // records a proposal on a surface nothing yet returns to (review of #896).
-    cx.withheld = cx
-        .withheld
-        .iter()
-        .cloned()
-        .chain(std::iter::once(
-            mecha_core::tool::follow_up::NAME.to_string(),
-        ))
-        .collect::<Vec<_>>()
-        .into();
+    cx.withheld = crate::commands::serve::withheld_when_spoken(&cx.withheld);
     // The facade's own slot is the *second* door a spoken turn can take, and
     // it needs the same narrowing the hosted one got.
     //
