@@ -256,6 +256,7 @@ pub fn today() -> Result<serde_json::Value> {
                 FOLLOW_UP_ANSWERED => Some("Answered in its chat".to_string()),
                 FOLLOW_UP_FAILED => Some(format!("The woken run did not finish: {}", e.detail)),
                 FOLLOW_UP_NOT_WOKEN => Some(format!("Not woken: {}", e.detail)),
+                FOLLOW_UP_WAITING => Some(format!("Waiting to wake: {}", e.detail)),
                 _ => None,
             }
         });

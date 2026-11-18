@@ -945,6 +945,24 @@ impl ChatState {
         for w in due {
             match self.wake_follow_up(&w).await {
                 Ok(()) | Err(WakeSkip::Later) => {}
+                Err(WakeSkip::Waiting(why)) => {
+                    let id = w.id.clone();
+                    let said = w.events.last().is_some_and(|e| {
+                        e.kind == mecha_core::workflow::FOLLOW_UP_WAITING && e.detail == why
+                    });
+                    if !said {
+                        if let Err(e) = store.update(&id, |w| {
+                            w.record(
+                                mecha_core::workflow::FOLLOW_UP_WAITING,
+                                why.clone(),
+                                chrono::Utc::now(),
+                            );
+                            Ok(())
+                        }) {
+                            tracing::warn!(workflow = %id, "could not record why a follow-up waits: {e:#}");
+                        }
+                    }
+                }
                 // Said once, on the workflow, and never tried again: the
                 // reminder still comes due, and the card says why no run did.
                 Err(WakeSkip::Never(why)) => {
@@ -985,14 +1003,15 @@ impl ChatState {
         // Staging-only is the outbox's to enforce: with no route a woken
         // run's send would deliver, with nobody watching.
         if bound.agent.context().outbox.is_none() {
-            return Err(WakeSkip::Never(
-                "no outbox route: a woken run could send directly, so none was started — \
-                 name your send tools in `[outbox] tools`"
+            return Err(WakeSkip::Waiting(
+                "no outbox route: a woken run could send directly, so none is started until \
+                 `[outbox] tools` names your send tools"
                     .into(),
             ));
         }
-        let path = Session::find(self.sessions_dir(), &session_id)
-            .map_err(|_| WakeSkip::Never("its conversation is no longer recorded".into()))?;
+        let path = Session::find(self.sessions_dir(), &session_id).map_err(|e| {
+            WakeSkip::Waiting(format!("its conversation could not be found ({e:#})"))
+        })?;
         // A memory chat takes verified typed input only (`speak`'s rule).
         if !matches!(memory_marked(&path), Ok(false)) {
             return Err(WakeSkip::Never(
@@ -1084,7 +1103,13 @@ impl ChatState {
             // (review of #897).
             store
                 .update(&w.id, |w| {
-                    anyhow::ensure!(w.woken_at.is_none(), "already woken");
+                    // The whole rule, re-read under the lock: a workflow the
+                    // owner closed or snoozed since the list was taken, or
+                    // another waker claimed, is not woken (review of #897).
+                    anyhow::ensure!(
+                        mecha_core::followup::due_to_wake(w, chrono::Utc::now()),
+                        "no longer due to wake"
+                    );
                     let now = chrono::Utc::now();
                     w.woken_at = Some(now);
                     w.record(FOLLOW_UP_WOKEN, session_id.clone(), now);
@@ -3609,6 +3634,11 @@ mod narrowing_tests {
 enum WakeSkip {
     /// Try again next minute: a seat, the conversation, or a writer is busy.
     Later,
+    /// Try again next minute, and say why on the workflow — once, not every
+    /// minute: a condition the owner can change (configuring the outbox),
+    /// so it must not retire the follow-up, and must not be silent either
+    /// (review of #897).
+    Waiting(String),
     /// Not this follow-up, ever: the reason is recorded on its workflow and
     /// the reminder alone stands.
     Never(String),
@@ -9469,20 +9499,33 @@ mod wake_tests {
     /// With the switch off, or no outbox route to keep the run staging-only,
     /// nothing runs; the reason is recorded once and the reminder stands.
     #[tokio::test]
-    async fn no_switch_or_no_outbox_starts_nothing_and_says_why() {
-        for (on, outbox, why) in [(true, false, "no outbox route")] {
-            let home = crate::testenv::HomeGuard::new("wake-refused");
-            let (chat, seen) = waking_chat(on, outbox);
-            let (id, _) = due_follow_up(&chat, &home.dir);
-            chat.wake_due_follow_ups().await;
-            assert!(seen.lock().unwrap().is_empty(), "{why}: a run started");
-            let w = WorkflowStore::default_store().unwrap().get(&id).unwrap();
-            let last = w.events.last().unwrap();
-            assert_eq!(last.kind, FOLLOW_UP_NOT_WOKEN, "{why}");
-            assert!(last.detail.contains(why), "{}", last.detail);
-            assert!(w.woken_at.is_some(), "{why}: said once, not every minute");
-            drop(home);
-        }
+    async fn no_outbox_route_waits_and_says_why_once() {
+        // No outbox route waits, and says so once: configuring the outbox
+        // after switching follow-ups on must not have retired what came due
+        // (review of #897).
+        let home = crate::testenv::HomeGuard::new("wake-refused");
+        let (chat, seen) = waking_chat(true, false);
+        let (id, _) = due_follow_up(&chat, &home.dir);
+        chat.wake_due_follow_ups().await;
+        chat.wake_due_follow_ups().await;
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "a run started with no outbox route"
+        );
+        let w = WorkflowStore::default_store().unwrap().get(&id).unwrap();
+        let waits: Vec<_> = w
+            .events
+            .iter()
+            .filter(|e| e.kind == mecha_core::workflow::FOLLOW_UP_WAITING)
+            .collect();
+        assert_eq!(waits.len(), 1, "said once, not every minute");
+        assert!(
+            waits[0].detail.contains("no outbox route"),
+            "{}",
+            waits[0].detail
+        );
+        assert!(w.woken_at.is_none(), "waiting, not retired");
+        assert!(!w.events.iter().any(|e| e.kind == FOLLOW_UP_NOT_WOKEN));
     }
 
     /// Switched off is a pause: nothing runs and nothing is recorded, so
@@ -9575,6 +9618,29 @@ mod wake_tests {
             .unwrap();
         assert!(chat.wake_follow_up(&stale).await.is_err());
         assert!(seen.lock().unwrap().is_empty(), "the loser ran a turn");
+    }
+
+    /// The claim re-reads the whole rule under the lock: a workflow the
+    /// owner snoozed after the waker listed it is not woken.
+    #[tokio::test]
+    async fn a_follow_up_snoozed_after_the_listing_is_not_woken() {
+        let home = crate::testenv::HomeGuard::new("wake-snoozed");
+        let (chat, seen) = waking_chat(true, true);
+        let (id, _) = due_follow_up(&chat, &home.dir);
+        let store = WorkflowStore::default_store().unwrap();
+        let listed = store.get(&id).unwrap();
+        store
+            .update(&id, |w| {
+                w.snoozed_until = Some(chrono::Utc::now() + chrono::Duration::hours(1));
+                Ok(())
+            })
+            .unwrap();
+        assert!(chat.wake_follow_up(&listed).await.is_err());
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "a snoozed follow-up was woken"
+        );
+        assert!(store.get(&id).unwrap().woken_at.is_none());
     }
 
     /// The page shows a wake as a note, keyed on core's stem; the two copies

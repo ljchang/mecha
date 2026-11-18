@@ -136,14 +136,18 @@ still only reminds.
   a crash never runs it twice).
 - **When it does not, and says so.** Each of these leaves the reminder as it
   is and records an event naming the reason, which the workflow card shows:
-  there is no outbox route (a woken run that could send directly is not
-  staging-only); the transcript is gone; it is a memory chat. Retried on the
+  it is a memory chat. Retried each minute and said once on the workflow
+  (`follow_up_waiting`), because the owner can change it: there is no outbox
+  route (a woken run that could send directly is not staging-only, so
+  configuring `[outbox] tools` after switching follow-ups on wakes what came
+  due meanwhile); the transcript cannot be found. Retried on the
   next minute, and not recorded: the feature is switched off (a pause, so
   switching it back on wakes what came due meanwhile); another writer holds
   the conversation (a task run, the TUI); a turn is in flight or the
   transcript ends on a user message; no background seat is free. The woken
-  mark is claimed under the workflow store's lock, so a second `serve` on
-  one home never wakes the same follow-up.
+  mark is claimed under the workflow store's lock, re-checking the whole rule
+  there, so a second `serve` on one home never wakes the same follow-up and a
+  workflow closed or snoozed since the listing is not woken.
 - **The turn.** A harness-voiced user turn, with its own stem so the
   correction miner and the taint reader know it is not the owner's:
   `(From the harness: a follow-up you proposed is due — "<what>", proposed

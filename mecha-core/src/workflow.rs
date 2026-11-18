@@ -19,6 +19,8 @@ use std::{
 /// (`crate::followup`), and that the tick turns into the owner's notice.
 pub const FOLLOW_UP_WOKEN: &str = "follow_up_woken";
 pub const FOLLOW_UP_NOT_WOKEN: &str = "follow_up_not_woken";
+/// Not woken yet, for a reason the owner can change; retried each minute.
+pub const FOLLOW_UP_WAITING: &str = "follow_up_waiting";
 pub const FOLLOW_UP_ANSWERED: &str = "follow_up_answered";
 pub const FOLLOW_UP_FAILED: &str = "follow_up_failed";
 
