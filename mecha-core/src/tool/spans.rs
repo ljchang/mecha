@@ -2478,9 +2478,14 @@ mod tests {
         );
         let counted = standing(&home).unwrap().unwrap().counted.unwrap();
         assert_eq!(counted.ms, 33_000, "{counted:?}");
-        // Both kept: the newer is this build's.
-        meta("INSERT INTO meta VALUES ('counted_ms', '7');");
-        assert_eq!(standing(&home).unwrap().unwrap().counted.unwrap().ms, 7);
+        // Both kept: the newer is this build's. A value no pass of this
+        // fixture can take, so the pass below cannot land on it by chance
+        // (review of #899, pass 4).
+        meta("INSERT INTO meta VALUES ('counted_ms', '999999999');");
+        assert_eq!(
+            standing(&home).unwrap().unwrap().counted.unwrap().ms,
+            999_999_999
+        );
         // A pass that changes nothing leaves both as they were.
         spans.refresh().await.unwrap();
         assert_eq!(keys(), ["counted_ms", "counted_secs"]);
@@ -2488,7 +2493,10 @@ mod tests {
         web("the pilot ladder on berth F is short");
         spans.refresh().await.unwrap();
         assert_eq!(keys(), ["counted_ms"]);
-        assert_ne!(standing(&home).unwrap().unwrap().counted.unwrap().ms, 7);
+        assert_ne!(
+            standing(&home).unwrap().unwrap().counted.unwrap().ms,
+            999_999_999
+        );
         let _ = std::fs::remove_dir_all(home);
     }
 
