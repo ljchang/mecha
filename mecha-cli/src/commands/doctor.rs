@@ -55,6 +55,12 @@ pub async fn execute(args: Args) -> Result<()> {
             if mecha_core::feature::switched_on(&cfg, mecha_core::feature::Feature::MailRules) {
                 findings.extend(mail_rules_timer());
             }
+            // The collector's log is `examine`'s; a collector switched on
+            // that never wrote one is said here, where the switch is read.
+            findings.extend(doctor::check_github_never_ran(
+                &home,
+                mecha_core::feature::switched_on(&cfg, mecha_core::feature::Feature::Github),
+            ));
             // The LoRA registry's files are checked against the folders
             // `[image]` and `[video]` name, so it reads the same config.
             findings.extend(doctor::check_loras(

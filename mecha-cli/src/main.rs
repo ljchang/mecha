@@ -551,6 +551,11 @@ pub enum Command {
     /// No model runs here.
     System(commands::system::Args),
 
+    /// The GitHub board's collector: `mecha github collect` asks GitHub,
+    /// through `gh`'s own login, about the repositories you selected (what
+    /// the timer runs). No model runs here.
+    Github(commands::github::Args),
+
     /// Inspect saved transcripts.
     #[command(subcommand)]
     Sessions(commands::sessions::Args),
@@ -720,6 +725,7 @@ impl Command {
             | Command::Charter(_)
             | Command::Hud(_)
             | Command::System(_)
+            | Command::Github(_)
             | Command::Config(_)
             | Command::Model(_) => false,
         }
@@ -824,6 +830,7 @@ impl Command {
             | Command::Charter(_)
             | Command::Hud(_)
             | Command::System(_)
+            | Command::Github(_)
             | Command::Config(_)
             | Command::Model(_) => false,
         }
@@ -1105,6 +1112,7 @@ async fn dispatch() -> Result<()> {
         Command::Charter(args) => commands::charter::execute(&cli.global, args).await,
         Command::Hud(args) => commands::hud::run(&cli.global, args).await,
         Command::System(args) => commands::system::run(&cli.global, args).await,
+        Command::Github(args) => commands::github::run(&cli.global, args).await,
         Command::Sessions(args) => commands::sessions::execute(&cli.global, args).await,
         Command::Config(args) => commands::config::execute(&cli.global, args).await,
         Command::Model(args) => commands::model::execute(&cli.global, args).await,

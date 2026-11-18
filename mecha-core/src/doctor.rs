@@ -28,7 +28,9 @@
 //! `now`, which is what makes "a 49-hour-old pending draft" a unit test
 //! instead of a two-day wait.
 
+mod github;
 mod mail_rules;
+pub use github::{check_github, check_github_never_ran};
 pub use mail_rules::{check_mail_rule_shell, check_mail_rules, check_mail_rules_timer};
 
 use chrono::{DateTime, Utc};
@@ -586,6 +588,7 @@ pub fn examine_with(home: &Path, mail: &MailStores, now: DateTime<Utc>) -> Vec<F
         &home.join("system").join("series.sqlite"),
         now,
     ));
+    findings.extend(check_github(&crate::github::db_path(home), now));
     findings.extend(check_charter(&home.join("charter.toml")));
     findings.extend(check_corrections(home));
     findings.extend(check_runs(&home.join("sessions"), charter));

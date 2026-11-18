@@ -94,6 +94,7 @@ pub mod forecast;
 pub mod forget;
 pub mod form_draft;
 pub mod frontdoor;
+pub mod github;
 pub mod goal;
 pub mod goal_context;
 pub mod gossip;
