@@ -7762,11 +7762,15 @@ unattended, harness-voiced turn through `begin_turn` (`TurnOpts::unattended`:
 routed sends still stage; every unrouted tool that can send is withheld, and
 `ask_user` too, since a read-only sender like `http_fetch` never reaches the
 approver and a deep `web_search` is `Chosen` under a `Blind` declaration; the turn is recorded `harness: true` under
-`followup::WAKE_STEM`, which the page shows as a note). It refuses for good,
-with the reason on the workflow, when the switch is off, there is no outbox
-route, the transcript is gone or it is a memory chat; it waits a minute when a
-seat, a writer or a turn is busy. The outcome is an event the tick turns into
-the owner's notice.
+`followup::WAKE_STEM`, which the page shows as a note). Only a memory chat
+(typed input only) is refused for good, with the reason on the workflow; an
+ordinary chat the server remembers is resumed with its memory. No outbox route
+and a transcript that cannot be found or classified wait, said once on the
+workflow (`follow_up_waiting`) and retried each minute; the switch being off is
+a silent pause; a busy seat, writer or turn, or a transcript ending on a user
+message, waits a minute; a turn that cannot start gives its claim back. The
+claim is taken under the workflow store's lock, re-checking the whole rule. The
+outcome is an event the tick turns into the owner's notice.
 
 ## The meeting poll lifecycle
 

@@ -1021,12 +1021,21 @@ impl ChatState {
         let path = Session::find(self.sessions_dir(), &session_id).map_err(|e| {
             WakeSkip::Waiting(format!("its conversation could not be found ({e:#})"))
         })?;
+        // An ordinary chat this server remembers is resumed with its memory,
+        // as `POST /api/resume` resumes it — on a box with ordinary-chat
+        // memory on, every web chat carries the marker, and reading it as a
+        // memory chat retired every follow-up (review of #897).
+        #[cfg(feature = "memory-prototype")]
+        let remembered = self.ordinary_memory.is_some() && super::web_memory::open_marked(&path);
+        #[cfg(not(feature = "memory-prototype"))]
+        let remembered = false;
         // A memory chat takes verified typed input only (`speak`'s rule).
         // An unreadable transcript is not a memory chat: it waits, said
         // once, rather than retiring under a reason that is false (review
         // of #897). Fail-closed either way: neither wakes.
         match memory_marked(&path) {
             Ok(false) => {}
+            Ok(true) if remembered => {}
             Ok(true) => {
                 return Err(WakeSkip::Never(
                     "it is a memory chat, which takes typed input only".into(),
@@ -1085,7 +1094,7 @@ impl ChatState {
                 .map(|(k, _)| k.clone())
             {
                 Some(k) => k,
-                None => match resume_locked(self, &mut sessions, &session_id, false, false) {
+                None => match resume_locked(self, &mut sessions, &session_id, remembered, false) {
                     Ok(k) => k,
                     // The same condition `Session::find` meets above, and
                     // the same answer: it waits, said once (review of #897).
@@ -9952,6 +9961,37 @@ mod wake_tests {
             "a snoozed follow-up was woken"
         );
         assert!(store.get(&id).unwrap().woken_at.is_none());
+    }
+
+    /// The waker tells an ordinary remembered chat from a memory chat the
+    /// way `POST /api/resume` does, and resumes it with its memory: with
+    /// ordinary-chat memory on, every web chat carries the marker, and
+    /// reading it as a memory chat retired every follow-up (review of #897).
+    /// Read out of source, since a test chat with ordinary memory needs a
+    /// memory runtime — the same instrument the voice doors use.
+    #[cfg(feature = "memory-prototype")]
+    #[test]
+    fn the_waker_resumes_a_remembered_chat_as_the_resume_door_does() {
+        let src = include_str!("chat.rs");
+        let body = |name: &str| {
+            let i = src.find(name).expect(name);
+            &src[i..][..src[i..].find("\n    }\n").unwrap_or(4000)]
+        };
+        let waker = body("async fn wake_follow_up(");
+        for needle in [
+            "self.ordinary_memory.is_some() && super::web_memory::open_marked(&path)",
+            "Ok(true) if remembered => {}",
+            "resume_locked(self, &mut sessions, &session_id, remembered, false)",
+        ] {
+            assert!(waker.contains(needle), "the waker no longer has `{needle}`");
+        }
+        let door = &src[src.find("pub async fn resume(").unwrap()..];
+        let door = &door[..door.find("\nfn resume_locked(").unwrap()];
+        assert!(
+            door.contains("chat.ordinary_memory.is_some()")
+                && door.contains("super::web_memory::open_marked"),
+            "the resume door changed how it tells a remembered chat; keep the waker in step"
+        );
     }
 
     /// The page shows a wake as a note, keyed on core's stem; the two copies
