@@ -3136,7 +3136,9 @@ pub fn register_recall(agent: &mut Agent, session: &mecha_core::session::Session
 /// Registered by the front ends a follow-up can return to — the web chat
 /// and the TUI — and nowhere a run's conversation is not the owner's to come
 /// back to: not a trigger, a batch, an eval or Slack (whose sessions are
-/// per-run, the `register_recall` reason). The tool refuses at call time
+/// per-run, the `register_recall` reason). Not yet the readline `mecha
+/// chat` either, which records a session and could: web first, then the
+/// TUI, is the owner's order (design F4), and the REPL follows with Slack. The tool refuses at call time
 /// where the run records no session (`ToolCtx::recorded_session`). A store
 /// that cannot be opened leaves the tool out and says so on each build (the
 /// web chat rebuilds on a model switch), rather than offering a proposal

@@ -327,14 +327,19 @@ impl FollowUpStore {
         };
         let _lock = self.lock()?;
         // Counted under the lock, so two calls in one batch cannot both
-        // squeeze under the cap. An unreadable record counts against it:
-        // unknown is never "fewer than five".
+        // squeeze under the cap. A store that cannot be read whole refuses
+        // with its own reason — unknown is never "fewer than five", and it
+        // is not this conversation's to fix (review of #896).
         let (items, skipped) = self.items_counting()?;
-        let open = skipped
-            + items
-                .iter()
-                .filter(|o| o.session_id == f.session_id && o.is_proposed())
-                .count();
+        ensure!(
+            skipped == 0,
+            "the follow-up store could not be read whole ({skipped} unreadable record(s) under {})",
+            self.root.display()
+        );
+        let open = items
+            .iter()
+            .filter(|o| o.session_id == f.session_id && o.is_proposed())
+            .count();
         ensure!(
             open < MAX_OPEN_PER_SESSION,
             "this conversation already has {open} follow-ups waiting on the user's answer \

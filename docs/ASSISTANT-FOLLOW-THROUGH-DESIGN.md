@@ -91,8 +91,11 @@ store's rule that no model tool mutates it is unchanged; the model writes
 only proposals, and acceptance crosses the owner.
 
 - **A proposal needs a recorded conversation.** The tool reads
-  `ToolCtx::recorded_session`, stamped per call from the run's outbox route,
-  and refuses where there is none — a batch, an eval, an incognito chat.
+  `ToolCtx::recorded_session` — stamped on the agent's context by the front
+  end that records the conversation (the web chat per turn, the TUI per
+  agent build, so a switch keeps it), the outbox route winning where it was
+  told its session — and refuses where there is none: a batch, an eval, an
+  incognito chat.
 - **Taint is recorded fail-closed** and shown at decision time: a proposal
   from a conversation that had read outside content is an injection's way to
   schedule itself, so `show` warns and auto-accept (F2) never takes one.

@@ -9886,6 +9886,15 @@ mod tests {
     /// Slack's model-facing tool follows the switch at session start, as
     /// every gated feature's tools do: off, `show_file` is not registered;
     /// on, it is (review of #452).
+    #[test]
+    fn show_file_is_on_the_surface_only_with_slack_on() {
+        let home = crate::testenv::HomeGuard::new("tui-show-file");
+        std::fs::write(home.dir.join("config.toml"), "[features]\nslack = false\n").unwrap();
+        assert!(show_file_tool(25).is_none());
+        std::fs::write(home.dir.join("config.toml"), "[features]\nslack = true\n").unwrap();
+        assert!(show_file_tool(25).is_some());
+    }
+
     /// The session pointers ride with the front-end tools, so the switch
     /// path — which rebuilds the agent from config and calls
     /// `install_frontend_tools` again — stamps them too: a proposed
@@ -9970,15 +9979,6 @@ mod tests {
         install_frontend_tools(&mut bare, &asker, None, 25);
         assert!(bare.ctx().recorded_session.is_none());
         assert!(bare.registry().get("propose_follow_up").is_none());
-    }
-
-    #[test]
-    fn show_file_is_on_the_surface_only_with_slack_on() {
-        let home = crate::testenv::HomeGuard::new("tui-show-file");
-        std::fs::write(home.dir.join("config.toml"), "[features]\nslack = false\n").unwrap();
-        assert!(show_file_tool(25).is_none());
-        std::fs::write(home.dir.join("config.toml"), "[features]\nslack = true\n").unwrap();
-        assert!(show_file_tool(25).is_some());
     }
 
     #[test]

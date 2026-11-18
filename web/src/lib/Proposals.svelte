@@ -2,8 +2,9 @@
   import { features } from './features.svelte.js';
   import { refuses } from './features.js';
   import { apiFetch as fetch } from './api.js';
-  // The proposal stores on the phone: harness candidates, rule proposals and
-  // the graph's entity proposals. One pane over three stores, because they
+  // The proposal stores on the phone: harness candidates, rule proposals,
+  // the graph's entity proposals and proposed follow-ups. One pane over four
+  // stores, because they
   // answer the same shape and take the same verbs — the same argument the
   // TUI's `/queues` review level is built on, and the reason `mecha harness
   // list` used to be printed on a card nobody could open.

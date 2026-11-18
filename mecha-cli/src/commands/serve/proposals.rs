@@ -218,7 +218,7 @@ struct StoreRow {
     opens: String,
 }
 
-/// GET /api/proposals — the three stores and what each is holding, off one
+/// GET /api/proposals — the four stores and what each is holding, off one
 /// `mecha review queues --json`, so the chips carry counts before anything is
 /// opened. The depths are the home page's own, from the same reader.
 pub async fn stores(State(state): St) -> Response {
