@@ -1066,6 +1066,32 @@ impl ChatState {
             Ok(m) if m.live_writer_of(&session_id).is_none() => {}
             _ => return Err(WakeSkip::Later),
         }
+        // The cheapest refusals before a seat or the router hold is taken: a
+        // chat with a turn in flight, or one ending on the owner's own words,
+        // waits — and re-checked under the lock below (review of #897).
+        {
+            let sessions = self.sessions.lock().await;
+            let held = sessions
+                .values()
+                .filter_map(ChatSlot::ordinary)
+                .find(|ws| ws.session.id() == session_id);
+            let must_wait = match held {
+                Some(ws) => {
+                    ws.live.is_some()
+                        || ws
+                            .conversation
+                            .as_ref()
+                            .is_none_or(|c| c.messages.last().is_some_and(owners_words))
+                }
+                None => Session::read(&path)
+                    .ok()
+                    .and_then(|t| t.convo.messages.last().cloned())
+                    .is_some_and(|m| owners_words(&m)),
+            };
+            if must_wait {
+                return Err(WakeSkip::Later);
+            }
+        }
         // A background run like any other: a seat, or the next minute.
         let _seat = match crate::commands::tasks::permits()
             .and_then(|p| p.take(&format!("follow-up {}", w.id)))
@@ -1124,6 +1150,15 @@ impl ChatState {
                     Err((StatusCode::NOT_FOUND, why)) => {
                         return Err(WakeSkip::Waiting(format!(
                             "its conversation could not be found ({})",
+                            why.trim()
+                        )))
+                    }
+                    // Loading the transcript or proving its jail failed: no
+                    // amount of waiting a minute fixes that, so it is said on
+                    // the card (review of #897). A conflict stays silent.
+                    Err((StatusCode::INTERNAL_SERVER_ERROR, why)) => {
+                        return Err(WakeSkip::Waiting(format!(
+                            "its conversation could not be resumed ({})",
                             why.trim()
                         )))
                     }
@@ -4024,6 +4059,12 @@ fn begin_turn(
         // An unattended turn's words are the harness's (a follow-up's wake),
         // never the owner's: marked so on the record, beside the stem.
         user.harness = opts.unattended;
+        // An unattended turn's text must be a registered harness voice, or
+        // the readers that go by the stem would take it for the owner's.
+        debug_assert!(
+            !opts.unattended || mecha_core::title::is_derived(&text),
+            "an unattended turn's text is not a registered harness voice"
+        );
         conversation.push(user.clone());
         if let Some(session) = ws.session.kept() {
             if let Err(e) = session.append(&Record::Message(user)) {

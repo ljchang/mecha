@@ -207,10 +207,19 @@ fn fold_steer(messages: &mut Vec<Message>, text: String) {
     // The owner's words folded into a harness-marked user message make it no
     // longer the harness's alone: a completion notice, or a follow-up's wake
     // that a steer lands on before the run's first turn (review of #897).
-    // The harness's own blocks stay known by their stems
-    // (`is_harness_voice`), which every per-block reader checks.
+    // Only when every text block in it is a voice `is_harness_voice` knows,
+    // so the per-block readers can still tell them from the owner's: a
+    // harness sentence nobody registered keeps the message marked, and
+    // nothing in it is mined as the owner's (fail-closed). Tool results are
+    // not text, and pass.
     if let Some(last) = messages.last_mut() {
-        if last.role == Role::User && last.harness {
+        if last.role == Role::User
+            && last.harness
+            && last.content.iter().all(|block| match block {
+                Block::Text { text } => is_harness_voice(text),
+                _ => true,
+            })
+        {
             last.harness = false;
         }
     }
@@ -15392,6 +15401,18 @@ justification = "echo is off on this box"
         assert!(!child.contains("request_access"), "{child}");
         let narrowed = refusal(true, true).await;
         assert!(!narrowed.contains("request_access"), "{narrowed}");
+    }
+
+    /// Fail-closed: a harness-marked message holding a sentence no stem
+    /// registers keeps its mark when a steer is folded in, so nothing in it
+    /// is read as the owner's correction.
+    #[test]
+    fn a_steer_on_an_unregistered_harness_voice_keeps_it_marked() {
+        let mut m = Message::user("(a harness line no stem knows)");
+        m.harness = true;
+        let mut messages = vec![m];
+        fold_steer(&mut messages, "and the docs".into());
+        assert!(messages[0].harness);
     }
 
     /// An owner's steer folded onto a harness-marked user turn — a
