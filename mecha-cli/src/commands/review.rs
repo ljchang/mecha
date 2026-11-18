@@ -512,6 +512,7 @@ pub(crate) fn review_source(queue: &str) -> Option<ReviewSource> {
         }),
         "rule proposals" => owned("rule proposals", &["proposals"], false),
         "harness changes" => owned("harness candidates", &["harness"], false),
+        "follow-ups" => owned("proposed follow-ups", &["followups"], false),
         // The surfaced-verdict queue rides the same generic level with
         // hand-built argv: its verdict verbs are confirm/refute (a fact was
         // never a candidate to accept), and the graph's flag spelling takes
@@ -1013,6 +1014,45 @@ fn collect_queues() -> Vec<Queue> {
         depth,
         detail,
         opens: "mecha harness list",
+        oldest,
+    });
+
+    // Follow-ups a run proposed (`propose_follow_up`): nothing is scheduled
+    // until one is accepted, so a proposal left here is a reminder the owner
+    // has not yet agreed to. A record that cannot be read is a finding and
+    // the depth is not claimed, the image library's rule below.
+    let (depth, detail, oldest) = match mecha_core::followup::FollowUpStore::open_existing_default()
+    {
+        None => (Some(0), "none proposed yet".to_string(), None),
+        Some(store) => match store.items_counting() {
+            Ok((items, 0)) => {
+                let open: Vec<_> = items.iter().filter(|f| f.is_proposed()).collect();
+                let armed = open.iter().filter(|f| f.armed()).count();
+                let d = if items.is_empty() {
+                    "none proposed yet".to_string()
+                } else if open.is_empty() {
+                    format!("{} decided", items.len())
+                } else if armed > 0 {
+                    format!(
+                        "{armed} of {} proposed after reading outside content",
+                        open.len()
+                    )
+                } else {
+                    "proposed by your conversations".to_string()
+                };
+                let stamps: Vec<String> = open.iter().map(|f| f.proposed_at.to_rfc3339()).collect();
+                let oldest = oldest_age(stamps.iter().map(String::as_str));
+                (Some(open.len()), d, oldest)
+            }
+            Ok((_, skipped)) => (None, format!("{skipped} record(s) unreadable"), None),
+            Err(e) => (None, format!("{e:#}"), None),
+        },
+    };
+    out.push(Queue {
+        name: "follow-ups",
+        depth,
+        detail,
+        opens: "mecha followups",
         oldest,
     });
 

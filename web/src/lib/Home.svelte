@@ -129,6 +129,7 @@
     'rule proposals': 'Rule proposals',
     'mail rules': 'Mail rules',
     'harness changes': 'Harness',
+    'follow-ups': 'Follow-ups',
     'image candidates': 'Image library',
   };
   // A card that has a surface on this phone navigates to it; the ones that
@@ -146,6 +147,7 @@
     'harness changes': 'review/harness',
     'rule proposals': 'review/rules',
     'graph entities': 'review/entities',
+    'follow-ups': 'review/followups',
     'image candidates': 'library/candidates',
   };
 </script>

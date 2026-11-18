@@ -1306,6 +1306,7 @@ fn the_closing_note_names_each_way_back() {
         "memory",
         "corrections",
         "recall",
+        "followups",
         "github",
     ]
     .iter()

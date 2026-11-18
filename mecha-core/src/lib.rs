@@ -90,6 +90,7 @@ pub mod face_id;
 pub mod feature;
 pub mod fetch;
 pub mod fixture_check;
+pub mod followup;
 pub mod forecast;
 pub mod forget;
 pub mod form_draft;

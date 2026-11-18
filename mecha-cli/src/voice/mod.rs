@@ -2277,6 +2277,10 @@ async fn completion(
         review_hint: outbox_baseline
             .is_some()
             .then(|| SPOKEN_REVIEW_HINT.to_string()),
+        // The conversation a proposed follow-up returns to: this slot's own
+        // recorded session, as `begin_turn` stamps a chat's on the hosted
+        // door. Never from the outbox route (`ToolCtx::recorded_session`).
+        recorded_session: Some(slot.session.meta.id.clone()),
         // Spilling into the workspace these slots share, like every served
         // session, rather than the agent's `$TMPDIR` directory.
         ..cx.tools.for_session(cx.tools.workspace.clone())
@@ -2811,6 +2815,43 @@ mod tests {
         assert!(
             setting.contains(".spoken") && setting.contains(&hint),
             "the hosted door's hint is not guarded by `opts.spoken`: {setting:?}"
+        );
+    }
+
+    /// The fourth mechanism on the same two doors: a proposed follow-up
+    /// names the spoken conversation on both. The facade slot stamps its own
+    /// session; the hosted door is `begin_turn`, which stamps the chat's for
+    /// typed and spoken turns alike. Read out of source, because a
+    /// hand-built context stays green with both stamps deleted (found on
+    /// review of #896).
+    #[test]
+    fn both_spoken_doors_name_the_conversation_a_follow_up_returns_to() {
+        let field = ["recorded_", "session"].concat();
+        let src = include_str!("mod.rs");
+        let i = src
+            .find("\nasync fn completion(")
+            .expect("the request handler is still here");
+        let body = &src[i + 1..][..src[i + 1..]
+            .find("\n}\n")
+            .expect("`completion` still has a closing brace at column zero")];
+        assert!(
+            body.contains(&format!("{field}: Some(slot.session.meta.id")),
+            "the facade slot no longer stamps its session for a follow-up"
+        );
+        let chat = include_str!("../commands/serve/chat.rs");
+        let i = chat
+            .find("\nfn begin_turn(")
+            .expect("the shared turn constructor is still here");
+        let body = &chat[i + 1..][..chat[i + 1..]
+            .find("\n}\n")
+            .expect("`begin_turn` still has a closing brace at column zero")];
+        let at = body
+            .find(&format!(".{field} ="))
+            .expect("`begin_turn` no longer stamps the chat's session");
+        let stamp = &body[at..at + 120.min(body.len() - at)];
+        assert!(
+            stamp.contains("ws.session.kept()") && !stamp.contains("spoken"),
+            "the hosted door's stamp is not the kept session for every turn: {stamp:?}"
         );
     }
 

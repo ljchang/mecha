@@ -1092,6 +1092,11 @@ pub fn blurb(f: crate::feature::Feature) -> &'static str {
              nothing from outside had come in; never a persona's chat, a call or a \
              stranger's request."
         }
+        Feature::Followups => {
+            "Letting a conversation offer to check back later — whether a reply came, whether a \
+             build passed. Each offer waits in Review until you accept it; an accepted one \
+             reminds you at its time, in Tasks, with a link back to the chat."
+        }
         Feature::Github => {
             "A board of the GitHub repositories you choose: what is failing on the default \
              branch, new issues and outside pull requests, and stars and forks by day. A timer \
@@ -2288,6 +2293,7 @@ mod tests {
                 "memory",
                 "corrections",
                 "recall",
+                "followups",
                 "github",
                 "charter"
             ]

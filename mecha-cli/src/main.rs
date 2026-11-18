@@ -469,6 +469,9 @@ pub enum Command {
     /// What a delegated run got stuck on, and answering it — which resumes
     /// the run that asked, with your answer as its next turn.
     Questions(commands::questions::Args),
+    /// Follow-ups a conversation proposed: list, read, accept (schedules the
+    /// reminder) or reject.
+    Followups(commands::followups::Args),
     /// Meeting polls: where each stands, the pick card, and the timer's sweep.
     Polls(commands::polls::Args),
 
@@ -693,6 +696,8 @@ impl Command {
             // holds for itself; held here too, `--now` signalled the parent
             // and left the child running unheld (review of D13).
             Command::Workflow(_) => false,
+            // A store of proposals: list, read, accept, reject. No model.
+            Command::Followups(_) => false,
             // Long-lived: hold per turn (`follow::Follower::enter`) or per
             // fire (`trigger::run_agent`), or do not follow yet (`chat`,
             // `tui` — REMOTE-SURFACE-DESIGN §14 step 4).
@@ -823,6 +828,7 @@ impl Command {
             | Command::Features(_)
             | Command::Polls(_)
             | Command::Proposals(_)
+            | Command::Followups(_)
             | Command::Review(_)
             | Command::Skills(_)
             | Command::Imagelib(_)
@@ -1089,6 +1095,7 @@ async fn dispatch() -> Result<()> {
         Command::Tasks(args) => commands::tasks::run(&cli.global, args).await,
         Command::Workflow(args) => commands::workflow::run(&cli.global, args).await,
         Command::Questions(args) => commands::questions::run(&cli.global, args).await,
+        Command::Followups(args) => commands::followups::run(args),
         Command::Polls(args) => commands::polls::run(&cli.global, args).await,
         Command::Kg(args) => commands::kg::run(&cli.global, args).await,
         #[cfg(feature = "memory-prototype")]

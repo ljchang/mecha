@@ -1077,6 +1077,25 @@ mecha workflow close FLOW_ID
 See [Workflows and Today](/docs/features/automation/workflows) for the complete walkthrough,
 including dependencies, commitments, and delivery recovery.
 
+## `followups`
+
+Follow-ups a conversation proposed with `propose_follow_up` — "check back on
+this tomorrow at nine" — waiting on your answer. Nothing is scheduled until
+you accept one: accepting creates the workflow whose reminder comes due at
+that time, in Tasks → Workflows, with a link back to the chat.
+
+```bash
+mecha followups list [--json] [--all]   # waiting on you (--all: decided too)
+mecha followups show <id>               # one whole: what, when, the chat it came from
+mecha followups accept <id>             # schedule it
+mecha followups reject <id> --reason "…"
+```
+
+The tool is offered only with `[features] followups` on (`mecha features
+enable followups`, or Settings → Features). Turning it off stops new
+proposals; these verbs still decide the ones already waiting. `show` warns
+when the proposing conversation had read content from outside.
+
 ## `questions`
 
 Read and answer a question parked by a delegated run. Answering resumes its

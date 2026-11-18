@@ -88,7 +88,7 @@ something shipped.
 | Document | What it decides |
 |---|---|
 | [`APPRAISAL-WIRING-DESIGN.md`](APPRAISAL-WIRING-DESIGN.md) | What the appraisal system is for — the agent's own interpretation of meaning, serving self-learning, goal alignment and multi-goal planning — and the five phases that wire it in: foundation, one interpretation, meaning in the run, alignment and the scheduler, guardrails and mid-run policy change. §6 holds the rulings |
-| [`ASSISTANT-FOLLOW-THROUGH-DESIGN.md`](ASSISTANT-FOLLOW-THROUGH-DESIGN.md) | Durable delegated work, delivery recovery, verification, commitments and the daily assistant view |
+| [`ASSISTANT-FOLLOW-THROUGH-DESIGN.md`](ASSISTANT-FOLLOW-THROUGH-DESIGN.md) | Durable delegated work, delivery recovery, verification, commitments, the daily assistant view, and model-proposed follow-ups |
 | [`BACKGROUND-JOBS-DESIGN.md`](BACKGROUND-JOBS-DESIGN.md) | How a slow side effect (a picture first) outlives the turn: the call answers at once, a job owned by the conversation does the work, and the same call's result arrives late — talking never kills it, Stop does, one at a time (PERSONA-CONTEXT-DESIGN §5.4, R3; 2026-10-05) |
 | [`BRANCHING-DESIGN.md`](BRANCHING-DESIGN.md) | Branching a conversation, and why the TUI batch deliberately left it out |
 | [`CODE-MODE-DESIGN.md`](CODE-MODE-DESIGN.md) | The `code` tool redesigned around RLM: a read-only first slice, tool results as text with the guard on what a program prints (opaque handles until R11), a typed `llm_query` that is a quarantined pass with a shape, and the budget and gates that keep it honest; supersedes the shape of `AUDIT-RESEARCH.md` §3.12 (2026-10-30) |

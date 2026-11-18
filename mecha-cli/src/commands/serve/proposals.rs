@@ -1,7 +1,7 @@
-//! The proposal stores on the phone: harness candidates, rule proposals and
-//! the graph's entity proposals.
+//! The proposal stores on the phone: harness candidates, rule proposals, the
+//! graph's entity proposals, and follow-ups a conversation proposed.
 //!
-//! Three stores, one surface — `commands::review::review_source` is the table
+//! Four stores, one surface — `commands::review::review_source` is the table
 //! and this file holds no list of its own, on the same argument the TUI's
 //! generic review level is built on: four stores that answer `list --json`
 //! and take `show` / `accept` / `reject` are the same review with different
@@ -40,10 +40,11 @@ type St = State<super::WebState>;
 /// (`#review/harness`); the queue name is the one `collect_queues` emits and
 /// the only key `review_source` knows. `graph shadow` is deliberately absent:
 /// it has its own pane already, riding the sample deck's endpoints.
-const STORES: [(&str, &str); 3] = [
+const STORES: [(&str, &str); 4] = [
     ("harness", "harness changes"),
     ("rules", "rule proposals"),
     ("entities", "graph entities"),
+    ("followups", "follow-ups"),
 ];
 
 pub(super) fn queue_of(store: &str) -> Option<&'static str> {
@@ -217,7 +218,7 @@ struct StoreRow {
     opens: String,
 }
 
-/// GET /api/proposals — the three stores and what each is holding, off one
+/// GET /api/proposals — the four stores and what each is holding, off one
 /// `mecha review queues --json`, so the chips carry counts before anything is
 /// opened. The depths are the home page's own, from the same reader.
 pub async fn stores(State(state): St) -> Response {
@@ -533,7 +534,7 @@ mod tests {
             limit > 20,
             "a limit at or under the verb's own default is ceremony around the same truncation"
         );
-        for store in ["harness changes", "rule proposals"] {
+        for store in ["harness changes", "rule proposals", "follow-ups"] {
             let src = review_source(store).expect(store);
             assert!(
                 !src.list.join(" ").contains("--limit"),
@@ -550,7 +551,12 @@ mod tests {
     /// child. Asserting on the composed argv is what makes it reachable.
     #[test]
     fn no_flag_is_ever_pushed_after_the_separator() {
-        for store in ["harness changes", "rule proposals", "graph entities"] {
+        for store in [
+            "harness changes",
+            "rule proposals",
+            "graph entities",
+            "follow-ups",
+        ] {
             let src = review_source(store).expect(store);
             for accepting in [true, false] {
                 let argv = decide_argv(&src, "the-id", accepting, "because");
@@ -576,7 +582,7 @@ mod tests {
     /// ahead of the separator. The graph store takes no `--reason` at all.
     #[test]
     fn a_reason_rides_ahead_of_the_separator_and_only_where_it_is_kept() {
-        for store in ["harness changes", "rule proposals"] {
+        for store in ["harness changes", "rule proposals", "follow-ups"] {
             let src = review_source(store).expect(store);
             let argv = decide_argv(&src, "id", false, "the evidence does not support it");
             let at = argv.iter().position(|a| a == "--reason").expect(store);

@@ -300,7 +300,7 @@ impl Situation {
     /// `LearningStore::unloadable_rules` warns at startup about a file that
     /// names one anyway. The list is the closed set of such tools; the CLI
     /// pins it against what its front-ends actually insert.
-    pub const FRONTEND_TOOLS: &[&str] = &["ask_user", "recall", "show_file"];
+    pub const FRONTEND_TOOLS: &[&str] = &["ask_user", "propose_follow_up", "recall", "show_file"];
 
     /// The surface values that are corpus marks, not places: a process
     /// puts them on the session record through `MECHA_SESSION_KIND`

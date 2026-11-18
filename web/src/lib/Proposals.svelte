@@ -2,8 +2,9 @@
   import { features } from './features.svelte.js';
   import { refuses } from './features.js';
   import { apiFetch as fetch } from './api.js';
-  // The proposal stores on the phone: harness candidates, rule proposals and
-  // the graph's entity proposals. One pane over three stores, because they
+  // The proposal stores on the phone: harness candidates, rule proposals,
+  // the graph's entity proposals and proposed follow-ups. One pane over four
+  // stores, because they
   // answer the same shape and take the same verbs — the same argument the
   // TUI's `/queues` review level is built on, and the reason `mecha harness
   // list` used to be printed on a card nobody could open.
@@ -17,7 +18,7 @@
 
   // Short enough to sit three-across on a phone. The store's own word for
   // itself ("harness candidates") comes from the API and heads the list.
-  const shortName = { harness: 'Harness', rules: 'Rules', entities: 'Entities' };
+  const shortName = { harness: 'Harness', rules: 'Rules', entities: 'Entities', followups: 'Follow-ups' };
 
   let stores = $state(null);
   let listing = $state(null); // { label, rows }
@@ -164,7 +165,7 @@
     <div class="chips">
       <!-- The entities store is the graph's: with the graph off its routes
            answer `feature_off`, so it is not offered. -->
-      {#each (stores ?? [{ store: 'harness' }, { store: 'rules' }, { store: 'entities' }]).filter((s) => s.store !== 'entities' || !refuses(features.rows, 'graph')) as s}
+      {#each (stores ?? [{ store: 'harness' }, { store: 'rules' }, { store: 'entities' }, { store: 'followups' }]).filter((s) => s.store !== 'entities' || !refuses(features.rows, 'graph')) as s}
         <button class="chipbtn" class:active={s.store === store} onclick={() => pick(s.store)}>
           {shortName[s.store] ?? s.store}
           <span class="chipcount">{dash(s.depth)}</span>
@@ -242,6 +243,9 @@
           a layer your own config beats. Anything else is only marked.
         {:else if noUndo}
           Accepting applies the proposal to the graph. A merge cannot be undone.
+        {:else if store === 'followups'}
+          Accepting schedules it: at its time a reminder appears in Tasks → Workflows, with a
+          link back to the chat it came from.
         {:else}
           Decided here exactly as the command line decides it.
         {/if}
