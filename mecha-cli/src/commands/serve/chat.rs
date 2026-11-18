@@ -1013,10 +1013,21 @@ impl ChatState {
             WakeSkip::Waiting(format!("its conversation could not be found ({e:#})"))
         })?;
         // A memory chat takes verified typed input only (`speak`'s rule).
-        if !matches!(memory_marked(&path), Ok(false)) {
-            return Err(WakeSkip::Never(
-                "it is a memory chat, which takes typed input only".into(),
-            ));
+        // An unreadable transcript is not a memory chat: it waits, said
+        // once, rather than retiring under a reason that is false (review
+        // of #897). Fail-closed either way: neither wakes.
+        match memory_marked(&path) {
+            Ok(false) => {}
+            Ok(true) => {
+                return Err(WakeSkip::Never(
+                    "it is a memory chat, which takes typed input only".into(),
+                ))
+            }
+            Err(e) => {
+                return Err(WakeSkip::Waiting(format!(
+                    "its transcript could not be classified ({e:#})"
+                )))
+            }
         }
         if crate::commands::tasks::markers()
             .ok()
@@ -4176,6 +4187,32 @@ fn begin_turn(
     // Whatever this session may not dispatch. Empty for an ordinary chat, so
     // the assignment costs nothing and there is one place it is applied.
     cx.withheld = incognito_withheld.unwrap_or_else(|| Arc::clone(&ws.withheld));
+    // **Staging-only is enforced per tool, not by a route existing.** A
+    // woken follow-up has nobody watching, and a tool whose destination the
+    // model names (`Egress::Chosen`) that `[outbox] tools` does not route
+    // would dispatch for real — `http_fetch` is read-only by design, so no
+    // approver is ever asked about it. Withheld from the unattended turn
+    // (review of #897); `Blind` egress, which names no destination, stays.
+    if opts.unattended {
+        let route = bound.agent.context().outbox.clone();
+        let unrouted: Vec<String> = bound
+            .agent
+            .registry()
+            .iter()
+            .filter(|t| t.capabilities().egress == mecha_core::tool::Egress::Chosen)
+            .map(|t| t.name().to_string())
+            .filter(|n| !route.as_ref().is_some_and(|r| r.routes(n)))
+            .collect();
+        if !unrouted.is_empty() {
+            cx.withheld = cx
+                .withheld
+                .iter()
+                .cloned()
+                .chain(unrouted)
+                .collect::<Vec<_>>()
+                .into();
+        }
+    }
     // No hooks in an incognito run: `pre_tool` and `post_tool` receive tool
     // input and output, and a user command is somewhere this chat's words
     // would go that it cannot follow (`INCOGNITO-DESIGN.md` §3.3).
@@ -9618,6 +9655,58 @@ mod wake_tests {
             .unwrap();
         assert!(chat.wake_follow_up(&stale).await.is_err());
         assert!(seen.lock().unwrap().is_empty(), "the loser ran a turn");
+    }
+
+    /// A read-only tool whose destination the model names, and says
+    /// whether it ran — `http_fetch`'s shape.
+    struct FetchPage(Arc<std::sync::atomic::AtomicBool>);
+    #[async_trait::async_trait]
+    impl mecha_core::tool::Tool for FetchPage {
+        fn name(&self) -> &str {
+            "fetch_page"
+        }
+        fn description(&self) -> &str {
+            "Fetch a URL."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        fn capabilities(&self) -> mecha_core::tool::Capabilities {
+            mecha_core::tool::Capabilities {
+                untrusted_input: true,
+                egress: mecha_core::tool::Egress::Chosen,
+                ..Default::default()
+            }
+        }
+        async fn call(
+            &self,
+            _: serde_json::Value,
+            _: &ToolCtx,
+        ) -> Result<mecha_core::tool::ToolOutput> {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(mecha_core::tool::ToolOutput::ok("fetched").from_outside())
+        }
+    }
+
+    /// Staging-only is per tool: a chosen-egress tool the outbox does not
+    /// route is withheld from a woken turn, though it is read-only and so
+    /// would never reach the approver.
+    #[tokio::test]
+    async fn a_woken_turn_cannot_reach_an_unrouted_chosen_destination() {
+        let home = crate::testenv::HomeGuard::new("wake-egress");
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (chat, seen) =
+            waking_chat_tools(true, true, Some(Arc::new(FetchPage(Arc::clone(&ran)))));
+        due_follow_up(&chat, &home.dir);
+        chat.wake_due_follow_ups().await;
+        assert!(!seen.lock().unwrap().is_empty(), "the turn ran");
+        assert!(
+            !ran.load(std::sync::atomic::Ordering::SeqCst),
+            "an unrouted chosen-egress tool dispatched from an unattended turn"
+        );
     }
 
     /// The claim re-reads the whole rule under the lock: a workflow the

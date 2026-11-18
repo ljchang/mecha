@@ -156,7 +156,11 @@ still only reminds.
   own, from this conversation, and carry its taint; the turn adds none and
   launders none. Unattended: a call that needs an approval is refused in the
   machine's voice, as `questions answer --unattended` does; routed sends
-  stage. Its run posture is `unattended` too, so a shell it runs is never
+  stage. Staging-only is enforced per tool, not by a route existing: every
+  tool whose destination the model names (`Egress::Chosen`) that `[outbox]
+  tools` does not route is withheld from the woken turn — `http_fetch` is
+  read-only, so no approver would ever be asked about it. `Blind` egress
+  (`web_search`) stays. Its run posture is `unattended` too, so a shell it runs is never
   read as the owner's approval (`closure::cause`). It takes a background
   seat (`permit.rs`), like any unattended run.
 - **After.** The answer is in the chat. The workflow records

@@ -645,6 +645,8 @@ mod tests {
         // The turn is the harness's, quoting the model's words.
         let turn = render_wake(&f.what, n, chrono_tz::UTC);
         assert!(turn.starts_with(WAKE_STEM) && turn.contains("\"check the build\""));
+        // And every reader that sees only text knows it is not the owner's.
+        assert!(crate::agent::is_harness_voice(&turn));
     }
 
     #[test]
