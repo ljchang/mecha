@@ -384,6 +384,44 @@ impl FollowUpStore {
     }
 }
 
+/// The harness's turn that wakes a conversation for its follow-up. A stem of
+/// its own, so `agent::is_harness_voice` keeps it out of correction mining
+/// and no reader takes it for the owner's words.
+pub const WAKE_STEM: &str = "(From the harness: a follow-up you proposed is due";
+
+/// The turn itself: what the conversation proposed, quoted, and what to do.
+/// The quoted words are the model's own from this conversation and carry its
+/// taint; the turn adds none and launders none.
+pub fn render_wake(what: &str, proposed_at: DateTime<Utc>, tz: chrono_tz::Tz) -> String {
+    format!(
+        "{WAKE_STEM} — \"{what}\", proposed {}. Check it now and tell the owner what you \
+         found. Nothing here is the owner's request; anything you would send is staged for \
+         their review.)",
+        proposed_at.with_timezone(&tz).format("%a %b %-d, %H:%M %Z")
+    )
+}
+
+/// The proposal an accepted follow-up's workflow came from, by its
+/// `commitment.source`. `None` for every other workflow.
+pub fn proposal_of(w: &crate::workflow::Workflow) -> Option<&str> {
+    w.commitment
+        .as_ref()?
+        .source
+        .strip_prefix(WORKFLOW_SOURCE_PREFIX)
+}
+
+/// Whether the web host should wake `w`'s conversation now: a follow-up's
+/// workflow, open, its time come, not snoozed, not running, never woken.
+pub fn due_to_wake(w: &crate::workflow::Workflow, now: DateTime<Utc>) -> bool {
+    proposal_of(w).is_some()
+        && w.closed_at.is_none()
+        && w.woken_at.is_none()
+        && w.state != "running"
+        && w.session_id.is_some()
+        && !w.snoozed_until.is_some_and(|t| t > now)
+        && w.commitment.as_ref().is_some_and(|c| c.follow_up_due(now))
+}
+
 /// What an accepted follow-up's workflow names it by, in
 /// `commitment.source` — the key `forget` finds that workflow with.
 pub const WORKFLOW_SOURCE_PREFIX: &str = "followup:";
@@ -563,6 +601,50 @@ mod tests {
         // A decided one frees its place.
         s.decide(&first.id, REJECTED, n, |_| Ok(())).unwrap();
         propose("sess-a").unwrap();
+    }
+
+    #[test]
+    fn a_follow_up_wakes_once_when_due_open_and_unsnoozed() {
+        let n = now();
+        let f = FollowUp {
+            id: "20261118T120000-wake1234".into(),
+            status: ACCEPTED.into(),
+            what: "check the build".into(),
+            due_at: n + chrono::Duration::hours(1),
+            session_id: "sess-a".into(),
+            workspace: None,
+            taint: Some(Taint::default()),
+            proposed_at: n,
+            decided_at: Some(n),
+            workflow_id: None,
+            reason: None,
+        };
+        let mut w = workflow_for(&f, "/tmp/w".into(), None, n);
+        let later = n + chrono::Duration::hours(2);
+        assert_eq!(proposal_of(&w), Some(f.id.as_str()));
+        assert!(!due_to_wake(&w, n), "not before its time");
+        assert!(due_to_wake(&w, later));
+        w.snoozed_until = Some(later + chrono::Duration::hours(1));
+        assert!(!due_to_wake(&w, later), "a snooze holds it");
+        w.snoozed_until = None;
+        w.state = "running".into();
+        assert!(!due_to_wake(&w, later), "not over a run in flight");
+        w.state = "idle".into();
+        w.woken_at = Some(later);
+        assert!(!due_to_wake(&w, later), "woken once");
+        w.woken_at = None;
+        w.closed_at = Some(later);
+        assert!(!due_to_wake(&w, later), "a closed workflow is done");
+        // An owner's own workflow is never a follow-up's.
+        let mut own = crate::workflow::Workflow::new("w".into(), "t".into(), "/tmp".into(), n);
+        own.commitment = w.commitment.clone().map(|mut c| {
+            c.source = "mail:thread-1".into();
+            c
+        });
+        assert!(!due_to_wake(&own, later));
+        // The turn is the harness's, quoting the model's words.
+        let turn = render_wake(&f.what, n, chrono_tz::UTC);
+        assert!(turn.starts_with(WAKE_STEM) && turn.contains("\"check the build\""));
     }
 
     #[test]

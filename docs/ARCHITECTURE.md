@@ -7736,7 +7736,9 @@ project configuration. The trigger tick refreshes linked events and runs the sam
 deterministic reminder computation as `workflow tick --dry-run`. In-app reminders
 are coalesced and persisted, with timezone-aware quiet hours, snoozing and daily
 deduplication. The daily view still shows overdue work during a snooze. Nothing
-here automatically starts an agent or sends a notification to another service.
+here sends a notification to another service, and nothing starts an agent with
+one exception: `mecha serve` wakes an accepted follow-up's conversation when
+its time comes (below).
 
 **A model proposes follow-ups; only the owner makes them workflows**
 (`followup.rs`, `ASSISTANT-FOLLOW-THROUGH-DESIGN.md` §Model-proposed
@@ -7748,8 +7750,21 @@ the workflow, with the proposal's session and a dateless commitment whose
 included, the voice facade per slot and the TUI per agent build — never from
 the outbox route), is off unless `[features] followups` is on, records taint
 fail-closed, and `forget` purges a
-session's proposals. Waking a run when one comes due is the design's step 2
-and not built; until then a due follow-up is the ordinary in-app reminder.
+session's proposals.
+
+**A due follow-up wakes its conversation, in `mecha serve` only**
+(`ChatState::spawn_follow_up_waker`, design §Step 2). Serve holds the web
+chats, and a second writer on a transcript forks it, so the trigger tick only
+reminds. Once a minute it resumes the conversation if it is not held, writes
+`woken_at` before the turn (a crash never wakes twice), and starts an
+unattended, harness-voiced turn through `begin_turn` (`TurnOpts::unattended`:
+`ModeApprover { Ask }`, so approvals are `Blocked` in the machine's voice and
+routed sends still stage; the turn is recorded `harness: true` under
+`followup::WAKE_STEM`, which the page shows as a note). It refuses for good,
+with the reason on the workflow, when the switch is off, there is no outbox
+route, the transcript is gone or it is a memory chat; it waits a minute when a
+seat, a writer or a turn is busy. The outcome is an event the tick turns into
+the owner's notice.
 
 ## The meeting poll lifecycle
 

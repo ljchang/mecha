@@ -1,4 +1,5 @@
 <script>
+  import { followUpWake } from './chat-wake.js';
   import { tick, untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
   import { tameName, validName } from './library.js';
@@ -2403,7 +2404,11 @@
       <div class="notice">{error}</div>
     {/if}
     {#each entries as entry, i}
-      {#if entry.kind === 'user'}
+      {#if entry.kind === 'user' && followUpWake(entry.text) !== null}
+        <!-- The harness waking this chat for a follow-up it proposed: not the
+             owner's words, so not the owner's bubble. -->
+        <div class="notice wake">Follow-up due{followUpWake(entry.text) ? `: ${followUpWake(entry.text)}` : ''}</div>
+      {:else if entry.kind === 'user'}
         <div class="bubble" class:queued={entry.queued}>
           {entry.text}
           {#if entry.queued}<span class="queued-tag">{#if entry.delivery === 'discarded'}not sent — <button class="resend" onclick={() => resend(entry)}>send again</button>{:else}{entry.delivery === 'delivered' ? 'steered' : 'queued'}{/if}</span>{/if}

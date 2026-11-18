@@ -2210,6 +2210,9 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         // A trigger's last answer, carried into its next run: the harness's
         // block holding the model's earlier words, never the owner's.
         || crate::trigger::last_answer_stem_of(text).is_some()
+        // A due follow-up waking its conversation: the harness's turn, the
+        // model's own earlier words quoted inside it.
+        || text.starts_with(crate::followup::WAKE_STEM)
         || text.contains(crate::mailbox::DELIVERY_STEM)
         || text.starts_with(crate::step::STEP_ESCALATION_STEM)
         || text.starts_with(crate::step::CHECK_FEEDBACK_STEM)

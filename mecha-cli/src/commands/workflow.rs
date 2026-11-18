@@ -247,7 +247,19 @@ pub fn today() -> Result<serde_json::Value> {
                 _ => None,
             })
             .collect();
-        items.push(serde_json::json!({"id":w.id, "title":w.title, "section":w.section(now), "state":w.state,
+        // What the web host did about a follow-up's time: the latest of its
+        // events, said in words the card prints as they are.
+        let follow_up = w.events.iter().rev().find_map(|e| {
+            use mecha_core::workflow::*;
+            match e.kind.as_str() {
+                FOLLOW_UP_WOKEN => Some("Woken in its chat; the run is going".to_string()),
+                FOLLOW_UP_ANSWERED => Some("Answered in its chat".to_string()),
+                FOLLOW_UP_FAILED => Some(format!("The woken run did not finish: {}", e.detail)),
+                FOLLOW_UP_NOT_WOKEN => Some(format!("Not woken: {}", e.detail)),
+                _ => None,
+            }
+        });
+        items.push(serde_json::json!({"id":w.id, "title":w.title, "section":w.section(now), "state":w.state, "follow_up":follow_up,
             "task_id":w.task_id, "session_id":w.session_id, "outbox":w.outbox, "questions":w.questions,
             "waiting_for":waiting_for, "depends_on":w.depends_on, "commitment":w.commitment, "notice":w.notice, "verified_at":w.verified_at,
             "verification":w.verification, "snoozed_until":w.snoozed_until, "workflow":true}));
