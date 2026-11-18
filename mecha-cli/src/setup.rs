@@ -3131,6 +3131,46 @@ pub fn register_recall(agent: &mut Agent, session: &mecha_core::session::Session
         )));
 }
 
+/// Give the agent `propose_follow_up`, over the owner's follow-up store.
+///
+/// Registered by the front ends a follow-up can return to — the web chat
+/// and the TUI — and nowhere a run's conversation is not the owner's to come
+/// back to: not a trigger, a batch, an eval or Slack (whose sessions are
+/// per-run, the `register_recall` reason). Not yet the readline `mecha
+/// chat` either, which records a session and could: web first, then the
+/// TUI, is the owner's order (design F4), and the REPL follows with Slack. The tool refuses at call time
+/// where the run records no session (`ToolCtx::recorded_session`).
+///
+/// **Off unless the owner switched it on** — `[features] followups`, the
+/// switch Settings → Features writes — and withheld like any tool by
+/// `[tools] disabled` (or an `[tools] enabled` list that does not name it),
+/// the predicate `mecha features` reads for the row. A store that cannot
+/// be opened leaves the tool out, and the reason comes back for the caller
+/// to show where its surface can: the TUI's switch path holds the
+/// alternate screen, where a stderr line would be drawn over and lost.
+pub fn register_follow_ups(agent: &mut Agent, cfg: &mecha_core::config::Config) -> Option<String> {
+    let name = mecha_core::tool::follow_up::NAME;
+    if !mecha_core::feature::switched_on(cfg, mecha_core::feature::Feature::Followups)
+        || !cfg.tools.registers(name)
+    {
+        return None;
+    }
+    match mecha_core::followup::FollowUpStore::open_default() {
+        Ok(store) => {
+            agent.registry_mut().insert(Arc::new(
+                mecha_core::tool::follow_up::ProposeFollowUp::new(
+                    Arc::new(store),
+                    Arc::new(mecha_core::clock::SystemClock),
+                ),
+            ));
+            None
+        }
+        Err(e) => Some(format!(
+            "proposed follow-ups are unavailable: the store could not be opened ({e:#})"
+        )),
+    }
+}
+
 /// `@path` reads from a file; anything else is the literal value. Lets
 /// `--system @prompts/reviewer.md` work without a second flag.
 pub fn read_maybe_file(value: &str) -> Result<String> {
@@ -3384,13 +3424,14 @@ impl mecha_core::tool::ask::Asker for NoOneToAsk {
 /// says nothing about the run and everything about the process doing the
 /// reading.
 ///
-/// Three qualify, and between them they account for the store:
+/// Four qualify; the first three, measured, account for the store:
 ///
 /// | tool | registered by | sessions it blocked |
 /// |---|---|---|
 /// | `ask_user` | a front-end that owns a human | 246 of 408 |
 /// | `recall` | the session-recording front-ends | 122 |
 /// | `show_file` | a front-end with a thread attached | 55 |
+/// | `propose_follow_up` | the web chat and the TUI, since 2026-11-18 | new |
 ///
 /// Together they take the store from **22% replayable to 76%**, measured by
 /// comparing each session's recorded tool list against the surface
@@ -3437,6 +3478,14 @@ pub fn surface_only_registry() -> Registry {
     // were shown, and is never executed (see above). The live registration
     // — the TUI's — asks the switch.
     r.insert(Arc::new(crate::slack::show::ShowFileTool::new(0)));
+    // A store under a path that does not exist, never opened: the replay
+    // modes this serves execute nothing (above).
+    r.insert(Arc::new(mecha_core::tool::follow_up::ProposeFollowUp::new(
+        Arc::new(mecha_core::followup::FollowUpStore::open_unchecked(
+            std::path::PathBuf::from("(no store — a replay never calls this)"),
+        )),
+        Arc::new(mecha_core::clock::SystemClock),
+    )));
     r
 }
 
@@ -3563,7 +3612,10 @@ mod surface_only_tests {
         let r = surface_only_registry();
         let mut names: Vec<&str> = r.iter().map(|t| t.name()).collect();
         names.sort();
-        assert_eq!(names, ["ask_user", "recall", "show_file"]);
+        assert_eq!(
+            names,
+            ["ask_user", "propose_follow_up", "recall", "show_file"]
+        );
     }
 
     /// Faithful rather than a fake: each entry is the *real* tool, so what the

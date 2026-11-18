@@ -147,6 +147,29 @@ fn seeded(home: &Path) -> Roots {
         &format!(r#"{{"id":"q2","session_id":"{KEPT}","question":"ok?"}}"#),
     );
     write(
+        &roots.followups.join("f1.json"),
+        &format!(r#"{{"id":"f1","session_id":"{GONE}","what":"{CANARY}"}}"#),
+    );
+    write(
+        &roots.followups.join("f2.json"),
+        &format!(r#"{{"id":"f2","session_id":"{KEPT}","what":"ok"}}"#),
+    );
+    // An accepted follow-up's workflow: the conversation's words as its
+    // title, linked back only through the proposal id. And the kept
+    // conversation's, which stays.
+    write(
+        &roots.workflows.join("followup-f1.json"),
+        &format!(
+            r#"{{"id":"followup-f1","title":"Follow-up: {CANARY}","session_id":"{GONE}","commitment":{{"party":"owner","source":"followup:f1","expectation":"{CANARY}"}}}}"#
+        ),
+    );
+    write(
+        &roots.workflows.join("followup-f2.json"),
+        &format!(
+            r#"{{"id":"followup-f2","title":"Follow-up: ok","session_id":"{KEPT}","commitment":{{"party":"owner","source":"followup:f2"}}}}"#
+        ),
+    );
+    write(
         &roots.messages.join("hermes/m1.json"),
         &format!(r#"{{"id":"m1","from_session":"{GONE}","body":"{CANARY}"}}"#),
     );
@@ -384,6 +407,7 @@ fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
     for (path, needle) in [
         ("outbox/item-kept.json", KEPT),
         ("questions/q2.json", KEPT),
+        ("followups/f2.json", KEPT),
         ("messages/hermes/m2.json", KEPT),
         ("learning/mined.jsonl", KEPT),
         ("learning/distilled.jsonl", KEPT),
@@ -417,6 +441,7 @@ fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
         ("workflows/w1.json", "item-kept"),
         ("workflows/w1.json", "q2"),
         ("workflows/w1.json", "Weekly"),
+        ("workflows/followup-f2.json", "followup:f2"),
         ("regression-sessions.txt", KEPT),
         ("requests/0000000009-meeting.json", "item-kept"),
         ("mail-triage/acct-thread1.json", "reply"),

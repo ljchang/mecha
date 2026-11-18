@@ -85,6 +85,11 @@ pub enum Feature {
     /// ([`crate::tool::spans`]): clean passages only. An index under the
     /// mecha home, embedded by the embeddings server, in every build.
     Recall,
+    /// A conversation proposing to check back on something later
+    /// ([`crate::followup`]): `propose_follow_up` in the web chat, its voice
+    /// calls and the TUI, the owner accepting each one in Review. A store
+    /// under the mecha home, in every build.
+    Followups,
 }
 
 impl Feature {
@@ -118,6 +123,7 @@ impl Feature {
         Feature::Memory,
         Feature::Corrections,
         Feature::Recall,
+        Feature::Followups,
     ];
 
     /// The name on the command line and on the wire.
@@ -152,6 +158,7 @@ impl Feature {
             Feature::Memory => "memory",
             Feature::Corrections => "corrections",
             Feature::Recall => "recall",
+            Feature::Followups => "followups",
         }
     }
 
@@ -190,6 +197,9 @@ impl Feature {
             }
             Feature::Recall => {
                 "Recall (what your earlier chats and runs said, found when it bears on a chat)"
+            }
+            Feature::Followups => {
+                "Follow-ups (a conversation proposes checking back later; you accept each one)"
             }
         }
     }
@@ -282,7 +292,9 @@ impl Feature {
             // nothing over.
             | Feature::Corrections
             // Off, no chat is searched for and none is handed anything.
-            | Feature::Recall => true,
+            | Feature::Recall
+            // Off, no conversation is offered `propose_follow_up`.
+            | Feature::Followups => true,
             // Its guards are still to come: today the switch says only that
             // the owner wants the home store, and every attachment is an
             // explicit `--episodic-memory`. Answers `true` in the change
@@ -351,6 +363,9 @@ impl Feature {
             // The owner's own history: an environment has none, and an
             // experiment asks for the index by its arm.
             | Feature::Recall
+            // Proposals the owner decides: a trial has no owner to accept
+            // one, and its runs are not the conversations they return to.
+            | Feature::Followups
             // A manifest's `live_servers` can carry the operator's graph in,
             // and the row cannot tell that entry from a declared one;
             // `config_at` defaults this bool instead (FEATURES-DESIGN §5.1).
@@ -1055,7 +1070,8 @@ fn evidence(facts: &Facts, f: Feature) -> bool {
         | Feature::Code
         | Feature::Memory
         | Feature::Corrections
-        | Feature::Recall => false,
+        | Feature::Recall
+        | Feature::Followups => false,
         Feature::Incognito
         | Feature::Tasks
         | Feature::Ocr
@@ -2146,6 +2162,16 @@ fn own_state(facts: &Facts, f: Feature) -> State {
                 reason: format!("the recall index could not be read: {why}"),
             },
         },
+        // Nothing to set up past the switch: the store is made by the first
+        // proposal. `[tools] disabled` is the other way to take the tool
+        // away, and the row says so rather than reading on.
+        Feature::Followups => {
+            if cfg.tools.registers(crate::tool::follow_up::NAME) {
+                on("proposals wait in Review → Proposals → Follow-ups")
+            } else {
+                tools_off(crate::tool::follow_up::NAME)
+            }
+        }
     }
 }
 
@@ -2783,12 +2809,13 @@ mod tests {
                 | Feature::Code
                 | Feature::Memory
                 | Feature::Corrections
-                | Feature::Recall => {}
+                | Feature::Recall
+                | Feature::Followups => {}
             }
         }
-        // The match above lists 29 — raise this with it, and a variant
+        // The match above lists 30 — raise this with it, and a variant
         // added to the match but not to `ALL` fails here.
-        assert_eq!(Feature::ALL.len(), 29);
+        assert_eq!(Feature::ALL.len(), 30);
     }
 
     #[test]

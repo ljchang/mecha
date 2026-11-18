@@ -590,6 +590,14 @@ impl ChatState {
                         lookup,
                     })),
                 ));
+                // Shared by every chat; each call names its own conversation
+                // (`ToolCtx::recorded_session`, stamped per turn in
+                // `begin_turn`, spoken turns included), and an incognito
+                // chat, which records none, is refused.
+                if let Some(why) = setup::register_follow_ups(&mut prepared.agent, &prepared.config)
+                {
+                    tracing::warn!("{why}");
+                }
             })
         };
         let follower = Arc::new(crate::follow::Follower::start(opts, finish).await?);
@@ -3889,6 +3897,12 @@ fn begin_turn(
     if ws.session.room().is_some() {
         cx.hooks = Arc::new(mecha_core::hooks::HookSet::default());
     }
+    // The conversation a proposed follow-up returns to (`propose_follow_up`).
+    // On the context itself, whatever the outbox: the outbox is off by
+    // default, and an incognito chat keeps nothing, so it stays `None` and
+    // the tool refuses there.
+    Arc::make_mut(&mut cx.tools).recorded_session =
+        ws.session.kept().map(|session| session.meta.id.clone());
     if let Some(shared) = &bound.agent.context().outbox {
         if let Ok(store) = OutboxStore::open_like(&shared.store, &chat.outbox_root) {
             let mine = OutboxRoute::new(

@@ -145,6 +145,9 @@ pub const READ_ONLY_WRITERS: &[&str] = &[
     "image_library_reference",
     "message_send",
     "persona_propose",
+    // Writes a proposal to the follow-up store; nothing is scheduled until
+    // the owner accepts it.
+    "propose_follow_up",
     // Renders a clip and writes it under `videos/`, with its record under
     // the mecha home.
     "video_generate",
@@ -1656,6 +1659,12 @@ mod tests {
                 "mecha-core/src/tool/ask.rs",
                 "AskUserTool",
                 Some("ask_user"),
+                WRITES,
+            ),
+            (
+                "mecha-core/src/tool/follow_up.rs",
+                "ProposeFollowUp",
+                Some("propose_follow_up"),
                 WRITES,
             ),
             (

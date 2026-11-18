@@ -50,6 +50,9 @@ pub struct Roots {
     pub home: PathBuf,
     pub outbox: PathBuf,
     pub questions: PathBuf,
+    /// Follow-ups a run proposed (`crate::followup`): each names the
+    /// conversation it returns to, so it goes with that conversation.
+    pub followups: PathBuf,
     pub messages: PathBuf,
     pub learning: PathBuf,
     pub harness: PathBuf,
@@ -97,6 +100,7 @@ impl Roots {
             sessions: Session::default_dir()?,
             outbox: crate::outbox::OutboxStore::default_root()?,
             questions: crate::questions::QuestionStore::default_root()?,
+            followups: crate::followup::FollowUpStore::default_root()?,
             messages: crate::mailbox::MailboxStore::default_root()?,
             learning: crate::learning::LearningStore::default_root()?,
             harness: crate::harness::HarnessStore::default_root()?,
@@ -123,6 +127,7 @@ impl Roots {
             sessions: home.join("sessions"),
             outbox: home.join("outbox"),
             questions: home.join("questions"),
+            followups: home.join("followups"),
             messages: home.join("messages"),
             learning: home.join("learning"),
             harness: home.join("learning").join("harness"),
@@ -275,6 +280,20 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
             Vec::new()
         }
     };
+    // Proposed follow-ups: the conversation's own words about what to come
+    // back to. Found now and removed last, with the questions: an accepted
+    // one was copied into a workflow (`followup::workflow_for` — its title
+    // and expectation are those words). That workflow names the session
+    // until the pass below nulls it, and names the proposal in
+    // `commitment.source` for good, so a retry after a partial forget still
+    // finds it by the proposal ids kept here.
+    let followups = match matching_items(&roots.followups, |v| field_is(v, "session_id", id)) {
+        Ok(f) => f,
+        Err(e) => {
+            report.errors.push(format!("follow-ups: {e:#}"));
+            Vec::new()
+        }
+    };
     report.attempt("messages", purge_mailbox(&roots.messages, id));
     // The index of what earlier sessions read and said (`tool::spans`):
     // passages copied out of the transcript, found by meaning.
@@ -403,6 +422,24 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
             })
         }),
     );
+    // The workflow an accepted follow-up became holds the conversation's
+    // words as its title, so it goes whole — unlike an owner's workflow,
+    // whose title is the owner's and is kept with its pointers nulled below.
+    report.attempt(
+        "follow-up workflows",
+        remove_items(&roots.workflows, |v| {
+            // A follow-up's workflow, and this conversation's: by the
+            // proposal it came from, or by the session it still names —
+            // so it goes even if the proposal record is already gone.
+            v.pointer("/commitment/source")
+                .and_then(Value::as_str)
+                .and_then(|s| s.strip_prefix(crate::followup::WORKFLOW_SOURCE_PREFIX))
+                .is_some_and(|fid| {
+                    followups.iter().any(|f| f == fid) || field_is(v, "session_id", id)
+                })
+        })
+        .map(|v| v.len()),
+    );
     report.attempt(
         "workflows",
         with_lock(&roots.workflows, || {
@@ -512,10 +549,15 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
             "questions",
             remove_items(&roots.questions, |v| field_is(v, "session_id", id)).map(|v| v.len()),
         );
+        report.attempt(
+            "follow-ups",
+            remove_items(&roots.followups, |v| field_is(v, "session_id", id)).map(|v| v.len()),
+        );
     } else {
-        report
-            .errors
-            .push("outbox and questions: kept until the stores above finish, for the retry".into());
+        report.errors.push(
+            "outbox, questions and follow-ups: kept until the stores above finish, for the retry"
+                .into(),
+        );
     }
 
     // Before the backstop, which also reads file *names*: the mark's name is
@@ -1120,6 +1162,7 @@ fn still_naming(roots: &Roots, id: &str) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut stack: Vec<PathBuf> = [
         &roots.outbox,
         &roots.questions,
+        &roots.followups,
         &roots.messages,
         &roots.learning,
         &roots.harness,

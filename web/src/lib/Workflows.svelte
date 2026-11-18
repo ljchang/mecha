@@ -79,6 +79,7 @@
         {#if item.snoozed_until}<p>Reminders deferred until {when(item.snoozed_until)}</p>{/if}
         {#each item.verification ?? [] as check}<p>{check.passed ? '✓' : 'Needs work:'} {check.evidence}</p>{/each}
         <div class="actions">
+          {#if item.session_id}<button onclick={() => navigate(`chat/${encodeURIComponent(item.session_id)}`)}>Open chat</button>{/if}
           {#if item.outbox?.length}<button onclick={() => navigate('review/outbox')}>Review drafts</button>{/if}
           <button disabled={busy === item.id} onclick={() => act(item.id, 'verify')}>Check completion</button>
           {#if g.key === 'ready'}<button disabled={busy === item.id} onclick={() => act(item.id, 'close')}>Finish workflow</button>{/if}

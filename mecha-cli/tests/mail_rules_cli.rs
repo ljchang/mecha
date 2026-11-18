@@ -116,6 +116,7 @@ fn mail_rules_review_queue_follows_the_existing_queues() {
             "front-door requests",
             "rule proposals",
             "harness changes",
+            "follow-ups",
             "image candidates",
             "mail rules",
         ]
