@@ -2281,6 +2281,19 @@ async fn completion(
         // session, rather than the agent's `$TMPDIR` directory.
         ..cx.tools.for_session(cx.tools.workspace.clone())
     });
+    // A spoken turn rides the web chat's agent, whose registry carries
+    // `propose_follow_up`; it is withheld here until the follow-up design
+    // reaches voice (F4's order), so the call neither refuses falsely nor
+    // records a proposal on a surface nothing yet returns to (review of #896).
+    cx.withheld = cx
+        .withheld
+        .iter()
+        .cloned()
+        .chain(std::iter::once(
+            mecha_core::tool::follow_up::NAME.to_string(),
+        ))
+        .collect::<Vec<_>>()
+        .into();
     // The facade's own slot is the *second* door a spoken turn can take, and
     // it needs the same narrowing the hosted one got.
     //

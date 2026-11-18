@@ -795,12 +795,14 @@ pub struct ToolCtx {
     pub conversation: Option<String>,
     /// The recorded session this call's run appends to, so a tool whose
     /// result must come back to *this conversation later* (a proposed
-    /// follow-up, `crate::followup`) can say which one. Set by the front end
-    /// that records the conversation (the web chat per run, the TUI once),
-    /// and by `Agent::call_ctx` from the run's outbox route where one was
-    /// told its session (`set_session_id`), which wins. `None` where nothing
-    /// is recorded — batch, eval, an incognito chat — and a consumer must
-    /// refuse rather than guess, never point at the wrong transcript.
+    /// follow-up, `crate::followup`) can say which one. Set only by the front
+    /// end that records the conversation and offers such a tool — the web
+    /// chat per turn, the TUI per agent build — and never derived from the
+    /// outbox route: whether the outbox is configured must not decide what a
+    /// tool does (review of #896, where it made the voice path record or
+    /// refuse by config). `None` where nothing is recorded — batch, eval, an
+    /// incognito chat — and a consumer must refuse rather than guess, never
+    /// point at the wrong transcript.
     pub recorded_session: Option<String>,
     pub shell_timeout: std::time::Duration,
     pub security: SecurityConfig,

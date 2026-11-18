@@ -93,9 +93,10 @@ only proposals, and acceptance crosses the owner.
 - **A proposal needs a recorded conversation.** The tool reads
   `ToolCtx::recorded_session` — stamped on the agent's context by the front
   end that records the conversation (the web chat per turn, the TUI per
-  agent build, so a switch keeps it), the outbox route winning where it was
-  told its session — and refuses where there is none: a batch, an eval, an
-  incognito chat.
+  agent build, so a switch keeps it), never derived from the outbox route —
+  and refuses where there is none: a batch, an eval, an incognito chat.
+  Voice turns, which ride the web chat's agent, withhold the tool until a
+  later step reaches them.
 - **Taint is recorded fail-closed** and shown at decision time: a proposal
   from a conversation that had read outside content is an injection's way to
   schedule itself, so `show` warns and auto-accept (F2) never takes one.

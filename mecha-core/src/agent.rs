@@ -7437,11 +7437,6 @@ impl Agent {
             work: Some(work),
             host_calls,
             program_room,
-            recorded_session: cx
-                .outbox
-                .as_ref()
-                .and_then(|o| o.session_id())
-                .or_else(|| cx.tools.recorded_session.clone()),
             ..(*cx.tools).clone()
         })
     }
@@ -15403,8 +15398,9 @@ justification = "echo is off on this box"
 
     /// A proposed follow-up names the conversation it came from through the
     /// loop, not through a hand-built context: the front end's stamp on the
-    /// agent's own context reaches the tool, a route told its session wins
-    /// over it, and with neither the tool refuses and nothing is stored.
+    /// agent's own context reaches the tool, and an outbox route told a
+    /// session changes nothing — with no stamp the tool refuses whatever the
+    /// outbox says (review of #896).
     #[tokio::test]
     async fn a_proposed_follow_up_is_recorded_against_the_session_the_run_belongs_to() {
         async fn propose(base: Option<&str>, route: Option<&str>) -> Vec<String> {
@@ -15453,9 +15449,9 @@ justification = "echo is off on this box"
         assert_eq!(propose(Some("sess-base"), None).await, ["sess-base"]);
         assert_eq!(
             propose(Some("sess-base"), Some("sess-route")).await,
-            ["sess-route"]
+            ["sess-base"]
         );
-        assert_eq!(propose(None, Some("sess-route")).await, ["sess-route"]);
+        assert!(propose(None, Some("sess-route")).await.is_empty());
         assert!(propose(None, None).await.is_empty());
     }
 
