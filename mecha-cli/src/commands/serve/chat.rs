@@ -1029,12 +1029,11 @@ impl ChatState {
                 )))
             }
         }
-        if crate::commands::tasks::markers()
-            .ok()
-            .and_then(|m| m.live_writer_of(&session_id))
-            .is_some()
-        {
-            return Err(WakeSkip::Later);
+        // "Cannot tell" is not "no writer": an unreadable marker store
+        // waits, as a held transcript does (review of #897).
+        match crate::commands::tasks::markers() {
+            Ok(m) if m.live_writer_of(&session_id).is_none() => {}
+            _ => return Err(WakeSkip::Later),
         }
         // A background run like any other: a seat, or the next minute.
         let _seat = match crate::commands::tasks::permits()
@@ -1077,7 +1076,7 @@ impl ChatState {
                 .map(|(k, _)| k.clone())
             {
                 Some(k) => k,
-                None => match resume_locked(self, &mut sessions, &session_id, false) {
+                None => match resume_locked(self, &mut sessions, &session_id, false, false) {
                     Ok(k) => k,
                     // The same condition `Session::find` meets above, and
                     // the same answer: it waits, said once (review of #897).
@@ -3643,7 +3642,6 @@ mod narrowing_tests {
     }
 }
 
-/// Why a turn could not start.
 /// Why a due follow-up's conversation was not woken this minute.
 enum WakeSkip {
     /// Try again next minute: a seat, the conversation, or a writer is busy.
@@ -3658,6 +3656,7 @@ enum WakeSkip {
     Never(String),
 }
 
+/// Why a turn could not start.
 enum TurnError {
     /// The conversation is not there to take — a finished run still landing.
     Held,
@@ -4127,9 +4126,14 @@ fn begin_turn(
         timeout: super::present::APPROVAL_TIMEOUT,
     };
     cx.approver = if opts.unattended {
-        Arc::new(mecha_core::tool::ModeApprover {
-            mode: PermissionMode::Ask,
-        }) as Arc<dyn mecha_core::tool::Approver>
+        // Narrowed from the chat's own mode, never widened: `Ask` honours an
+        // owner's `allow` rule on `permit`, which `ReadOnly` refuses, so a
+        // read-only chat stays read-only when woken (review of #897).
+        let mode = match *ws.mode.lock().unwrap_or_else(|e| e.into_inner()) {
+            PermissionMode::ReadOnly => PermissionMode::ReadOnly,
+            _ => PermissionMode::Ask,
+        };
+        Arc::new(mecha_core::tool::ModeApprover { mode }) as Arc<dyn mecha_core::tool::Approver>
     } else if opts.approve_all {
         Arc::new(super::present::VoiceApprover { page }) as Arc<dyn mecha_core::tool::Approver>
     } else {
@@ -6023,7 +6027,7 @@ pub async fn resume(
     #[cfg(not(feature = "memory-prototype"))]
     let remembered = false;
     let mut sessions = chat.sessions.lock().await;
-    match resume_locked(&chat, &mut sessions, &body.id, remembered) {
+    match resume_locked(&chat, &mut sessions, &body.id, remembered, true) {
         Ok(key) => Json(serde_json::json!({ "key": key })).into_response(),
         Err((status, why)) => (status, why).into_response(),
     }
@@ -6039,6 +6043,7 @@ fn resume_locked(
     sessions: &mut HashMap<String, ChatSlot>,
     id: &str,
     remembered: bool,
+    by_owner: bool,
 ) -> Result<String, (StatusCode, String)> {
     #[cfg(not(feature = "memory-prototype"))]
     let _ = remembered;
@@ -6109,8 +6114,12 @@ fn resume_locked(
     // ruling, 2026-09-28): picking it back up is the owner saying it is
     // current again, and leaving the mark would file it away the moment the
     // chat closed. Not fatal — a mark left behind only keeps it filed.
-    if let Err(e) = mecha_core::archive::unarchive(&dir, &meta.id) {
-        tracing::warn!("resumed {} but could not unarchive it: {e:#}", meta.id);
+    // Only the owner's own resume: a follow-up waking the chat in the
+    // background is not the owner saying it is current (review of #897).
+    if by_owner {
+        if let Err(e) = mecha_core::archive::unarchive(&dir, &meta.id) {
+            tracing::warn!("resumed {} but could not unarchive it: {e:#}", meta.id);
+        }
     }
     let bound = chat.follower.current();
     let key = resume_key(&meta.id);
@@ -9531,10 +9540,46 @@ mod wake_tests {
                 _ => None,
             })
             .expect("the refused call has its result");
-        assert!(
-            result.starts_with("Blocked by policy:") && result.contains("non-interactive"),
-            "{result}"
-        );
+        // The machine's voice, never the owner's "Denied": read-only here,
+        // since a resumed chat opens read-only and the woken turn keeps it.
+        assert!(result.starts_with("Blocked by policy:"), "{result}");
+    }
+
+    /// The unattended approver narrows the chat's mode, never widens it: a
+    /// chat open read-only stays read-only when woken. Told apart by the
+    /// refusal's words — `Ask` would refuse as non-interactive, and would
+    /// honour an owner's `allow` rule on `permit`, which `ReadOnly` refuses.
+    #[tokio::test]
+    async fn a_woken_read_only_chat_stays_read_only_against_an_allow_rule() {
+        let home = crate::testenv::HomeGuard::new("wake-narrow");
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (chat, _) = waking_chat_with(true, true, Some(Arc::clone(&ran)));
+        let (_, session) = due_follow_up(&chat, &home.dir);
+        {
+            // Resumed, the chat opens read-only — the state the waker makes.
+            let mut sessions = chat.sessions.lock().await;
+            let key = resume_locked(&chat, &mut sessions, &session, false, true).unwrap();
+            let ws = sessions
+                .get_mut(&key)
+                .and_then(ChatSlot::ordinary_mut)
+                .unwrap();
+            assert_eq!(*ws.mode.lock().unwrap(), PermissionMode::ReadOnly);
+        }
+        chat.wake_due_follow_ups().await;
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+        let messages = Session::read(&Session::find(chat.sessions_dir(), &session).unwrap())
+            .unwrap()
+            .convo
+            .messages;
+        let result = messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|b| match b {
+                mecha_core::message::Block::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(result.contains("read-only"), "{result}");
     }
 
     /// With the switch off, or no outbox route to keep the run staging-only,
@@ -9608,7 +9653,7 @@ mod wake_tests {
         let (_, session) = due_follow_up(&chat, &home.dir);
         {
             let mut sessions = chat.sessions.lock().await;
-            let key = resume_locked(&chat, &mut sessions, &session, false).unwrap();
+            let key = resume_locked(&chat, &mut sessions, &session, false, true).unwrap();
             let ws = sessions
                 .get_mut(&key)
                 .and_then(ChatSlot::ordinary_mut)
