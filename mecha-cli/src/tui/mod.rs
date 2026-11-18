@@ -872,14 +872,9 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
             &prepared.levers_off,
             Some(&prepared.rules),
         )))?;
-        // Staged outbox items point back at the session that drafted them.
-        if let Some(route) = &prepared.agent.context().outbox {
-            route.set_session_id(&s.meta.id);
-        }
-        // And a proposed follow-up at the conversation it returns to. Stamped
-        // on the context itself, not only on the route: the outbox is off by
-        // default, and a recorded conversation is recorded either way.
-        prepared.agent.ctx_mut().recorded_session = Some(s.meta.id.clone());
+        // The session pointers (a staged draft's, a proposed follow-up's)
+        // are stamped by `install_frontend_tools` above, so a switch that
+        // rebuilds the agent stamps them again.
         // The TUI is the same producer as `chat` — one interactive surface,
         // whichever front-end happens to be running it.
         if let Some(mb) = &prepared.mailbox {
@@ -1140,6 +1135,15 @@ fn install_frontend_tools(
     if let Some(s) = session {
         setup::register_recall(agent, s);
         setup::register_follow_ups(agent);
+        // The conversation a proposed follow-up returns to — on the context
+        // itself, since the outbox is off by default — and the one a staged
+        // draft points back at. Here, not at the call site: `apply_switch`
+        // rebuilds the agent from config, and would otherwise leave a tool
+        // that can only refuse and drafts that point at no session.
+        agent.ctx_mut().recorded_session = Some(s.meta.id.clone());
+        if let Some(route) = &agent.context().outbox {
+            route.set_session_id(&s.meta.id);
+        }
     }
 }
 
@@ -9882,6 +9886,92 @@ mod tests {
     /// Slack's model-facing tool follows the switch at session start, as
     /// every gated feature's tools do: off, `show_file` is not registered;
     /// on, it is (review of #452).
+    /// The session pointers ride with the front-end tools, so the switch
+    /// path — which rebuilds the agent from config and calls
+    /// `install_frontend_tools` again — stamps them too: a proposed
+    /// follow-up names the conversation, and a staged draft points back at
+    /// it (review of #896).
+    #[test]
+    fn installing_the_front_end_tools_stamps_the_session_a_switch_would_lose() {
+        struct NoRequests;
+        #[async_trait::async_trait]
+        impl mecha_core::provider::Provider for NoRequests {
+            fn local(&self) -> bool {
+                true
+            }
+            fn id(&self) -> &str {
+                "test"
+            }
+            fn default_model(&self) -> &str {
+                "test"
+            }
+            async fn complete(
+                &self,
+                _: &mecha_core::message::CompletionRequest,
+                _: Option<&mecha_core::provider::StreamSink>,
+            ) -> anyhow::Result<mecha_core::message::CompletionResponse> {
+                panic!("installing tools must never call a provider")
+            }
+        }
+        let home = crate::testenv::HomeGuard::new("tui-session-stamp");
+        let fresh = || {
+            mecha_core::agent::Agent::new(
+                Box::new(NoRequests),
+                mecha_core::tool::Registry::new(),
+                Arc::new(mecha_core::tool::ModeApprover {
+                    mode: mecha_core::config::PermissionMode::ReadOnly,
+                }),
+                mecha_core::tool::ToolCtx::default(),
+                mecha_core::config::Config::default().agent,
+                None,
+            )
+            .unwrap()
+        };
+        let session = Session {
+            meta: SessionMeta {
+                id: "20261118T120000-stamped1".into(),
+                created_at: chrono::Utc::now(),
+                provider: "test".into(),
+                model: "test".into(),
+                workspace: home.dir.clone(),
+                title: None,
+                kind: Some(mecha_core::session::SessionKind::Tui),
+            },
+            path: home.dir.join("s.jsonl"),
+        };
+        let asker: Arc<dyn mecha_core::tool::ask::Asker> = Arc::new(crate::setup::NoOneToAsk);
+        // As a switch leaves it: a fresh agent with an outbox route nobody
+        // has told its session.
+        let mut agent = fresh();
+        let outbox = mecha_core::outbox::OutboxStore::open(home.dir.join("outbox")).unwrap();
+        agent.set_outbox(Arc::new(mecha_core::outbox::OutboxRoute::new(
+            outbox,
+            Vec::<String>::new(),
+            Vec::<String>::new(),
+        )));
+        assert!(agent.ctx().recorded_session.is_none());
+        install_frontend_tools(&mut agent, &asker, Some(&session), 25);
+        assert_eq!(
+            agent.ctx().recorded_session.as_deref(),
+            Some("20261118T120000-stamped1")
+        );
+        assert_eq!(
+            agent
+                .context()
+                .outbox
+                .as_ref()
+                .and_then(|r| r.session_id())
+                .as_deref(),
+            Some("20261118T120000-stamped1")
+        );
+        assert!(agent.registry().get("propose_follow_up").is_some());
+        // No session, no stamp and no tool.
+        let mut bare = fresh();
+        install_frontend_tools(&mut bare, &asker, None, 25);
+        assert!(bare.ctx().recorded_session.is_none());
+        assert!(bare.registry().get("propose_follow_up").is_none());
+    }
+
     #[test]
     fn show_file_is_on_the_surface_only_with_slack_on() {
         let home = crate::testenv::HomeGuard::new("tui-show-file");
