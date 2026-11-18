@@ -11885,9 +11885,14 @@ for the whole door (`serve::chat::Recall`).
   changes nothing asks without the write lock so that a chat's first
   search seldom meets one. A pass's duration is kept in milliseconds; in
   whole seconds every pass after the first build read "0 s" (review of
-  #891). Both the door's search and the model's own in a chat remember
-  what they handed over under the turn's conversation key, so neither
-  hands again what the other did (review of #890). A model that calls `span_recall` itself
+  #891). What a chat was handed is kept under both names a search knows
+  it by: the page's key its turn is stamped with, which the door's search
+  and the model's own share, and the session's id the door names, which
+  outlives a resume's new page key. So neither search hands again what the
+  other did (review of #890), and a resumed chat is not handed again what
+  the door handed it (review of #899). What the model alone was handed
+  after the door's last search is under the page key only, and a resume
+  forgets it. A model that calls `span_recall` itself
   gets outside passages as outside content, envelope and taint and all.
 - **Which sessions are history is a closed list read from each header**
   (`quotable`): one-shot runs, and web chats for the shared index. A

@@ -2161,6 +2161,35 @@ mod tests {
         assert!(text.contains("→ add an [image] table"), "{text}");
     }
 
+    /// A row that says two lines has the second under the first's words,
+    /// where a fix line sits: the table reads as columns still.
+    #[test]
+    fn a_row_that_says_two_lines_has_the_second_under_the_first() {
+        let mut rows = feature::all(&feature::Facts::default());
+        let recall = rows.iter_mut().find(|r| r.id == Feature::Recall).unwrap();
+        recall.state = feature::State::On {
+            detail: "what the index holds\nhow it was counted".into(),
+        };
+        let text = render(&rows, &[]);
+        let lines: Vec<&str> = text.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| l.contains("what the index holds"))
+            .expect("the first line");
+        let first = lines[at];
+        let second = lines[at + 1];
+        assert!(first.trim_start().starts_with("recall"), "{text}");
+        assert_eq!(
+            second.find("how it was counted"),
+            first.find("what the index holds"),
+            "{text}"
+        );
+        assert!(
+            second[..second.find("how").unwrap()].trim().is_empty(),
+            "{text}"
+        );
+    }
+
     /// A card: two sums, the host one unknown because the chat row's host
     /// figure is unmeasured — said in words, never printed as a zero — and a
     /// model with no row of its own says its figure is carried.

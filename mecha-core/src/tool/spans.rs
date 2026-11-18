@@ -1081,8 +1081,10 @@ pub struct Spans {
     web: bool,
     embedder: Embedder,
     /// What each conversation has been handed, so nothing is said twice in
-    /// it. Keyed by the conversation's session id, and by the empty string
-    /// for the one run a tool made with [`Spans::new`] serves.
+    /// it. Kept under each name a search knew the conversation by, the
+    /// page's key its turn is stamped with and the session's id the harness
+    /// names (`Tool::call` says why both), and under the empty string for
+    /// the one run a tool made with [`Spans::new`] serves.
     handed: Mutex<std::collections::BTreeMap<String, BTreeSet<i64>>>,
 }
 
@@ -1100,8 +1102,9 @@ impl Spans {
 
     /// One tool for every conversation of a long-lived host (the web chat):
     /// the owner's chats are history beside one-shot runs, every session is
-    /// indexed, and each search names the conversation asking so that its
-    /// own turns are left out and what it was handed is remembered for it.
+    /// indexed, and the harness's search names the session asking so that
+    /// its own turns are left out. What a conversation was handed is kept
+    /// under that name and under its turn's stamp (`handed`).
     pub fn shared(index: PathBuf, sessions: PathBuf, embedder: Embedder) -> Self {
         Spans {
             index,
@@ -1309,28 +1312,47 @@ impl Tool for Spans {
             .and_then(Value::as_str)
             .map(str::to_string);
         let clean = input.get("clean").and_then(Value::as_bool) == Some(true);
-        // What was handed is remembered by the conversation the turn is
-        // stamped with, which the harness's search before a turn and the
-        // model's own search in it share; and by the one the harness named
-        // where the turn has no stamp. Keyed first by the name, the two
-        // searches of one web chat kept two buckets (the session's id, the
-        // page's key) and what one was handed the other was handed again
-        // (review of #890). One bucket for every unnamed call would have one
-        // chat's hits withheld from every other for the life of the host.
-        // The model's own call is not kept from its own session's passages:
-        // that needs the session's id, which only the harness gives.
-        let key = ctx
-            .conversation
-            .clone()
-            .or_else(|| conversation.clone())
-            .unwrap_or_default();
+        // What was handed is remembered under every name this call knows
+        // the conversation by, and read back from all of them: the page's
+        // key its turn is stamped with, which the harness's search before a
+        // turn and the model's own search in it share, and the session's id
+        // the harness names, which outlives the page key across a resume
+        // (`resume_key` gives a resumed chat a new one). Keyed by one name
+        // only, the two searches of one chat kept two buckets and handed
+        // again what the other had (review of #890), and keyed by the stamp
+        // only, a resumed chat was handed again what it already held
+        // (review of #899). What the model alone was handed after the door's
+        // last search is under the page key alone, and a resume forgets it.
+        // One bucket for every unnamed call would have one chat's hits
+        // withheld from every other for the life of the host. The model's
+        // own call is not kept from its own session's passages: that needs
+        // the session's id, which only the harness gives.
+        let mut keys: Vec<String> = Vec::new();
+        for name in [ctx.conversation.clone(), conversation.clone()]
+            .into_iter()
+            .flatten()
+        {
+            if !keys.contains(&name) {
+                keys.push(name);
+            }
+        }
+        if keys.is_empty() {
+            keys.push(String::new());
+        }
         let web = self.web;
         let index = self.index.clone();
-        let handed = self
+        let handed: BTreeSet<i64> = self
             .handed
             .lock()
-            .map(|h| h.get(&key).cloned().unwrap_or_default())
+            .map(|h| {
+                keys.iter()
+                    .filter_map(|k| h.get(k))
+                    .flatten()
+                    .copied()
+                    .collect()
+            })
             .unwrap_or_default();
+        let before = handed.clone();
         let asking = conversation.clone();
         let hits = tokio::task::spawn_blocking(move || -> Result<Vec<(i64, Span)>> {
             let started = std::time::Instant::now();
@@ -1350,17 +1372,24 @@ impl Tool for Spans {
             Ok(hits)
         })
         .await??;
-        if hits.is_empty() {
-            // The tool's own words and not `.from_outside()`, on purpose:
-            // unwrapped, they are what the loop and the run command compare
-            // against to say nothing.
-            return Ok(ToolOutput::ok(NOTHING));
-        }
+        // Kept under every name before anything is said, a search that
+        // found nothing included: the door's search in a resumed chat finds
+        // nothing new and is what carries the session's record over to the
+        // new page key.
         if let Ok(mut handed) = self.handed.lock() {
-            handed
-                .entry(key)
-                .or_default()
-                .extend(hits.iter().map(|(id, _)| *id));
+            let now: BTreeSet<i64> = before
+                .into_iter()
+                .chain(hits.iter().map(|(id, _)| *id))
+                .collect();
+            for key in keys {
+                handed.entry(key).or_default().extend(now.iter().copied());
+            }
+            if hits.is_empty() {
+                // The tool's own words and not `.from_outside()`, on purpose:
+                // unwrapped, they are what the loop and the run command compare
+                // against to say nothing.
+                return Ok(ToolOutput::ok(NOTHING));
+            }
         }
         let mut out = format!(
             "{} passage(s) from earlier sessions, closest first:\n",
@@ -2440,6 +2469,30 @@ mod tests {
             .await
             .unwrap();
         assert!(!condemned(&model), "handed again: {}", model.content);
+        // Resumed, the chat has a new page key and is the same session: the
+        // door's search names the session and is not handed it again, and
+        // nor is the model's in the resumed page (review of #899).
+        let resumed = spans
+            .call(
+                json!({ "query": query, "conversation": "a-later-session", "clean": true }),
+                &in_page("r-resumed"),
+            )
+            .await
+            .unwrap();
+        assert!(
+            !condemned(&resumed),
+            "handed again after a resume: {}",
+            resumed.content
+        );
+        let model = spans
+            .call(json!({ "query": query }), &in_page("r-resumed"))
+            .await
+            .unwrap();
+        assert!(
+            !condemned(&model),
+            "handed again after a resume: {}",
+            model.content
+        );
         // Another chat has been handed nothing yet.
         let other = spans
             .call(json!({ "query": query }), &in_page("page-b"))
