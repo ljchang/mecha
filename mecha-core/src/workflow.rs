@@ -727,6 +727,10 @@ impl Workflow {
             .events
             .iter()
             .rev()
+            // Bounded to the last day: notices come at most daily, so an
+            // outcome older than that has been said, and a later change is
+            // its own news (review of #897).
+            .take_while(|e| e.at > now - chrono::Duration::days(1))
             .find_map(|e| match e.kind.as_str() {
                 FOLLOW_UP_ANSWERED | FOLLOW_UP_FAILED => Some(e.kind.as_str()),
                 _ => None,
@@ -1278,6 +1282,15 @@ mod tests {
         assert_eq!(
             w.notice.as_ref().map(|n| n.reason.as_str()),
             Some("Follow-up could not run — open the workflow")
+        );
+        // A week on, the outcome has been said: a later change is its own
+        // news, not "Follow-up answered" again.
+        let week = noon + chrono::Duration::days(9);
+        w.record("source_changed", "the owner released the draft", week);
+        assert!(w.tick(&policy, week));
+        assert_eq!(
+            w.notice.as_ref().map(|n| n.reason.as_str()),
+            Some("A linked question or draft changed")
         );
     }
 

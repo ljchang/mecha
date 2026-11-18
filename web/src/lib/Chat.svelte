@@ -2407,7 +2407,8 @@
       {#if entry.kind === 'user' && followUpWake(entry.text) !== null}
         <!-- The harness waking this chat for a follow-up it proposed: not the
              owner's words, so not the owner's bubble. -->
-        <div class="notice wake">Follow-up due{followUpWake(entry.text) ? `: ${followUpWake(entry.text)}` : ''}</div>
+        {@const what = followUpWake(entry.text)}
+        <div class="notice">Follow-up due{what ? `: ${what}` : ''}</div>
       {:else if entry.kind === 'user'}
         <div class="bubble" class:queued={entry.queued}>
           {entry.text}

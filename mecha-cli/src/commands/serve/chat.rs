@@ -1107,6 +1107,16 @@ impl ChatState {
                 .map(|(k, _)| k.clone())
             {
                 Some(k) => k,
+                // Not held: read the tail before resuming, so a chat that
+                // must wait is never lifted into the owner's rail and left
+                // there with nothing to say why (review of #897).
+                None if Session::read(&path)
+                    .ok()
+                    .and_then(|t| t.convo.messages.last().cloned())
+                    .is_some_and(|m| owners_words(&m)) =>
+                {
+                    return Err(WakeSkip::Later)
+                }
                 None => match resume_locked(self, &mut sessions, &session_id, remembered, false) {
                     Ok(k) => k,
                     // The same condition `Session::find` meets above, and
@@ -1135,9 +1145,7 @@ impl ChatState {
                             // results (a turn stopped mid-round) takes the
                             // wake folded in, marked the harness's, and must
                             // not stall it (review of #897).
-                            c.messages
-                                .last()
-                                .is_none_or(|m| !mecha_core::agent::is_plain_user_text(m))
+                            c.messages.last().is_none_or(|m| !owners_words(m))
                         })
                 });
             if !idle {
@@ -3700,6 +3708,13 @@ mod narrowing_tests {
     fn a_first_turn_has_no_reply_to_echo() {
         assert!(narrow_for_echo(spoken_yes(), None, "delete it").approve_all);
     }
+}
+
+/// Whether `m` is the owner's own words at a conversation's tail — what a
+/// wake must not be folded into. A previous wake left there (a crashed woken
+/// run) is the harness's, not the owner's, so it does not hold the next one.
+fn owners_words(m: &Message) -> bool {
+    mecha_core::agent::is_plain_user_text(m) && !m.harness
 }
 
 /// How many due follow-ups one minute's pass may wake; the rest wait for
@@ -9767,6 +9782,10 @@ mod wake_tests {
         assert!(seen.lock().unwrap().is_empty());
         let w = WorkflowStore::default_store().unwrap().get(&id).unwrap();
         assert!(w.woken_at.is_none(), "it waits, it is not retired");
+        assert!(
+            chat.sessions.lock().await.is_empty(),
+            "a chat that must wait was lifted into the rail"
+        );
     }
 
     /// A waker that saw the workflow before another claimed it starts

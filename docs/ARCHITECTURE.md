@@ -7758,7 +7758,7 @@ chats, and a second writer on a transcript forks it, so the trigger tick only
 reminds. Once a minute it resumes the conversation if it is not held, writes
 `woken_at` before the turn (a crash never wakes twice), and starts an
 unattended, harness-voiced turn through `begin_turn` (`TurnOpts::unattended`:
-`ModeApprover { Ask }`, so approvals are `Blocked` in the machine's voice and
+`ModeApprover`, `Ask` or the chat's own `ReadOnly` and never wider, so approvals are `Blocked` in the machine's voice and
 routed sends still stage; every unrouted tool that can send is withheld, and
 `ask_user` too, since a read-only sender like `http_fetch` never reaches the
 approver and a deep `web_search` is `Chosen` under a `Blind` declaration; the turn is recorded `harness: true` under
