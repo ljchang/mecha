@@ -1,0 +1,33 @@
+# Collect the GitHub board's tables into ~/.mecha/github/github.db
+# (GITHUB-DASHBOARD-DESIGN.md §7 step 1): the repositories
+# ~/.mecha/github/repos.toml selects, their default-branch CI runs, open issues
+# and outside pull requests, and a row of counts a day. Installed as a user
+# unit, beside mecha-triggers.service:
+#   cp scripts/mecha-github-collect.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now mecha-github-collect.timer
+#
+# No model runs here, and mecha never holds the GitHub token: every call is
+# `gh api`, through gh's own login (ruling G9). `[features] github` must be on.
+#
+# WorkingDirectory is the home directory, not a project, for the same reason
+# as mecha-triggers: the switch is read from ~/.mecha/config.toml only.
+[Unit]
+Description=mecha github collect (CI, new issues and counts for the GitHub board)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h
+# No GUI login on this machine means no ~/.cargo/bin on the manager's PATH;
+# gh lives in /usr/bin. A gh the collector cannot find is logged as
+# `gh_missing` and is a `mecha doctor` finding, never an empty board.
+Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=%h/.cargo/bin/mecha github collect
+# Type=oneshot has no start timeout by default, and a run that is still active
+# holds its timer. Every gh call inside a run shares one 480 s budget
+# (github::RUN_BUDGET; a test keeps it a minute under this), so a slow API
+# costs the steps it did not reach, logged as `out_of_time`, never the run's
+# write.
+TimeoutStartSec=600s
+Nice=10

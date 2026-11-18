@@ -479,7 +479,12 @@ setup` asks about it. `mecha features enable <id>` writes `true` in place; a
 # corrections = false  # drafts you changed or rejected, steers and next messages read as corrections, recalled on a like ask
 # recall = false     # what your earlier chats and runs said, found when it bears on a chat
 # followups = false  # a conversation offers to check back later; each waits in Review for you
+# github = false     # the GitHub board's collector: CI, new issues, use (`mecha github collect`)
 ```
+
+`github` defaults off. Its repository list is `~/.mecha/github/repos.toml`,
+never this file or a project's, so a cloned repository cannot add itself to
+what is watched; see [`mecha github`](/docs/reference/cli#github).
 
 `mail_rules` requires `mail` and defaults off. With either switch off, the
 five-minute timer and post-classify hook skip once with an explanation; rules

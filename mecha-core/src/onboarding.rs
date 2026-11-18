@@ -1097,6 +1097,12 @@ pub fn blurb(f: crate::feature::Feature) -> &'static str {
              build passed. Each offer waits in Review until you accept it; an accepted one \
              reminds you at its time, in Tasks, with a link back to the chat."
         }
+        Feature::Github => {
+            "A board of the GitHub repositories you choose: what is failing on the default \
+             branch, new issues and outside pull requests, and stars and forks by day. A timer \
+             asks GitHub through your own `gh` login, which mecha never holds; no model reads \
+             any of it. You list the repositories in ~/.mecha/github/repos.toml."
+        }
         // Parts are summarised under their parent and never stepped alone.
         Feature::Incognito
         | Feature::Tasks
@@ -2288,6 +2294,7 @@ mod tests {
                 "corrections",
                 "recall",
                 "followups",
+                "github",
                 "charter"
             ]
             .into_iter()
