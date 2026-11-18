@@ -2082,6 +2082,10 @@ pub(super) fn transcript_entries_with(
         match message.role {
             Role::User => {
                 let mut text = String::new();
+                // A follow-up's wake, its own entry ahead of whatever else the
+                // message holds, so a steer folded onto it keeps the owner's
+                // bubble (review of #897).
+                let mut wake: Option<String> = None;
                 // A picture beside tool results is one a tool put in front
                 // of the model (`ToolOutput::image`, from `image_view`). The
                 // page draws it under that tool's row, from the result's
@@ -2127,10 +2131,7 @@ pub(super) fn transcript_entries_with(
                         Block::Text { text: t }
                             if t.trim_start().starts_with(mecha_core::followup::WAKE_STEM) =>
                         {
-                            if !text.is_empty() {
-                                text.push('\n');
-                            }
-                            text.push_str(t.trim_start());
+                            wake = Some(t.trim_start().to_string());
                         }
                         Block::Text { text: t } if mecha_core::title::is_derived(t) => {}
                         Block::Text { text: t } => {
@@ -2177,6 +2178,12 @@ pub(super) fn transcript_entries_with(
                         }
                         _ => {}
                     }
+                }
+                if let Some(wake) = wake {
+                    entries.push(Entry::User {
+                        text: wake,
+                        steered: false,
+                    });
                 }
                 if !text.is_empty() {
                     entries.push(Entry::User {
@@ -3726,7 +3733,10 @@ mod narrowing_tests {
 /// wake must not be folded into. A previous wake left there (a crashed woken
 /// run) is the harness's, not the owner's, so it does not hold the next one.
 fn owners_words(m: &Message) -> bool {
-    mecha_core::agent::is_plain_user_text(m) && !m.harness
+    // Per block, not per message: a tool-results tail can carry a steer the
+    // owner typed mid-run, and those are the owner's words too (review of
+    // #897). `owner_text` reads a harness-marked message as nobody's.
+    m.role == mecha_core::message::Role::User && !mecha_core::agent::owner_text(m).is_empty()
 }
 
 /// How many due follow-ups one minute's pass may wake; the rest wait for
@@ -3989,10 +3999,7 @@ fn begin_turn(
         // An unattended turn folds only onto a message that holds none of the
         // owner's words (the waker refuses a plain-text tail), so the folded
         // message is the harness's, as the push branch marks its own.
-        let owners = conversation
-            .messages
-            .last()
-            .is_some_and(mecha_core::agent::is_plain_user_text);
+        let owners = conversation.messages.last().is_some_and(owners_words);
         mecha_core::agent::append_user_text(&mut conversation.messages, text.clone());
         if let Some(last) = conversation.messages.last_mut() {
             last.content.extend(opts.images);
@@ -10162,6 +10169,62 @@ mod wake_tests {
             ),
             "{entries:?}"
         );
+    }
+
+    /// A steer folded onto a wake is two entries on reopen: the wake's note,
+    /// then the owner's own bubble — never the owner's words under the note.
+    #[test]
+    fn a_steer_folded_onto_a_wake_keeps_its_bubble_on_reopen() {
+        let mut m = Message::user(followup::render_wake(
+            "check the build",
+            chrono::Utc::now(),
+            chrono_tz::UTC,
+        ));
+        m.content.push(mecha_core::message::Block::Text {
+            text: "also check the docs".into(),
+        });
+        let entries = transcript_entries(&[m]);
+        let users: Vec<&String> = entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::User { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(users.len(), 2, "{entries:?}");
+        assert!(users[0].starts_with(followup::WAKE_STEM));
+        assert_eq!(users[1], "also check the docs");
+    }
+
+    /// A tool-results tail that also carries the owner's steer holds the
+    /// owner's words: the waker waits on it, and a fold would not mark it
+    /// the harness's.
+    #[test]
+    fn a_steer_among_tool_results_is_the_owner_s_words() {
+        let m = Message {
+            role: mecha_core::message::Role::User,
+            content: vec![
+                mecha_core::message::Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "notes".into(),
+                    is_error: false,
+                },
+                mecha_core::message::Block::Text {
+                    text: "stop, check the docs instead".into(),
+                },
+            ],
+            ..Message::user("")
+        };
+        assert!(owners_words(&m));
+        let results_only = Message {
+            content: vec![mecha_core::message::Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "notes".into(),
+                is_error: false,
+            }],
+            ..m.clone()
+        };
+        assert!(!owners_words(&results_only));
     }
 
     /// The page shows a wake as a note, keyed on core's stem; the two copies
