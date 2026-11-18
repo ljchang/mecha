@@ -956,9 +956,17 @@ impl ChatState {
         // unattended turns (review of #897). Oldest first.
         let mut due = due;
         due.sort_by_key(|w| w.commitment.as_ref().and_then(|c| c.follow_up_at));
-        for w in due.into_iter().take(WAKES_PER_PASS) {
+        // The cap counts wakes, not candidates: a follow-up that waits or is
+        // refused takes no slot, so three stuck ones cannot starve the rest
+        // (review of #897).
+        let mut woken = 0;
+        for w in due {
+            if woken >= WAKES_PER_PASS {
+                break;
+            }
             match self.wake_follow_up(&w).await {
-                Ok(()) | Err(WakeSkip::Later) => {}
+                Ok(()) => woken += 1,
+                Err(WakeSkip::Later) => {}
                 Err(WakeSkip::Waiting(why)) => {
                     let id = w.id.clone();
                     let said = w.events.iter().any(|e| {
@@ -1123,9 +1131,13 @@ impl ChatState {
                 .is_some_and(|ws| {
                     ws.live.is_none()
                         && ws.conversation.as_ref().is_some_and(|c| {
+                            // Only the owner's own words: a tail of tool
+                            // results (a turn stopped mid-round) takes the
+                            // wake folded in, marked the harness's, and must
+                            // not stall it (review of #897).
                             c.messages
                                 .last()
-                                .is_none_or(|m| m.role != mecha_core::message::Role::User)
+                                .is_none_or(|m| !mecha_core::agent::is_plain_user_text(m))
                         })
                 });
             if !idle {
@@ -3947,9 +3959,19 @@ fn begin_turn(
         // unrecorded turn is invisible to distill, recall and the
         // run-quality corpus, whichever way it entered the conversation.
         let pre_fold = conversation.messages.clone();
+        // An unattended turn folds only onto a message that holds none of the
+        // owner's words (the waker refuses a plain-text tail), so the folded
+        // message is the harness's, as the push branch marks its own.
+        let owners = conversation
+            .messages
+            .last()
+            .is_some_and(mecha_core::agent::is_plain_user_text);
         mecha_core::agent::append_user_text(&mut conversation.messages, text.clone());
         if let Some(last) = conversation.messages.last_mut() {
             last.content.extend(opts.images);
+            if opts.unattended && !owners {
+                last.harness = true;
+            }
         }
         // An incognito chat records nothing — there is no transcript to fail.
         if let Some(session) = ws.session.kept() {
@@ -10020,6 +10042,75 @@ mod wake_tests {
             WAKES_PER_PASS + 1,
             "the rest wake next"
         );
+    }
+
+    /// A tail of tool results — a turn stopped mid-round — is not the
+    /// owner's words: the wake folds onto it, marked the harness's, rather
+    /// than waiting for the owner to type.
+    #[tokio::test]
+    async fn a_conversation_ending_on_tool_results_wakes() {
+        let home = crate::testenv::HomeGuard::new("wake-tool-tail");
+        let (chat, seen) = waking_chat(true, true);
+        let (_, session) = due_follow_up(&chat, &home.dir);
+        let path = Session::find(chat.sessions_dir(), &session).unwrap();
+        let rec = Session {
+            meta: Session::read(&path).unwrap().meta,
+            path,
+        };
+        rec.append(&Record::Message(Message::user("check the build")))
+            .unwrap();
+        rec.append(&Record::Message(Message::assistant(vec![
+            mecha_core::message::Block::ToolUse {
+                id: "t1".into(),
+                name: "read_notes".into(),
+                input: serde_json::json!({}),
+            },
+        ])))
+        .unwrap();
+        rec.append(&Record::Message(Message {
+            role: mecha_core::message::Role::User,
+            content: vec![mecha_core::message::Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "notes".into(),
+                is_error: false,
+            }],
+            ..Message::user("")
+        }))
+        .unwrap();
+        chat.wake_due_follow_ups().await;
+        assert_eq!(seen.lock().unwrap().len(), 1, "it woke");
+        let messages = Session::read(&Session::find(chat.sessions_dir(), &session).unwrap())
+            .unwrap()
+            .convo
+            .messages;
+        let folded = messages
+            .iter()
+            .find(|m| m.text().contains(followup::WAKE_STEM))
+            .expect("the wake is recorded");
+        assert!(folded.harness, "the folded wake is the harness's");
+    }
+
+    /// Follow-ups that wait take no slot: three stuck ones (oldest, so
+    /// first) do not stop a fourth from waking.
+    #[tokio::test]
+    async fn waiting_follow_ups_do_not_starve_the_rest() {
+        let home = crate::testenv::HomeGuard::new("wake-starve");
+        let (chat, seen) = waking_chat(true, true);
+        for _ in 0..WAKES_PER_PASS {
+            let (_, session) = due_follow_up(&chat, &home.dir);
+            let path = Session::find(chat.sessions_dir(), &session).unwrap();
+            Session {
+                meta: Session::read(&path).unwrap().meta,
+                path,
+            }
+            .append(&Record::Message(Message::user("the owner's last word")))
+            .unwrap();
+        }
+        // Due a little later than the stuck ones, so it sorts after them.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        due_follow_up(&chat, &home.dir);
+        chat.wake_due_follow_ups().await;
+        assert_eq!(seen.lock().unwrap().len(), 1, "the fourth woke");
     }
 
     /// The page shows a wake as a note, keyed on core's stem; the two copies

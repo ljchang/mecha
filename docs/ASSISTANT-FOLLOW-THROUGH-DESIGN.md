@@ -134,7 +134,9 @@ still only reminds.
   has come, that is open, not snoozed, not running, and has not been woken
   before (`woken_at`, a new optional field, written before the turn starts so
   a crash never runs it twice).
-- **A few at a time.** One pass wakes at most three, oldest first, so what
+- **A few at a time.** One pass wakes at most three (counting turns started,
+  not candidates looked at, so follow-ups that wait never starve the rest),
+  oldest first, so what
   accumulated while the outbox was unset or serve was down comes over the
   next minutes rather than as one burst of unattended turns.
 - **When it does not, and says so.** Each of these leaves the reminder as it
@@ -147,7 +149,8 @@ still only reminds.
   next minute, and not recorded: the feature is switched off (a pause, so
   switching it back on wakes what came due meanwhile); another writer holds
   the conversation (a task run, the TUI); a turn is in flight or the
-  transcript ends on a user message; no background seat is free. The woken
+  transcript ends on the owner's own words (a tail of tool results takes the
+  wake, folded in and marked the harness's); no background seat is free. The woken
   mark is claimed under the workflow store's lock, re-checking the whole rule
   there, so a second `serve` on one home never wakes the same follow-up and a
   workflow closed or snoozed since the listing is not woken.
