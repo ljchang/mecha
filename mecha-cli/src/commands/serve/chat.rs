@@ -924,6 +924,15 @@ impl ChatState {
     }
 
     async fn wake_due_follow_ups(self: &Arc<Self>) {
+        // Switched off, the pass costs nothing: no store is read (review of
+        // #897). The per-follow-up check below stays, for a switch flipped
+        // mid-pass.
+        if !mecha_core::feature::switched_on(
+            &self.follower.current().config,
+            mecha_core::feature::Feature::Followups,
+        ) {
+            return;
+        }
         let store = match mecha_core::workflow::WorkflowStore::default_store() {
             Ok(s) => s,
             Err(e) => {
@@ -1149,14 +1158,32 @@ impl ChatState {
                 },
             )
         };
-        let (kind, detail) = match started {
-            Ok(started) => match started.done.await {
-                Ok(Ok(_)) => (FOLLOW_UP_ANSWERED, session_id),
-                Ok(Err(e)) => (FOLLOW_UP_FAILED, e),
-                Err(_) => (FOLLOW_UP_FAILED, "the run ended without an answer".into()),
-            },
-            Err(TurnError::Held) => (FOLLOW_UP_FAILED, "the conversation was busy".into()),
-            Err(TurnError::Failed(e)) => (FOLLOW_UP_FAILED, e),
+        let started = match started {
+            Ok(started) => started,
+            // The turn never started, so the claim is given back: a refusal
+            // to begin (busy, shutting down, a record that would not take)
+            // must not retire the follow-up. It waits, said once, and the
+            // next minute tries again (review of #897).
+            Err(e) => {
+                let why = match e {
+                    TurnError::Held => "the conversation was busy".to_string(),
+                    TurnError::Failed(e) => e,
+                };
+                if let Err(e) = store.update(&w.id, |w| {
+                    w.woken_at = None;
+                    Ok(())
+                }) {
+                    tracing::warn!(workflow = %w.id, "could not release a follow-up's claim: {e:#}");
+                }
+                return Err(WakeSkip::Waiting(format!(
+                    "its turn could not start: {why}"
+                )));
+            }
+        };
+        let (kind, detail) = match started.done.await {
+            Ok(Ok(_)) => (FOLLOW_UP_ANSWERED, session_id),
+            Ok(Err(e)) => (FOLLOW_UP_FAILED, e),
+            Err(_) => (FOLLOW_UP_FAILED, "the run ended without an answer".into()),
         };
         if let Err(e) = store.update(&w.id, |w| {
             w.record(kind, detail.clone(), chrono::Utc::now());
@@ -9755,6 +9782,66 @@ mod wake_tests {
         assert!(
             !ran.load(std::sync::atomic::Ordering::SeqCst),
             "an unrouted chosen-egress tool dispatched from an unattended turn"
+        );
+    }
+
+    /// A chat this process holds open in `Ask` — the page would park an
+    /// approval card for two minutes nobody answers. The woken turn's own
+    /// approver refuses at once in the machine's voice instead (review of
+    /// #897); the timeout is what fails if the page's approver answers.
+    #[tokio::test]
+    async fn a_woken_ask_chat_refuses_at_once_instead_of_parking_a_card() {
+        let home = crate::testenv::HomeGuard::new("wake-ask");
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (chat, _) = waking_chat_with(true, true, Some(Arc::clone(&ran)));
+        let (_, session) = due_follow_up(&chat, &home.dir);
+        {
+            let mut sessions = chat.sessions.lock().await;
+            let key = resume_locked(&chat, &mut sessions, &session, false, true).unwrap();
+            let ws = sessions
+                .get_mut(&key)
+                .and_then(ChatSlot::ordinary_mut)
+                .unwrap();
+            *ws.mode.lock().unwrap() = PermissionMode::Ask;
+        }
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            chat.wake_due_follow_ups(),
+        )
+        .await
+        .expect("the woken turn waited on an approval nobody can give");
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+        let messages = Session::read(&Session::find(chat.sessions_dir(), &session).unwrap())
+            .unwrap()
+            .convo
+            .messages;
+        let result = messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|b| match b {
+                mecha_core::message::Block::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(result.contains("non-interactive"), "{result}");
+    }
+
+    /// A turn that refuses to begin (here, the server is stopping) gives
+    /// its claim back and waits: it never ran, so it is not retired.
+    #[tokio::test]
+    async fn a_turn_that_cannot_start_gives_its_claim_back() {
+        let home = crate::testenv::HomeGuard::new("wake-refused-start");
+        let (chat, seen) = waking_chat(true, true);
+        let (id, _) = due_follow_up(&chat, &home.dir);
+        chat.stopping.cancel();
+        chat.wake_due_follow_ups().await;
+        assert!(seen.lock().unwrap().is_empty());
+        let w = WorkflowStore::default_store().unwrap().get(&id).unwrap();
+        assert!(w.woken_at.is_none(), "the claim was not given back");
+        assert!(mecha_core::followup::due_to_wake(&w, chrono::Utc::now()));
+        assert_eq!(
+            w.events.last().map(|e| e.kind.as_str()),
+            Some(mecha_core::workflow::FOLLOW_UP_WAITING)
         );
     }
 

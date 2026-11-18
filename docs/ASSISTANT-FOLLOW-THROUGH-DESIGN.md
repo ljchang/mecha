@@ -160,7 +160,8 @@ still only reminds.
   tool whose destination the model names (`Egress::Chosen`) that `[outbox]
   tools` does not route is withheld from the woken turn — `http_fetch` is
   read-only, so no approver would ever be asked about it. `Blind` egress
-  (`web_search`) stays. `shell` does not, on a machine whose sandbox can
+  stays — `web_search` at quick depth over blind backends; a deep search, or
+  a non-blind backend, is `Chosen` and is withheld with the rest. `shell` does not, on a machine whose sandbox can
   reach the network: there its egress is `Chosen`, so a woken turn cannot
   run a command, and the canonical "check whether the build passed" needs a
   network-isolating sandbox or a routed or blind tool to answer it. Its run posture is `unattended` too, so a shell it runs is never
