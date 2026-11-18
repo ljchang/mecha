@@ -92,7 +92,6 @@ export const QUEUE_FEATURE = {
   'graph shadow': 'graph',
   'graph entities': 'graph',
   'image candidates': 'library',
-  'follow-ups': 'followups',
 };
 
 /**
