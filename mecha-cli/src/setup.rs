@@ -3138,8 +3138,9 @@ pub fn register_recall(agent: &mut Agent, session: &mecha_core::session::Session
 /// back to: not a trigger, a batch, an eval or Slack (whose sessions are
 /// per-run, the `register_recall` reason). The tool refuses at call time
 /// where the run records no session (`ToolCtx::recorded_session`). A store
-/// that cannot be opened leaves the tool out and says so once, rather than
-/// offering a proposal that could never be recorded.
+/// that cannot be opened leaves the tool out and says so on each build (the
+/// web chat rebuilds on a model switch), rather than offering a proposal
+/// that could never be recorded.
 pub fn register_follow_ups(agent: &mut Agent) {
     match mecha_core::followup::FollowUpStore::open_default() {
         Ok(store) => {

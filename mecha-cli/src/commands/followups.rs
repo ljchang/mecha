@@ -184,7 +184,12 @@ pub fn run(args: Args) -> Result<()> {
                 }
             }
         }
-        Cmd::Show { id } => print!("{}", show(&store()?.find(&id)?, tz)),
+        // A read: it must not create the store it reads (`List`'s rule).
+        Cmd::Show { id } => {
+            let store = FollowUpStore::open_existing_default()
+                .with_context(|| format!("no such follow-up: {id}"))?;
+            print!("{}", show(&store.find(&id)?, tz));
+        }
         Cmd::Accept { id } => {
             let outbox_root = mecha_core::config::Config::load_global()?.outbox.dir;
             let f = accept(
@@ -301,7 +306,10 @@ mod tests {
         let (_d, store, _w) = stores();
         let mut f = proposed(&store, Some("/tmp/w"));
         assert!(!show(&f, chrono_tz::UTC).contains('⚠'));
-        f.taint.untrusted = true;
+        f.taint = Some(Taint {
+            private: false,
+            untrusted: true,
+        });
         assert!(show(&f, chrono_tz::UTC).contains('⚠'));
         assert!(detail(&f, chrono_tz::UTC).contains("outside content"));
     }

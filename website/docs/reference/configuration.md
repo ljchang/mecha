@@ -1048,6 +1048,7 @@ Manage them with `mecha trigger add` / `edit` / `rm`, or edit the files directly
 | `MECHA_COMPARISONS_DIR` | The comparison store (point-wise and counterfactual comparisons). Default `~/.mecha/comparisons`. |
 | `MECHA_TRIGGERS_DIR` | Trigger definitions and their ledger. Default `~/.mecha/triggers`. |
 | `MECHA_QUESTIONS_DIR` | Questions a delegated run is waiting on you to answer. Default `~/.mecha/questions`. |
+| `MECHA_FOLLOWUPS_DIR` | Follow-ups a conversation proposed, waiting on you to accept or reject. Default `~/.mecha/followups`. |
 | `MECHA_MAIL_DIR` | The mail account registry and its per-account credentials. Default `~/.mecha/mail`. |
 | `MECHA_GOOGLE_DIR` / `MECHA_OUTLOOK_DIR` | Token stores of the older single-account `mecha-google` / `mecha-outlook` binaries, which `mecha-mail import` reads. Default `~/.mecha/google`, `~/.mecha/outlook`. |
 | `MECHA_DOCS_CLIENT_ID` / `MECHA_DOCS_CLIENT_SECRET` | OAuth client for `mecha-docs auth`, in place of `--client-id` / `--client-secret`. |

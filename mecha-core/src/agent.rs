@@ -15401,6 +15401,64 @@ justification = "echo is off on this box"
         assert!(!narrowed.contains("request_access"), "{narrowed}");
     }
 
+    /// A proposed follow-up names the conversation it came from through the
+    /// loop, not through a hand-built context: the front end's stamp on the
+    /// agent's own context reaches the tool, a route told its session wins
+    /// over it, and with neither the tool refuses and nothing is stored.
+    #[tokio::test]
+    async fn a_proposed_follow_up_is_recorded_against_the_session_the_run_belongs_to() {
+        async fn propose(base: Option<&str>, route: Option<&str>) -> Vec<String> {
+            let dir = std::env::temp_dir().join(format!("mecha-fu-loop-{}", uuid::Uuid::new_v4()));
+            let store = Arc::new(crate::followup::FollowUpStore::open(dir.join("f")).unwrap());
+            let calls = vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "f".into(),
+                        name: "propose_follow_up".into(),
+                        input: json!({"what": "check the build", "in_hours": 3}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("ok")], StopReason::EndTurn),
+            ];
+            let (mut agent, _) = agent_with(calls, PermissionMode::Ask);
+            agent
+                .registry
+                .insert(Arc::new(crate::tool::follow_up::ProposeFollowUp::new(
+                    Arc::clone(&store),
+                    Arc::new(crate::clock::SystemClock),
+                )));
+            agent.ctx_mut().recorded_session = base.map(String::from);
+            if let Some(id) = route {
+                let outbox = crate::outbox::OutboxStore::open(dir.join("o")).unwrap();
+                let r = crate::outbox::OutboxRoute::new(
+                    outbox,
+                    Vec::<String>::new(),
+                    Vec::<String>::new(),
+                );
+                r.set_session_id(id);
+                agent.set_outbox(Arc::new(r));
+            }
+            let mut convo = Conversation::from(vec![Message::user("remind me")]);
+            agent.run(&mut convo, None).await.unwrap();
+            let sessions = store
+                .items()
+                .unwrap()
+                .into_iter()
+                .map(|f| f.session_id)
+                .collect();
+            std::fs::remove_dir_all(&dir).ok();
+            sessions
+        }
+        assert_eq!(propose(Some("sess-base"), None).await, ["sess-base"]);
+        assert_eq!(
+            propose(Some("sess-base"), Some("sess-route")).await,
+            ["sess-route"]
+        );
+        assert_eq!(propose(None, Some("sess-route")).await, ["sess-route"]);
+        assert!(propose(None, None).await.is_empty());
+    }
+
     /// `--no-grants` holds for a resumed conversation too: its recorded
     /// grants are not reachable in an `off` run (the record says the lever
     /// is off), and they are not erased by it either — not using a grant is

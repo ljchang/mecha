@@ -1028,7 +1028,9 @@ fn collect_queues() -> Vec<Queue> {
             Ok((items, 0)) => {
                 let open: Vec<_> = items.iter().filter(|f| f.is_proposed()).collect();
                 let armed = open.iter().filter(|f| f.armed()).count();
-                let d = if open.is_empty() {
+                let d = if items.is_empty() {
+                    "none proposed yet".to_string()
+                } else if open.is_empty() {
                     format!("{} decided", items.len())
                 } else if armed > 0 {
                     format!("{armed} proposed after reading outside content")

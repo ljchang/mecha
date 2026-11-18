@@ -876,6 +876,10 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         if let Some(route) = &prepared.agent.context().outbox {
             route.set_session_id(&s.meta.id);
         }
+        // And a proposed follow-up at the conversation it returns to. Stamped
+        // on the context itself, not only on the route: the outbox is off by
+        // default, and a recorded conversation is recorded either way.
+        prepared.agent.ctx_mut().recorded_session = Some(s.meta.id.clone());
         // The TUI is the same producer as `chat` — one interactive surface,
         // whichever front-end happens to be running it.
         if let Some(mb) = &prepared.mailbox {

@@ -45,6 +45,12 @@ pub const MIN_LEAD: chrono::Duration = chrono::Duration::minutes(10);
 /// board, not in a reminder.
 pub const MAX_LEAD: chrono::Duration = chrono::Duration::days(90);
 
+/// How many undecided proposals one conversation may hold. Each is bounded
+/// by [`WHAT_MAX_CHARS`]; this bounds their number, so a conversation under
+/// an injection cannot fill the owner's queue, and the cap is said to the
+/// model rather than enforced by silence.
+pub const MAX_OPEN_PER_SESSION: usize = 5;
+
 /// One proposed follow-up.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FollowUp {
@@ -59,11 +65,14 @@ pub struct FollowUp {
     /// The jail the proposing run was held to.
     #[serde(default)]
     pub workspace: Option<PathBuf>,
-    /// The conversation's taint when it was proposed. Unknown is recorded
-    /// as fully tainted (the tool's rule), so absent on the wire is clean
-    /// only for a record written by hand.
+    /// The conversation's taint when it was proposed. The tool records an
+    /// unstamped taint as full taint; a record without the field — written
+    /// by hand, or by a binary before it — is unknown, and [`armed`] reads
+    /// unknown as untrusted.
+    ///
+    /// [`armed`]: FollowUp::armed
     #[serde(default)]
-    pub taint: Taint,
+    pub taint: Option<Taint>,
     pub proposed_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decided_at: Option<DateTime<Utc>>,
@@ -80,10 +89,11 @@ impl FollowUp {
         self.status == PROPOSED
     }
 
-    /// Whether the proposing conversation had read anything from outside or
-    /// held private data together with it — what `show` warns about.
+    /// Whether the proposing conversation had read anything from outside —
+    /// what `show` warns about, and what keeps a proposal from ever being
+    /// accepted on the owner's behalf. Unknown is untrusted.
     pub fn armed(&self) -> bool {
-        self.taint.untrusted
+        self.taint.is_none_or(|t| t.untrusted)
     }
 }
 
@@ -298,13 +308,27 @@ impl FollowUpStore {
             due_at,
             session_id: session_id.into(),
             workspace,
-            taint,
+            taint: Some(taint),
             proposed_at: now,
             decided_at: None,
             workflow_id: None,
             reason: None,
         };
         let _lock = self.lock()?;
+        // Counted under the lock, so two calls in one batch cannot both
+        // squeeze under the cap. An unreadable record counts against it:
+        // unknown is never "fewer than five".
+        let (items, skipped) = self.items_counting()?;
+        let open = skipped
+            + items
+                .iter()
+                .filter(|o| o.session_id == f.session_id && o.is_proposed())
+                .count();
+        ensure!(
+            open < MAX_OPEN_PER_SESSION,
+            "this conversation already has {open} follow-ups waiting on the user's answer \
+             (at most {MAX_OPEN_PER_SESSION}); mention it instead of proposing another"
+        );
         ensure!(!self.path(&f.id)?.try_exists()?, "follow-up id collision");
         self.put(&f)?;
         Ok(f)
@@ -340,6 +364,10 @@ impl FollowUpStore {
     }
 }
 
+/// What an accepted follow-up's workflow names it by, in
+/// `commitment.source` — the key `forget` finds that workflow with.
+pub const WORKFLOW_SOURCE_PREFIX: &str = "followup:";
+
 /// The distinguishing tail of an id, for display — the question store's
 /// reasoning: the head of a `Session::new_id` is a timestamp, and every
 /// follow-up proposed on one day shares it.
@@ -368,7 +396,7 @@ pub fn workflow_for(
     w.outbox_root = outbox_root;
     w.commitment = Some(crate::workflow::Commitment {
         party: "owner".into(),
-        source: format!("followup:{}", f.id),
+        source: format!("{WORKFLOW_SOURCE_PREFIX}{}", f.id),
         due_at: None,
         follow_up_at: Some(f.due_at),
         expectation: Some(f.what.clone()),
@@ -478,6 +506,35 @@ mod tests {
     }
 
     #[test]
+    fn a_record_without_its_taint_reads_untrusted() {
+        let f: FollowUp = serde_json::from_value(serde_json::json!({
+            "id": "x", "status": "proposed", "what": "x",
+            "due_at": "2026-11-19T00:00:00Z", "session_id": "s",
+            "proposed_at": "2026-11-18T00:00:00Z"
+        }))
+        .unwrap();
+        assert!(f.taint.is_none() && f.armed());
+    }
+
+    #[test]
+    fn one_conversation_holds_at_most_a_few_undecided_proposals() {
+        let (_d, s) = store();
+        let n = now();
+        let propose =
+            |session: &str| s.propose("x".into(), n + MIN_LEAD, session, None, Taint::default(), n);
+        let first = propose("sess-a").unwrap();
+        for _ in 1..MAX_OPEN_PER_SESSION {
+            propose("sess-a").unwrap();
+        }
+        assert!(format!("{:#}", propose("sess-a").unwrap_err()).contains("at most"));
+        // Another conversation is not this one's cap.
+        propose("sess-b").unwrap();
+        // A decided one frees its place.
+        s.decide(&first.id, REJECTED, n, |_| Ok(())).unwrap();
+        propose("sess-a").unwrap();
+    }
+
+    #[test]
     fn a_proposal_needs_its_conversation() {
         let (_d, s) = store();
         let n = now();
@@ -514,7 +571,7 @@ mod tests {
             due_at: n + chrono::Duration::hours(3),
             session_id: "sess-a".into(),
             workspace: None,
-            taint: Taint::default(),
+            taint: Some(Taint::default()),
             proposed_at: n,
             decided_at: None,
             workflow_id: None,

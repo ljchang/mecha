@@ -280,13 +280,20 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
             Vec::new()
         }
     };
-    report.attempt("messages", purge_mailbox(&roots.messages, id));
     // Proposed follow-ups: the conversation's own words about what to come
-    // back to. An accepted one's workflow is the workflows store's, below.
-    report.attempt(
-        "follow-ups",
-        remove_items(&roots.followups, |v| field_is(v, "session_id", id)).map(|v| v.len()),
-    );
+    // back to. Found now and removed last, with the questions: an accepted
+    // one was copied into a workflow (`followup::workflow_for` — its title
+    // and expectation are those words, and its only link back is
+    // `commitment.source`, which names the proposal, not the session), so
+    // the proposal ids are the key that workflow is found by.
+    let followups = match matching_items(&roots.followups, |v| field_is(v, "session_id", id)) {
+        Ok(f) => f,
+        Err(e) => {
+            report.errors.push(format!("follow-ups: {e:#}"));
+            Vec::new()
+        }
+    };
+    report.attempt("messages", purge_mailbox(&roots.messages, id));
     // The index of what earlier sessions read and said (`tool::spans`):
     // passages copied out of the transcript, found by meaning.
     report.attempt("spans", crate::tool::spans::forget(&roots.home, id));
@@ -414,6 +421,19 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
             })
         }),
     );
+    // The workflow an accepted follow-up became holds the conversation's
+    // words as its title, so it goes whole — unlike an owner's workflow,
+    // whose title is the owner's and is kept with its pointers nulled below.
+    report.attempt(
+        "follow-up workflows",
+        remove_items(&roots.workflows, |v| {
+            v.pointer("/commitment/source")
+                .and_then(Value::as_str)
+                .and_then(|s| s.strip_prefix(crate::followup::WORKFLOW_SOURCE_PREFIX))
+                .is_some_and(|fid| followups.iter().any(|f| f == fid))
+        })
+        .map(|v| v.len()),
+    );
     report.attempt(
         "workflows",
         with_lock(&roots.workflows, || {
@@ -523,10 +543,15 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
             "questions",
             remove_items(&roots.questions, |v| field_is(v, "session_id", id)).map(|v| v.len()),
         );
+        report.attempt(
+            "follow-ups",
+            remove_items(&roots.followups, |v| field_is(v, "session_id", id)).map(|v| v.len()),
+        );
     } else {
-        report
-            .errors
-            .push("outbox and questions: kept until the stores above finish, for the retry".into());
+        report.errors.push(
+            "outbox, questions and follow-ups: kept until the stores above finish, for the retry"
+                .into(),
+        );
     }
 
     // Before the backstop, which also reads file *names*: the mark's name is

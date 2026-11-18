@@ -138,7 +138,11 @@ impl Tool for ProposeFollowUp {
         };
         // Unknown taint is full taint: a context nobody stamped must not
         // record a proposal as cleaner than the conversation it came from.
-        let taint = ctx.taint.unwrap_or(Taint {
+        // The conversation's taint as recorded before this batch — a record
+        // of authorship, like every proposer's (`ToolCtx::recorded_taint`).
+        // `taint` is the send gate's union over the whole batch, and would
+        // mark a proposal made beside an `fs_read` as having read outside.
+        let taint = ctx.recorded_taint.unwrap_or(Taint {
             private: true,
             untrusted: true,
         });
@@ -186,7 +190,7 @@ mod tests {
     fn ctx(session: Option<&str>, taint: Option<Taint>) -> ToolCtx {
         ToolCtx {
             recorded_session: session.map(String::from),
-            taint,
+            recorded_taint: taint,
             workspace: "/tmp/w".into(),
             ..ToolCtx::default()
         }
@@ -237,7 +241,31 @@ mod tests {
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
         let f = &store.items().unwrap()[0];
-        assert!(f.taint.private && f.taint.untrusted);
+        let taint = f.taint.unwrap();
+        assert!(taint.private && taint.untrusted);
+    }
+
+    /// Authorship, not the send gate: a proposal batched beside an
+    /// `fs_read` or a `web_search` is recorded with what the conversation
+    /// had read before the batch (review of #896).
+    #[tokio::test]
+    async fn the_recorded_taint_is_the_conversations_not_the_batchs() {
+        let (_d, store, t) = tool();
+        let c = ToolCtx {
+            taint: Some(Taint {
+                private: true,
+                untrusted: true,
+            }),
+            ..ctx(Some("s"), Some(Taint::default()))
+        };
+        let out = t
+            .call(json!({"what": "x", "in_hours": 2}), &c)
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let f = &store.items().unwrap()[0];
+        assert_eq!(f.taint, Some(Taint::default()));
+        assert!(!f.armed());
     }
 
     #[tokio::test]
