@@ -1151,7 +1151,10 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
         .filter(|r| selection.selects(r))
         .cloned()
         .collect();
-    c.selected = Some(selected.len());
+    // Unknown, not zero, when nothing told us what the login can see: the
+    // listing failed and no earlier inventory stood in for it. Zero here read
+    // to the doctor as "the selection matches nothing" (review of #898).
+    c.selected = (listed || !prior.is_empty()).then_some(selected.len());
     if listed {
         c.inventory = Some(
             repos

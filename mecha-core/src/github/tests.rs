@@ -554,6 +554,39 @@ fn a_listing_that_fails_keeps_the_inventory_and_still_watches_from_it() {
     assert_eq!(strings(&conn, "SELECT repo FROM inventory").len(), 5);
 }
 
+/// A listing that fails on a store with no earlier inventory leaves the
+/// selection unknown, never zero: nothing said what the login can see, so
+/// the doctor must not report that the selection matches nothing.
+#[test]
+fn a_listing_that_fails_on_a_new_store_leaves_the_selection_unknown() {
+    let dir = scratch("listing-fails-fresh");
+    select(&dir, LAB_ALL);
+    let gh = fake(
+        &dir,
+        &with(vec![fails(
+            "*'user/repos'*",
+            "",
+            "error connecting to api.github.com\n",
+            1,
+        )]),
+    );
+    let c = collect_and_record(&dir, &gh, now());
+    assert_eq!(c.selected, None, "unknown, never zero");
+    let selected: Option<i64> = db(&dir)
+        .query_row(
+            "SELECT selected FROM collect_log WHERE kind = 'finished'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(selected, None);
+    let found = crate::doctor::check_github(&db_path(&dir.join("home")), now());
+    assert!(
+        !found.iter().any(|f| f.summary.contains("matched")),
+        "{found:?}"
+    );
+}
+
 #[test]
 fn no_selection_file_selects_nothing_and_says_so() {
     let dir = scratch("no-selection");
