@@ -1232,9 +1232,17 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
                             e,
                             GhError::Auth(_) | GhError::Missing(_) | GhError::OutOfTime
                         );
+                        let limited = matches!(e, GhError::RateLimited(_));
                         c.problems.push(e.problem(Step::Items, Some(&r.full_name)));
                         if stop {
                             return;
+                        }
+                        // A quota refused on a follow-up page is the same
+                        // refusal the batch and alias paths stop GraphQL for:
+                        // spending it further is how a secondary limit trips
+                        // (review of #898).
+                        if limited {
+                            break 'graphql;
                         }
                     }
                 },

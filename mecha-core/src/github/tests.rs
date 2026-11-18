@@ -387,6 +387,48 @@ fn a_graphql_rate_limit_is_its_own_kind() {
     assert_eq!(kinds(&db(&dir)), ["rate_limited:items:"]);
 }
 
+/// A rate limit met on a follow-up page stops GraphQL for the rest of the
+/// run, as the batch and alias paths do: tool-b's own further page is
+/// never asked for.
+#[test]
+fn a_rate_limit_on_a_follow_up_page_stops_graphql() {
+    let dir = scratch("rate-page");
+    select(&dir, LAB_ALL);
+    let paged = |data: String, cursor: &str| {
+        data.replacen(
+            r#""hasNextPage":false,"endCursor":null"#,
+            &format!(r#""hasNextPage":true,"endCursor":"{cursor}""#),
+            1,
+        )
+    };
+    let gh = fake(
+        &dir,
+        &with(vec![
+            fails(
+                "*'api graphql'*'after=c1'*",
+                r#"{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for user ID 1."}]}"#,
+                "gh: API rate limit exceeded for user ID 1.\n",
+                1,
+            ),
+            ok(
+                "*'api graphql'*'after=c2'*",
+                r#"{"data":{"repository":null}}"#,
+            ),
+            ok(
+                "*'api graphql'*'n0=tool-a'*'n1=tool-b'*",
+                &batch(&[paged(tool_a(), "c1"), paged(repo_data(1, &[], &[]), "c2")]),
+            ),
+        ]),
+    );
+    collect_and_record(&dir, &gh, now());
+    assert!(
+        !calls(&dir).iter().any(|c| c.contains("after=c2")),
+        "GraphQL was spent after GitHub refused it: {:?}",
+        calls(&dir)
+    );
+    assert!(kinds(&db(&dir)).contains(&"rate_limited:items:example-lab/tool-a".to_string()));
+}
+
 #[test]
 fn an_absent_login_is_auth_and_the_tables_keep_the_last_answer() {
     let dir = scratch("auth");

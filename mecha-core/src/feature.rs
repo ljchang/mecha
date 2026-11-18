@@ -1079,8 +1079,11 @@ fn evidence(facts: &Facts, f: Feature) -> bool {
         | Feature::Code
         | Feature::Memory
         | Feature::Corrections
-        | Feature::Recall
-        | Feature::Github => false,
+        | Feature::Recall => false,
+        // An owner-written selection is the owner's setup act: with it on
+        // disk and the switch unanswered, the upgrade notice says so rather
+        // than leave nothing collecting in silence (review of #898).
+        Feature::Github => facts.github_selection == Some(true),
         Feature::Incognito
         | Feature::Tasks
         | Feature::Ocr
