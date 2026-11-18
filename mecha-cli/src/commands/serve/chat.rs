@@ -2120,6 +2120,18 @@ pub(super) fn transcript_entries_with(
                         // something the owner typed; the voice preamble
                         // stripped just below is the same call already made
                         // once.
+                        // Save one: a follow-up's wake, which the page shows
+                        // as its own note rather than the owner's bubble —
+                        // dropped here, a reopened chat showed the answer
+                        // and nothing of what prompted it (review of #897).
+                        Block::Text { text: t }
+                            if t.trim_start().starts_with(mecha_core::followup::WAKE_STEM) =>
+                        {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(t.trim_start());
+                        }
                         Block::Text { text: t } if mecha_core::title::is_derived(t) => {}
                         Block::Text { text: t } => {
                             if !text.is_empty() {
@@ -10130,6 +10142,26 @@ mod wake_tests {
         due_follow_up(&chat, &home.dir);
         chat.wake_due_follow_ups().await;
         assert_eq!(seen.lock().unwrap().len(), 1, "the fourth woke");
+    }
+
+    /// A reopened chat shows the wake: `transcript_entries` carries it as a
+    /// user entry the page renders as its note, though it drops every other
+    /// harness voice.
+    #[test]
+    fn a_recorded_wake_reaches_the_reopened_page() {
+        let mut wake = Message::user(followup::render_wake(
+            "check the build",
+            chrono::Utc::now(),
+            chrono_tz::UTC,
+        ));
+        wake.harness = true;
+        let entries = transcript_entries(&[wake]);
+        assert!(
+            entries.iter().any(
+                |e| matches!(e, Entry::User { text, .. } if text.starts_with(followup::WAKE_STEM))
+            ),
+            "{entries:?}"
+        );
     }
 
     /// The page shows a wake as a note, keyed on core's stem; the two copies

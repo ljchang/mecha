@@ -139,21 +139,24 @@ still only reminds.
   oldest first, so what
   accumulated while the outbox was unset or serve was down comes over the
   next minutes rather than as one burst of unattended turns.
-- **When it does not, and says so.** Each of these leaves the reminder as it
-  is and records an event naming the reason, which the workflow card shows:
-  it is a memory chat. Retried each minute and said once on the workflow
-  (`follow_up_waiting`), because the owner can change it: there is no outbox
-  route (a woken run that could send directly is not staging-only, so
-  configuring `[outbox] tools` after switching follow-ups on wakes what came
-  due meanwhile); the transcript cannot be found. Retried on the
-  next minute, and not recorded: the feature is switched off (a pause, so
-  switching it back on wakes what came due meanwhile); another writer holds
-  the conversation (a task run, the TUI); a turn is in flight or the
-  transcript ends on the owner's own words (a tail of tool results takes the
-  wake, folded in and marked the harness's); no background seat is free. The woken
-  mark is claimed under the workflow store's lock, re-checking the whole rule
-  there, so a second `serve` on one home never wakes the same follow-up and a
-  workflow closed or snoozed since the listing is not woken.
+- **When it does not, and says so.** Three answers, and the reminder stands
+  in every one:
+  - *Never, recorded:* a memory chat (typed input only). The one refusal that
+    retires the follow-up.
+  - *Waiting, recorded once and retried each minute* (`follow_up_waiting`),
+    because the owner can change it: no outbox route (a woken run that could
+    send directly is not staging-only, so configuring `[outbox] tools` later
+    wakes what came due meanwhile); a transcript that cannot be found or
+    classified; a turn that could not start, whose claim is given back.
+  - *Later, silently, next minute:* the feature is switched off (a pause);
+    another writer holds the conversation (a task run, the TUI); a turn is in
+    flight; the transcript ends on the owner's own words (a tail of tool
+    results takes the wake, folded in and marked the harness's); no
+    background seat is free.
+
+  The woken mark is claimed under the workflow store's lock, re-checking the
+  whole rule there, so a second `serve` on one home never wakes the same
+  follow-up and a workflow closed or snoozed since the listing is not woken.
 - **The turn.** A harness-voiced user turn, with its own stem so the
   correction miner and the taint reader know it is not the owner's:
   `(From the harness: a follow-up you proposed is due — "<what>", proposed
