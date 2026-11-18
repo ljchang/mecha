@@ -234,6 +234,10 @@ struct Span {
 /// so that a message it admits as a passage is a message that leaves the
 /// session uncovered here; and a line neither can read leaves it uncovered
 /// too (review of #889).
+///
+/// Public for `serve::late`'s test of what a late delivery leaves, and for
+/// nothing else.
+#[doc(hidden)]
 pub fn held_outside_content(transcript: &str) -> bool {
     use crate::session::Record;
     let (mut untrusted, mut covered, mut any) = (false, false, false);
@@ -1384,12 +1388,14 @@ impl Tool for Spans {
             for key in keys {
                 handed.entry(key).or_default().extend(now.iter().copied());
             }
-            if hits.is_empty() {
-                // The tool's own words and not `.from_outside()`, on purpose:
-                // unwrapped, they are what the loop and the run command compare
-                // against to say nothing.
-                return Ok(ToolOutput::ok(NOTHING));
-            }
+        }
+        // Outside the lock: what a search says must not depend on the
+        // bookkeeping beside it (review of #899, pass 2).
+        if hits.is_empty() {
+            // The tool's own words and not `.from_outside()`, on purpose:
+            // unwrapped, they are what the loop and the run command compare
+            // against to say nothing.
+            return Ok(ToolOutput::ok(NOTHING));
         }
         let mut out = format!(
             "{} passage(s) from earlier sessions, closest first:\n",

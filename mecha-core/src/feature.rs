@@ -815,7 +815,7 @@ fn recall_detail(standing: &crate::tool::spans::Standing) -> String {
     };
     match searched {
         Some((_, withheld)) => first.push_str(&format!(
-            "; {withheld} passage(s) held back from a chat as outside content"
+            "; at least {withheld} passage(s) held back from a chat as outside content"
         )),
         None => first.push_str("; no count of searches kept yet"),
     }
@@ -832,7 +832,7 @@ fn recall_detail(standing: &crate::tool::spans::Standing) -> String {
     if let Some((searches, _)) = searched {
         let mut said = format!("at least {searches} search(es) counted");
         if let Some(ms) = standing.search_ms {
-            said.push_str(&format!(", the last {ms} ms"));
+            said.push_str(&format!(", the last {}", took(ms)));
         }
         second.push(said);
     }
@@ -2794,7 +2794,7 @@ mod tests {
             "40 not yet embedded",
             "at least 9 search(es) counted",
             "by a pass that took 33.4 s",
-            "4 passage(s) held back",
+            "at least 4 passage(s) held back",
             "the last 18 ms",
         ] {
             assert!(detail.contains(said), "{said}: {detail}");
