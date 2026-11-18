@@ -111,8 +111,8 @@ only proposals, and acceptance crosses the owner.
 
 | Step | What | State |
 |---|---|---|
-| 1 | The store, the tool (web chat and TUI), `mecha followups`, the proposals pane, the Home card, Open chat on a workflow | this change |
-| 2 | F1: a due follow-up wakes a staging-only run in its conversation, run by the host that owns it; its answer lands in the chat and the workflow's reminder says it was answered | next |
+| 1 | The store, the tool (web chat and TUI), `mecha followups`, the proposals pane, the Home card, Open chat on a workflow | merged (#896) |
+| 2 | F1: a due follow-up wakes a staging-only run in its conversation, run by the host that owns it; its answer lands in the chat and the workflow's reminder says it was answered | this change (#897) |
 | 3 | F2's auto-accept, on the surfaces that have an auto mode | after 2 |
 | 4 | The acted-on measure: whether the owner opened, replied in or acted on the chat within a day of a woken answer | with 2 |
 
@@ -134,6 +134,9 @@ still only reminds.
   has come, that is open, not snoozed, not running, and has not been woken
   before (`woken_at`, a new optional field, written before the turn starts so
   a crash never runs it twice).
+- **A few at a time.** One pass wakes at most three, oldest first, so what
+  accumulated while the outbox was unset or serve was down comes over the
+  next minutes rather than as one burst of unattended turns.
 - **When it does not, and says so.** Each of these leaves the reminder as it
   is and records an event naming the reason, which the workflow card shows:
   it is a memory chat. Retried each minute and said once on the workflow

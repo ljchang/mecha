@@ -720,11 +720,22 @@ impl Workflow {
         if self.last_notice_key.as_deref() == Some(&key) {
             return false;
         }
+        // The latest follow-up outcome, not the last event: the woken run's
+        // staged draft is linked by `observe` as a `source_changed` after
+        // the answer, and the answer is still the news (review of #897).
+        let outcome = self
+            .events
+            .iter()
+            .rev()
+            .find_map(|e| match e.kind.as_str() {
+                FOLLOW_UP_ANSWERED | FOLLOW_UP_FAILED => Some(e.kind.as_str()),
+                _ => None,
+            });
         let reason = if urgent {
             "Needs attention: overdue, interrupted, or delivery uncertain"
-        } else if last == Some(FOLLOW_UP_ANSWERED) {
+        } else if outcome == Some(FOLLOW_UP_ANSWERED) {
             "Follow-up answered — open the chat"
-        } else if last == Some(FOLLOW_UP_FAILED) {
+        } else if outcome == Some(FOLLOW_UP_FAILED) {
             "Follow-up could not run — open the workflow"
         } else if due {
             "Follow-up due"
@@ -1247,6 +1258,16 @@ mod tests {
         assert!(
             !w.tick(&policy, noon + chrono::Duration::days(1)),
             "said once, not every tick"
+        );
+        // The woken run's staged draft lands as a source change after the
+        // answer; the notice still says the follow-up was answered.
+        let later = noon + chrono::Duration::days(2);
+        w.record(FOLLOW_UP_ANSWERED, "sess-b", later);
+        w.record("source_changed", "a draft was staged", later);
+        assert!(w.tick(&policy, later));
+        assert_eq!(
+            w.notice.as_ref().map(|n| n.reason.as_str()),
+            Some("Follow-up answered — open the chat")
         );
         w.record(
             FOLLOW_UP_FAILED,

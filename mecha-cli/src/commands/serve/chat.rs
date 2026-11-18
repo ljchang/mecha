@@ -951,7 +951,12 @@ impl ChatState {
                 return;
             }
         };
-        for w in due {
+        // A few per pass: what accumulated while the outbox was unset (or
+        // serve was down) wakes over the next minutes, not as one burst of
+        // unattended turns (review of #897). Oldest first.
+        let mut due = due;
+        due.sort_by_key(|w| w.commitment.as_ref().and_then(|c| c.follow_up_at));
+        for w in due.into_iter().take(WAKES_PER_PASS) {
             match self.wake_follow_up(&w).await {
                 Ok(()) | Err(WakeSkip::Later) => {}
                 Err(WakeSkip::Waiting(why)) => {
@@ -3684,6 +3689,10 @@ mod narrowing_tests {
         assert!(narrow_for_echo(spoken_yes(), None, "delete it").approve_all);
     }
 }
+
+/// How many due follow-ups one minute's pass may wake; the rest wait for
+/// the next.
+const WAKES_PER_PASS: usize = 3;
 
 /// Why a due follow-up's conversation was not woken this minute.
 enum WakeSkip {
@@ -9991,6 +10000,25 @@ mod wake_tests {
             door.contains("chat.ordinary_memory.is_some()")
                 && door.contains("super::web_memory::open_marked"),
             "the resume door changed how it tells a remembered chat; keep the waker in step"
+        );
+    }
+
+    /// A backlog wakes a few at a time: four due follow-ups, one pass, three
+    /// turns; the fourth waits for the next minute.
+    #[tokio::test]
+    async fn a_pass_wakes_at_most_a_few_follow_ups() {
+        let home = crate::testenv::HomeGuard::new("wake-cap");
+        let (chat, seen) = waking_chat(true, true);
+        for _ in 0..WAKES_PER_PASS + 1 {
+            due_follow_up(&chat, &home.dir);
+        }
+        chat.wake_due_follow_ups().await;
+        assert_eq!(seen.lock().unwrap().len(), WAKES_PER_PASS);
+        chat.wake_due_follow_ups().await;
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            WAKES_PER_PASS + 1,
+            "the rest wake next"
         );
     }
 
