@@ -115,3 +115,43 @@ only proposals, and acceptance crosses the owner.
 | 2 | F1: a due follow-up wakes a staging-only run in its conversation, run by the host that owns it; its answer lands in the chat and the workflow's reminder says it was answered | next |
 | 3 | F2's auto-accept, on the surfaces that have an auto mode | after 2 |
 | 4 | The acted-on measure: whether the owner opened, replied in or acted on the chat within a day of a woken answer | with 2 |
+
+### Step 2: a due follow-up wakes its conversation
+
+F1 amends the workflow rule that "nothing here automatically starts an agent".
+It is amended for one case and on these terms; every other workflow reminder
+still only reminds.
+
+- **`mecha serve` wakes, and nothing else does.** A web chat's conversation
+  lives in serve's memory, and a second writer on its transcript forks it —
+  the hazard `questions answer` documents as D11. So the waker is a task
+  inside serve, beside the late-delivery task, and the turn it starts goes
+  through `begin_turn`, as a voice call's does. The trigger tick keeps
+  raising the in-app reminder and never starts a run. A follow-up proposed
+  in the TUI is a recorded session too, and serve wakes it the way
+  `#chat/<id>` resumes one; the TUI never wakes anything.
+- **What it wakes.** An accepted follow-up's workflow whose `follow_up_at`
+  has come, that is open, not snoozed, not running, and has not been woken
+  before (`woken_at`, a new optional field, written before the turn starts so
+  a crash never runs it twice).
+- **When it does not, and says so.** Each of these leaves the reminder as it
+  is and records an event naming the reason, which the workflow card shows:
+  the feature is off; there is no outbox route (a woken run that could send
+  directly is not staging-only); the conversation is incognito, a memory
+  chat, or held by another writer (a task run, the TUI); the model has no
+  background seat free (retried on the next minute, not recorded).
+- **The turn.** A harness-voiced user turn, with its own stem so the
+  correction miner and the taint reader know it is not the owner's:
+  `(From the harness: a follow-up you proposed is due — "<what>", proposed
+  <when>. Check it now and tell the owner what you found. Anything you would
+  send is staged for their review.)` The words in quotes are the model's
+  own, from this conversation, and carry its taint; the turn adds none and
+  launders none. Unattended: a call that needs an approval is refused in the
+  machine's voice, as `questions answer --unattended` does; routed sends
+  stage. It takes a background seat (`permit.rs`), like any unattended run.
+- **After.** The answer is in the chat. The workflow records
+  `follow_up_answered` (or `follow_up_failed` with the reason) and raises a
+  notice, "Follow-up answered — open the chat", through the ordinary
+  coalesced, quiet-hours-respecting path, so Home's workflow count and the
+  card's Open chat button are the way back (F3).
+- **Not here.** Auto-accept (step 3), the acted-on measure (step 4), Slack.
