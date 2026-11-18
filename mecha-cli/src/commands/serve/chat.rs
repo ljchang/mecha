@@ -947,7 +947,7 @@ impl ChatState {
                 Ok(()) | Err(WakeSkip::Later) => {}
                 Err(WakeSkip::Waiting(why)) => {
                     let id = w.id.clone();
-                    let said = w.events.last().is_some_and(|e| {
+                    let said = w.events.iter().any(|e| {
                         e.kind == mecha_core::workflow::FOLLOW_UP_WAITING && e.detail == why
                     });
                     if !said {
@@ -1079,10 +1079,13 @@ impl ChatState {
                 Some(k) => k,
                 None => match resume_locked(self, &mut sessions, &session_id, false) {
                     Ok(k) => k,
-                    Err((StatusCode::NOT_FOUND, _)) => {
-                        return Err(WakeSkip::Never(
-                            "its conversation is no longer recorded".into(),
-                        ))
+                    // The same condition `Session::find` meets above, and
+                    // the same answer: it waits, said once (review of #897).
+                    Err((StatusCode::NOT_FOUND, why)) => {
+                        return Err(WakeSkip::Waiting(format!(
+                            "its conversation could not be found ({})",
+                            why.trim()
+                        )))
                     }
                     Err(_) => return Err(WakeSkip::Later),
                 },
@@ -4187,32 +4190,6 @@ fn begin_turn(
     // Whatever this session may not dispatch. Empty for an ordinary chat, so
     // the assignment costs nothing and there is one place it is applied.
     cx.withheld = incognito_withheld.unwrap_or_else(|| Arc::clone(&ws.withheld));
-    // **Staging-only is enforced per tool, not by a route existing.** A
-    // woken follow-up has nobody watching, and a tool whose destination the
-    // model names (`Egress::Chosen`) that `[outbox] tools` does not route
-    // would dispatch for real — `http_fetch` is read-only by design, so no
-    // approver is ever asked about it. Withheld from the unattended turn
-    // (review of #897); `Blind` egress, which names no destination, stays.
-    if opts.unattended {
-        let route = bound.agent.context().outbox.clone();
-        let unrouted: Vec<String> = bound
-            .agent
-            .registry()
-            .iter()
-            .filter(|t| t.capabilities().egress == mecha_core::tool::Egress::Chosen)
-            .map(|t| t.name().to_string())
-            .filter(|n| !route.as_ref().is_some_and(|r| r.routes(n)))
-            .collect();
-        if !unrouted.is_empty() {
-            cx.withheld = cx
-                .withheld
-                .iter()
-                .cloned()
-                .chain(unrouted)
-                .collect::<Vec<_>>()
-                .into();
-        }
-    }
     // No hooks in an incognito run: `pre_tool` and `post_tool` receive tool
     // input and output, and a user command is somewhere this chat's words
     // would go that it cannot follow (`INCOGNITO-DESIGN.md` §3.3).
@@ -4238,6 +4215,33 @@ fn begin_turn(
                 mine.set_session_id(&session.meta.id);
             }
             cx.outbox = Some(Arc::new(mine));
+        }
+    }
+    // **Staging-only is enforced per tool, not by a route existing.** A
+    // woken follow-up has nobody watching, and a tool whose destination the
+    // model names (`Egress::Chosen`) that `[outbox] tools` does not route
+    // would dispatch for real — `http_fetch` is read-only by design, so no
+    // approver is ever asked about it. Withheld from the unattended turn
+    // (review of #897); `Blind` egress, which names no destination, stays.
+    if opts.unattended {
+        // The route this turn dispatches through, set just above.
+        let route = cx.outbox.clone();
+        let unrouted: Vec<String> = bound
+            .agent
+            .registry()
+            .iter()
+            .filter(|t| t.capabilities().egress == mecha_core::tool::Egress::Chosen)
+            .map(|t| t.name().to_string())
+            .filter(|n| !route.as_ref().is_some_and(|r| r.routes(n)))
+            .collect();
+        if !unrouted.is_empty() {
+            cx.withheld = cx
+                .withheld
+                .iter()
+                .cloned()
+                .chain(unrouted)
+                .collect::<Vec<_>>()
+                .into();
         }
     }
 
