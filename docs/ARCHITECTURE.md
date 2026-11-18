@@ -11880,7 +11880,14 @@ for the whole door (`serve::chat::Recall`).
   first version said its counts at `info`, where nobody saw them (review
   of #890). A count the index did not keep is said as not kept, never as
   zero, and `standing` opens the file read-only so that asking makes no
-  index. A model that calls `span_recall` itself
+  index. The search count is a floor: a search made while a pass holds the
+  index gives up its tally after 250 ms rather than wait, and a pass that
+  changes nothing asks without the write lock so that a chat's first
+  search seldom meets one. A pass's duration is kept in milliseconds; in
+  whole seconds every pass after the first build read "0 s" (review of
+  #891). Both the door's search and the model's own in a chat remember
+  what they handed over under the turn's conversation key, so neither
+  hands again what the other did (review of #890). A model that calls `span_recall` itself
   gets outside passages as outside content, envelope and taint and all.
 - **Which sessions are history is a closed list read from each header**
   (`quotable`): one-shot runs, and web chats for the shared index. A

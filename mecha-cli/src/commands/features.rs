@@ -1850,7 +1850,17 @@ fn render(rows: &[Row], announced: &[feature::Announcement]) -> String {
             State::Blocked { on } => (format!("needs {}", on.id()), row.next.clone()),
             State::Unknown { reason } => (reason.clone(), None),
         };
-        out.push_str(&format!("{name:<width$}  {:<7}  {say}\n", row.state.word()));
+        // A row may say more than one line; each after the first sits under
+        // the first, where the fix line goes.
+        let mut lines = say.lines();
+        out.push_str(&format!(
+            "{name:<width$}  {:<7}  {}\n",
+            row.state.word(),
+            lines.next().unwrap_or("")
+        ));
+        for more in lines {
+            out.push_str(&format!("{:<width$}  {:<7}  {more}\n", "", ""));
+        }
         if let Some(fix) = fix {
             out.push_str(&format!("{:<width$}  {:<7}  → {fix}\n", "", ""));
         }

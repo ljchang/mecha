@@ -783,18 +783,25 @@ pub enum RecallIndex {
     Held(crate::tool::spans::Standing),
 }
 
-/// The recall row's words for an index that was read: what it holds, when
-/// that was counted, and what searches have done. A number is said only
-/// where the index kept one.
+/// The recall row's words for an index that was read: what it holds and
+/// what it has kept from chats on the first line, and when it was counted
+/// and how fast it answers on a second (`features::render` indents it), so
+/// the row reads beside the others. A number is said only where the index
+/// kept one.
 fn recall_detail(standing: &crate::tool::spans::Standing) -> String {
-    let mut out = match &standing.counted {
+    // Searches are counted from when the index began keeping a count, and
+    // a pass does not start them again. A search made while a pass held
+    // the index may go uncounted rather than wait (`note_search`), so the
+    // number is a floor. An index that kept none says so, never zero.
+    let searched = match (standing.searches, standing.withheld) {
+        (Some(searches), Some(withheld)) => Some((searches, withheld)),
+        _ => None,
+    };
+    let mut first = match &standing.counted {
         Some(c) => {
-            let when = chrono::DateTime::<chrono::Utc>::from_timestamp(c.at as i64, 0)
-                .map(|t| t.format("%Y-%m-%d %H:%MZ").to_string())
-                .unwrap_or_else(|| "at a time that could not be read".into());
             let mut line = format!(
-                "{} passage(s) from {} chat(s) and run(s), {} of them outside content and kept from chats; last changed {when}, by a pass that took {} s",
-                c.passages, c.sessions, c.outside, c.secs
+                "{} passage(s) from {} chat(s) and run(s), {} of them outside content and kept from chats",
+                c.passages, c.sessions, c.outside
             );
             if c.embedded < c.passages {
                 line.push_str(&format!(
@@ -806,21 +813,44 @@ fn recall_detail(standing: &crate::tool::spans::Standing) -> String {
         }
         None => "an index in the mecha home, not counted since it began keeping a count".into(),
     };
-    // Counted from when the index began keeping a count, and not from the
-    // pass named before them: a pass does not start them again. An index
-    // that kept none says so, and never that it was not searched.
-    match (standing.searches, standing.withheld) {
-        (Some(searches), Some(withheld)) => {
-            out.push_str(&format!(
-                "; {searches} search(es) counted in all, {withheld} passage(s) held back from a chat as outside content"
-            ));
-            if let Some(ms) = standing.search_ms {
-                out.push_str(&format!(", the last search {ms} ms"));
-            }
-        }
-        _ => out.push_str("; no count of searches kept yet"),
+    match searched {
+        Some((_, withheld)) => first.push_str(&format!(
+            "; {withheld} passage(s) held back from a chat as outside content"
+        )),
+        None => first.push_str("; no count of searches kept yet"),
     }
-    out
+    let mut second = Vec::new();
+    if let Some(c) = &standing.counted {
+        let when = chrono::DateTime::<chrono::Utc>::from_timestamp(c.at as i64, 0)
+            .map(|t| t.format("%Y-%m-%d %H:%MZ").to_string())
+            .unwrap_or_else(|| "at a time that could not be read".into());
+        second.push(format!(
+            "last changed {when}, by a pass that took {}",
+            took(c.ms)
+        ));
+    }
+    if let Some((searches, _)) = searched {
+        let mut said = format!("at least {searches} search(es) counted");
+        if let Some(ms) = standing.search_ms {
+            said.push_str(&format!(", the last {ms} ms"));
+        }
+        second.push(said);
+    }
+    if second.is_empty() {
+        first
+    } else {
+        format!("{first}\n{}", second.join("; "))
+    }
+}
+
+/// A duration as a reader takes it: milliseconds under a second, and
+/// seconds to one place above it.
+fn took(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms} ms")
+    } else {
+        format!("{:.1} s", ms as f64 / 1000.0)
+    }
 }
 
 /// Does `dir` hold a persona — a directory with a `persona.toml`, which is
@@ -2749,7 +2779,7 @@ mod tests {
                 embedded: 300,
                 outside: 71,
                 at: 1_794_875_000,
-                secs: 33,
+                ms: 33_400,
             }),
             searches: Some(9),
             withheld: Some(4),
@@ -2762,13 +2792,27 @@ mod tests {
             "340 passage(s) from 12 chat(s) and run(s)",
             "71 of them outside content",
             "40 not yet embedded",
-            "9 search(es) counted in all",
-            "by a pass that took 33 s",
+            "at least 9 search(es) counted",
+            "by a pass that took 33.4 s",
             "4 passage(s) held back",
-            "18 ms",
+            "the last 18 ms",
         ] {
             assert!(detail.contains(said), "{said}: {detail}");
         }
+        // What it holds on the first line, how it was counted on the
+        // second: the row reads beside the others in the table.
+        let (first, second) = detail.split_once('\n').expect("two lines");
+        assert!(
+            first.contains("held back") && !first.contains("pass that took"),
+            "{first}"
+        );
+        assert!(
+            second.contains("pass that took") && !second.contains('\n'),
+            "{second}"
+        );
+        // A pass under a second is said in milliseconds, never "0 s".
+        assert_eq!(took(840), "840 ms");
+        assert_eq!(took(1_000), "1.0 s");
         // Could not be read: a finding, never an empty index.
         facts.recall_index = RecallIndex::Unreadable("the file is not a database".into());
         let State::Unknown { reason } = recall(&facts) else {
