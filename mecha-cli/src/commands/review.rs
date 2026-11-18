@@ -1033,7 +1033,10 @@ fn collect_queues() -> Vec<Queue> {
                 } else if open.is_empty() {
                     format!("{} decided", items.len())
                 } else if armed > 0 {
-                    format!("{armed} proposed after reading outside content")
+                    format!(
+                        "{armed} of {} proposed after reading outside content",
+                        open.len()
+                    )
                 } else {
                     "proposed by your conversations".to_string()
                 };

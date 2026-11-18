@@ -106,6 +106,17 @@ pub fn admit(
     now: DateTime<Utc>,
 ) -> std::result::Result<String, String> {
     let what = what.split_whitespace().collect::<Vec<_>>().join(" ");
+    // One line, and only characters that render as themselves: `what` is
+    // printed at the owner's decision point beside the taint warning, so an
+    // escape sequence or a bidi override in it could rewrite the warning it
+    // was meant to carry (`title::is_format_char`, `hud::spec`). Refused,
+    // not filtered, so the model is told.
+    if what
+        .chars()
+        .any(|c| c.is_control() || crate::title::is_format_char(c))
+    {
+        return Err("keep `what` to printable text: no control or formatting characters".into());
+    }
     if what.is_empty() {
         return Err("say what to follow up on, in one line".into());
     }
@@ -447,6 +458,17 @@ mod tests {
         assert!(admit("x", n + chrono::Duration::days(91), n)
             .unwrap_err()
             .contains("90 days"));
+        // Nothing that rewrites the terminal or reorders what is shown.
+        for hostile in [
+            "ok\u{1b}[2K\u{1b}[Ahidden",
+            "ok \u{202e}derever",
+            "zero\u{200b}width",
+        ] {
+            assert!(
+                admit(hostile, n + chrono::Duration::hours(2), n).is_err(),
+                "{hostile:?} was admitted"
+            );
+        }
         let long = "a".repeat(WHAT_MAX_CHARS + 1);
         assert!(admit(&long, n + chrono::Duration::hours(2), n).is_err());
         // The bounds themselves are inside.

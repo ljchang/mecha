@@ -1,7 +1,7 @@
-//! The proposal stores on the phone: harness candidates, rule proposals and
-//! the graph's entity proposals.
+//! The proposal stores on the phone: harness candidates, rule proposals, the
+//! graph's entity proposals, and follow-ups a conversation proposed.
 //!
-//! Three stores, one surface — `commands::review::review_source` is the table
+//! Four stores, one surface — `commands::review::review_source` is the table
 //! and this file holds no list of its own, on the same argument the TUI's
 //! generic review level is built on: four stores that answer `list --json`
 //! and take `show` / `accept` / `reject` are the same review with different
@@ -534,7 +534,7 @@ mod tests {
             limit > 20,
             "a limit at or under the verb's own default is ceremony around the same truncation"
         );
-        for store in ["harness changes", "rule proposals"] {
+        for store in ["harness changes", "rule proposals", "follow-ups"] {
             let src = review_source(store).expect(store);
             assert!(
                 !src.list.join(" ").contains("--limit"),
