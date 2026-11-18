@@ -6036,7 +6036,6 @@ mod boundary_tests {
         // stop after finding nothing indexed.
         mecha_core::session::ignore_kind_env_for_tests();
         let _home = crate::testenv::HomeGuard::new("recall");
-        let (embed, asked) = word_embeddings().await;
         let handed = |path: &std::path::Path| -> Vec<String> {
             mecha_core::session::Session::messages_ever(&std::fs::read_to_string(path).unwrap())
                 .iter()
@@ -6052,6 +6051,12 @@ mod boundary_tests {
                 .collect()
         };
         for on in [true, false] {
+            // A server, and its count, of each half's own. Shared, the pass
+            // and searches the first half spawned and does not wait on could
+            // still be asking it while the second half counts, and "no
+            // warming with the switch off" failed on work the switch-on half
+            // left running (CI on #892 and #893, 2026-11-17).
+            let (embed, asked) = word_embeddings().await;
             let chat = chat::test_chat_recalling("Noted.", &embed, on);
             let app = app(chat.clone());
             // A page opening a chat has the embeddings server asked for
