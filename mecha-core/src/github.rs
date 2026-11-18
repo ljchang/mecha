@@ -1206,7 +1206,24 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
             let data = answer.get("data").and_then(|d| d.get(&alias));
             match data {
                 Some(d) if d.is_object() => match repo_items(gh, r, d) {
-                    Ok(items) => c.repos.push(items),
+                    Ok(items) => {
+                        // A listing not read to its end marks nothing closed
+                        // (`store`), and is said as what it is: unknown is
+                        // never clean, so the repo is not "read in full" and
+                        // the doctor sees the row (review of #898).
+                        if !items.complete {
+                            c.problems.push(Problem {
+                                kind: Kind::Failed,
+                                step: Step::Items,
+                                repo: Some(r.full_name.clone()),
+                                detail: "the issue and pull-request listing was cut short \
+                                         (a page did not answer, or the page cap was reached); \
+                                         nothing was marked closed"
+                                    .into(),
+                            });
+                        }
+                        c.repos.push(items);
+                    }
                     Err(e) => {
                         let stop = matches!(
                             e,

@@ -588,7 +588,6 @@ pub fn examine_with(home: &Path, mail: &MailStores, now: DateTime<Utc>) -> Vec<F
         &home.join("system").join("series.sqlite"),
         now,
     ));
-    findings.extend(check_github(&crate::github::db_path(home), now));
     findings.extend(check_charter(&home.join("charter.toml")));
     findings.extend(check_corrections(home));
     findings.extend(check_runs(&home.join("sessions"), charter));

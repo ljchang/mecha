@@ -665,6 +665,44 @@ fn an_incomplete_listing_marks_nothing_closed() {
     );
 }
 
+/// A listing cut short in a real run — a further page whose repository
+/// came back null, as one does when it goes private between the batch and
+/// the page — is a `failed` row naming the repo, and the repo is not counted
+/// as read in full (review of #898). Unknown is never clean.
+#[test]
+fn a_listing_cut_short_is_said_and_not_counted_read_in_full() {
+    let dir = scratch("cut-short");
+    select(&dir, LAB_ALL);
+    let more = tool_a().replacen(
+        r#""hasNextPage":false,"endCursor":null"#,
+        r#""hasNextPage":true,"endCursor":"c1""#,
+        1,
+    );
+    let gh = fake(
+        &dir,
+        &with(vec![
+            ok(
+                "*'api graphql'*'after=c1'*",
+                r#"{"data":{"repository":null}}"#,
+            ),
+            ok(
+                "*'api graphql'*'n0=tool-a'*'n1=tool-b'*",
+                &batch(&[more, repo_data(1, &[], &[])]),
+            ),
+        ]),
+    );
+    let c = collect_and_record(&dir, &gh, now());
+    let cut: Vec<_> = c
+        .problems
+        .iter()
+        .filter(|p| p.kind == Kind::Failed && p.repo.as_deref() == Some("example-lab/tool-a"))
+        .collect();
+    assert_eq!(cut.len(), 1, "{:?}", c.problems);
+    assert!(cut[0].detail.contains("cut short"), "{}", cut[0].detail);
+    assert_eq!(c.collected(), 1, "tool-a was not read in full");
+    assert_eq!(kinds(&db(&dir)), ["failed:items:example-lab/tool-a"]);
+}
+
 #[test]
 fn workflow_runs_are_kept_ninety_days() {
     let dir = scratch("retention-ci");
