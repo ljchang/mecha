@@ -28,7 +28,9 @@
 //! `now`, which is what makes "a 49-hour-old pending draft" a unit test
 //! instead of a two-day wait.
 
+mod github;
 mod mail_rules;
+pub use github::{check_github, check_github_never_ran};
 pub use mail_rules::{check_mail_rule_shell, check_mail_rules, check_mail_rules_timer};
 
 use chrono::{DateTime, Utc};

@@ -15,6 +15,7 @@ pub mod exp;
 pub mod features;
 pub mod followups;
 pub mod frontdoor;
+pub mod github;
 pub mod gossip;
 pub mod harness;
 pub mod hud;

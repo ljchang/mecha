@@ -55,6 +55,20 @@ pub async fn execute(args: Args) -> Result<()> {
             if mecha_core::feature::switched_on(&cfg, mecha_core::feature::Feature::MailRules) {
                 findings.extend(mail_rules_timer());
             }
+            // The collector's log, read only while the switch is on: off, its
+            // last run's rows never change again and their remedy is a
+            // command the binary refuses, so a finding about them could never
+            // clear (review of #898). A collector switched on that never
+            // wrote a log is said here too, where the switch is read.
+            let github =
+                mecha_core::feature::switched_on(&cfg, mecha_core::feature::Feature::Github);
+            if github {
+                findings.extend(doctor::check_github(
+                    &mecha_core::github::db_path(&home),
+                    chrono::Utc::now(),
+                ));
+            }
+            findings.extend(doctor::check_github_never_ran(&home, github));
             // The LoRA registry's files are checked against the folders
             // `[image]` and `[video]` name, so it reads the same config.
             findings.extend(doctor::check_loras(

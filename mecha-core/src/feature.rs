@@ -90,6 +90,10 @@ pub enum Feature {
     /// calls and the TUI, the owner accepting each one in Review. A store
     /// under the mecha home, in every build.
     Followups,
+    /// The GitHub board's collector: CI on the default branch, new issues and
+    /// outside pull requests, and per-day counts, into a store under the
+    /// mecha home (`GITHUB-DASHBOARD-DESIGN.md`), through `gh`'s own login.
+    Github,
 }
 
 impl Feature {
@@ -124,6 +128,7 @@ impl Feature {
         Feature::Corrections,
         Feature::Recall,
         Feature::Followups,
+        Feature::Github,
     ];
 
     /// The name on the command line and on the wire.
@@ -159,6 +164,7 @@ impl Feature {
             Feature::Corrections => "corrections",
             Feature::Recall => "recall",
             Feature::Followups => "followups",
+            Feature::Github => "github",
         }
     }
 
@@ -201,6 +207,7 @@ impl Feature {
             Feature::Followups => {
                 "Follow-ups (a conversation proposes checking back later; you accept each one)"
             }
+            Feature::Github => "GitHub board (CI, new issues and use, collected through `gh`)",
         }
     }
 
@@ -294,7 +301,10 @@ impl Feature {
             // Off, no chat is searched for and none is handed anything.
             | Feature::Recall
             // Off, no conversation is offered `propose_follow_up`.
-            | Feature::Followups => true,
+            | Feature::Followups
+            // Off, `mecha github collect` refuses, so nothing is asked of
+            // GitHub and the store is not written.
+            | Feature::Github => true,
             // Its guards are still to come: today the switch says only that
             // the owner wants the home store, and every attachment is an
             // explicit `--episodic-memory`. Answers `true` in the change
@@ -366,6 +376,9 @@ impl Feature {
             // Proposals the owner decides: a trial has no owner to accept
             // one, and its runs are not the conversations they return to.
             | Feature::Followups
+            // The operator's `gh` login and the owner's own repositories: a
+            // trial would spend the owner's quota.
+            | Feature::Github
             // A manifest's `live_servers` can carry the operator's graph in,
             // and the row cannot tell that entry from a declared one;
             // `config_at` defaults this bool instead (FEATURES-DESIGN §5.1).
@@ -706,6 +719,11 @@ pub struct Facts {
     /// What the home's recall index says of itself
     /// (`tool::spans::standing`): a read of its own file, never a search.
     pub recall_index: RecallIndex,
+    /// Whether `gh` is on `PATH`, for the GitHub collector.
+    pub has_gh_binary: bool,
+    /// Whether `<home>/github/repos.toml` is there; `None` where its
+    /// directory could not be read.
+    pub github_selection: Option<bool>,
     /// The **global** configuration — the only one any row reads.
     ///
     /// Carried here, rather than taken beside `Facts`, so the rule is the
@@ -766,6 +784,12 @@ impl Facts {
                 Ok(None) => RecallIndex::Absent,
                 Ok(Some(standing)) => RecallIndex::Held(standing),
                 Err(e) => RecallIndex::Unreadable(format!("{e:#}")),
+            },
+            has_gh_binary: find_program("gh").is_some(),
+            github_selection: match std::fs::metadata(crate::github::selection_path(home)) {
+                Ok(m) => Some(m.is_file()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+                Err(_) => None,
             },
             config: global.clone(),
         }
@@ -1072,6 +1096,10 @@ fn evidence(facts: &Facts, f: Feature) -> bool {
         | Feature::Corrections
         | Feature::Recall
         | Feature::Followups => false,
+        // An owner-written selection is the owner's setup act: with it on
+        // disk and the switch unanswered, the upgrade notice says so rather
+        // than leave nothing collecting in silence (review of #898).
+        Feature::Github => facts.github_selection == Some(true),
         Feature::Incognito
         | Feature::Tasks
         | Feature::Ocr
@@ -2172,6 +2200,27 @@ fn own_state(facts: &Facts, f: Feature) -> State {
                 tools_off(crate::tool::follow_up::NAME)
             }
         }
+        // What `mecha github collect` needs before its first call: `gh`, and
+        // a selection. Whether `gh` is logged in only a call can say, and the
+        // collector's log says it (`mecha doctor`), never this row.
+        Feature::Github => {
+            if !facts.has_gh_binary {
+                return off(
+                    "the GitHub CLI (`gh`) is not on PATH",
+                    "install GitHub CLI and run `gh auth login`",
+                );
+            }
+            match facts.github_selection {
+                Some(true) => on("`mecha github collect` into ~/.mecha/github/github.db"),
+                Some(false) => off(
+                    "no ~/.mecha/github/repos.toml — nothing is selected",
+                    "write ~/.mecha/github/repos.toml naming an [[owner]] or a [[repo]]",
+                ),
+                None => State::Unknown {
+                    reason: "~/.mecha/github/repos.toml could not be read".into(),
+                },
+            }
+        }
     }
 }
 
@@ -2810,12 +2859,13 @@ mod tests {
                 | Feature::Memory
                 | Feature::Corrections
                 | Feature::Recall
-                | Feature::Followups => {}
+                | Feature::Followups
+                | Feature::Github => {}
             }
         }
-        // The match above lists 30 — raise this with it, and a variant
+        // The match above lists 31 — raise this with it, and a variant
         // added to the match but not to `ALL` fails here.
-        assert_eq!(Feature::ALL.len(), 30);
+        assert_eq!(Feature::ALL.len(), 31);
     }
 
     #[test]

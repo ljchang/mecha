@@ -238,6 +238,8 @@ homeostat.rs the conditions a run happened under, recorded beside what it did
 system.rs    the machine's state, read in one place: a per-minute series of numbers
              and closed categories, plus a model's name (R6) and never a unit's;
              unknown is refused, never zero; a model reads it through `system_read`
+github.rs    the GitHub board's collector: `gh api` through gh's own login, into a
+             sqlite store; refused and failed logged apart, no model, no token
 backlog.rs   what waits on the owner across six stores; one walk, three readers
 doctor.rs    every store's distress, read in one pass — no network, no model
 driven.rs    another agent's runs on real work: what the mark forces, refuses and

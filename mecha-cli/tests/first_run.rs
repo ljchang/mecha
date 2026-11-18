@@ -1307,6 +1307,7 @@ fn the_closing_note_names_each_way_back() {
         "corrections",
         "recall",
         "followups",
+        "github",
     ]
     .iter()
     .map(|id| format!("{id} = false\n"))

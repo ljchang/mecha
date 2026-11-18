@@ -8218,6 +8218,49 @@ was ever deployed.
   miss the calls a build must not stutter, and the other would leak
   incognito into briefs (design §7.3).
 
+## The GitHub collector
+
+`github.rs`, `mecha github collect`, `docs/GITHUB-DASHBOARD-DESIGN.md` (step 1
+built: the collector and its store; the board, links and summaries are later
+steps). `system.rs`'s shape again: a timer runs a command, the command writes
+`~/.mecha/github/github.db`, and the HUD will read it as an ordinary `sqlite`
+source with `content = "third-party"`, because an issue title is a stranger's
+text.
+
+- **mecha never holds the token (G9).** Every call is `gh api`, through `gh`'s
+  own login; nothing reads, passes or prints the token. `$MECHA_GH_BIN` swaps
+  the binary, which is how the tests run a fake `gh` that answers canned JSON.
+- **The selection is the owner's file, never layered config**
+  (`~/.mecha/github/repos.toml`, `deny_unknown_fields`). One that does not
+  parse selects nothing and logs `bad_selection`; an absent one logs
+  `no_selection`. The inventory is listed either way, for the picker.
+- **Refused and failed are different kinds** in `collect_log` —
+  `rate_limited`, `auth`, `gh_missing`, `vanished`, `out_of_time`,
+  `bad_selection`, `no_selection`, `failed` — and every run writes a
+  `finished` row whatever happened. The doctor reads the latest run and how
+  long each kind has lasted (`doctor/github.rs`). A failed run keeps the last
+  answer in every table; it never empties one, because an empty `items` after
+  a revoked login reads as "nothing new". The classification is by what `gh`
+  printed (exit 4 is no login; `HTTP 401` a refused one, measured with gh 2.45),
+  and for GraphQL by each error's `type`, never by the response body, which
+  holds strangers' titles.
+- **A run's calls share one budget** (`RUN_BUDGET`), held a minute under the
+  unit's `TimeoutStartSec` by a test, for the reason §System state gives: a
+  bound per call adds up past the unit's timeout, and systemd kills the run
+  before it writes. What the budget did not reach logs `out_of_time`.
+- **A run's time is its identity** in the log, to the millisecond: two runs in
+  one second were one run's rows before (found smoke-testing).
+- **Absence closes an item only from a complete listing.** An issue not seen
+  in a listing read to its end gets `gone_at`; a listing cut short marks
+  nothing. Items go 30 days after `coalesce(gone_at, last_seen)`, workflow
+  runs 90 days after they were created, and `counts` is a row per repository
+  per day — a later run that day keeps the first — kept for good.
+- **Unknown is never zero.** A count GitHub did not give is `NULL`, and a run
+  that stopped before the selection writes a `NULL` `selected`, never `0`;
+  a selection that matched nothing is its own doctor finding.
+- **The cadence is the timer's** (`scripts/mecha-github-collect.timer`), the
+  owner's open decision (design §9), never a constant in code.
+
 ## Session records and replay
 
 `session.rs` writes append-only JSONL transcripts; `replay.rs` re-drives them.
