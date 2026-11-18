@@ -5,8 +5,9 @@
 //! accepts it, and the accept — never this tool — writes the workflow whose
 //! reminder comes due (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` decision 6).
 //!
-//! Registered by the front ends whose conversations a follow-up can return
-//! to — the web chat and the TUI — and refused at call time where the run has
+//! Registered, when `[features] followups` is on, by the front ends whose
+//! conversations a follow-up can return to — the web chat (its voice calls
+//! included) and the TUI — and refused at call time where the run has
 //! no recorded conversation ([`ToolCtx::recorded_session`]), because a
 //! follow-up that points at no transcript is a reminder about nothing.
 

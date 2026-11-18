@@ -861,8 +861,14 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
     // On create and on resume both: a session picked up under different flags
     // is exactly what this record exists to catch.
     // Before the config record, which captures the tool list for replay.
-    let max_upload_mb = prepared.config.slack.max_upload_mb;
-    install_frontend_tools(&mut prepared.agent, &asker, session.as_ref(), max_upload_mb);
+    if let Some(why) = install_frontend_tools(
+        &mut prepared.agent,
+        &asker,
+        session.as_ref(),
+        &prepared.config,
+    ) {
+        eprintln!("mecha: {why}");
+    }
 
     if let Some(s) = &session {
         s.append(&Record::Config(RunConfig::of(
@@ -1109,12 +1115,17 @@ fn stamp_posture(agent: &mut mecha_core::agent::Agent, mode: PermissionMode) {
 /// and the model simply carried on without them with nothing said anywhere.
 /// The same shape as the `todo` and `skill` handles riding on `Live`, and the
 /// same fix — one function, so two call sites cannot disagree about the set.
+/// A notice comes back when a switched-on tool could not be installed, for
+/// the caller to show where it can: before the terminal is taken, stderr;
+/// on a switch, the transcript.
 fn install_frontend_tools(
     agent: &mut mecha_core::agent::Agent,
     asker: &Arc<dyn mecha_core::tool::ask::Asker>,
     session: Option<&Session>,
-    max_upload_mb: u64,
-) {
+    cfg: &mecha_core::config::Config,
+) -> Option<String> {
+    let max_upload_mb = cfg.slack.max_upload_mb;
+    let mut notice = None;
     // Only ever registered by the TUI: it is the one front-end that owns a
     // human to ask, and the one that can attach a session to a thread. A tool
     // that can never succeed is worse than one that is absent.
@@ -1134,7 +1145,7 @@ fn install_frontend_tools(
     }
     if let Some(s) = session {
         setup::register_recall(agent, s);
-        setup::register_follow_ups(agent);
+        notice = setup::register_follow_ups(agent, cfg);
         // The conversation a proposed follow-up returns to — on the context
         // itself, since the outbox is off by default — and the one a staged
         // draft points back at. Here, not at the call site: `apply_switch`
@@ -1145,6 +1156,7 @@ fn install_frontend_tools(
             route.set_session_id(&s.meta.id);
         }
     }
+    notice
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3159,8 +3171,7 @@ async fn apply_switch(
     // from config already, so this is the moment a config edit is meant to
     // take effect — and a broken file fails the switch the user just asked
     // for rather than a tool call an hour later.
-    let max_upload_mb = prepared.config.slack.max_upload_mb;
-    install_frontend_tools(&mut prepared.agent, asker, session, max_upload_mb);
+    let notice = install_frontend_tools(&mut prepared.agent, asker, session, &prepared.config);
     stamp_posture(&mut prepared.agent, app.mode);
     let tools_changed = prepared.agent.registry().len() != live.agent.registry().len();
     *live = Live::new(prepared, opts);
@@ -3169,6 +3180,9 @@ async fn apply_switch(
         *on = !live.opts.no_mcp && !live.opts.no_mcp_servers.iter().any(|n| n == name);
     }
 
+    if let Some(why) = notice {
+        app.transcript.push(Entry::Error(why));
+    }
     app.transcript.push(Entry::Notice(format!(
         "now {} ({}) · {} tools{}",
         live.model,
@@ -9959,7 +9973,12 @@ mod tests {
             Vec::<String>::new(),
         )));
         assert!(agent.ctx().recorded_session.is_none());
-        install_frontend_tools(&mut agent, &asker, Some(&session), 25);
+        let mut on = mecha_core::config::Config::default();
+        mecha_core::feature::set_switch(&mut on, mecha_core::feature::Feature::Followups, true);
+        assert_eq!(
+            install_frontend_tools(&mut agent, &asker, Some(&session), &on),
+            None
+        );
         assert_eq!(
             agent.ctx().recorded_session.as_deref(),
             Some("20261118T120000-stamped1")
@@ -9976,9 +9995,22 @@ mod tests {
         assert!(agent.registry().get("propose_follow_up").is_some());
         // No session, no stamp and no tool.
         let mut bare = fresh();
-        install_frontend_tools(&mut bare, &asker, None, 25);
+        install_frontend_tools(&mut bare, &asker, None, &on);
         assert!(bare.ctx().recorded_session.is_none());
         assert!(bare.registry().get("propose_follow_up").is_none());
+        // The off switch: with the feature off, or the tool in
+        // `[tools] disabled`, the session is still stamped (drafts need it)
+        // but the tool is not offered.
+        let off = mecha_core::config::Config::default();
+        let mut quiet = fresh();
+        install_frontend_tools(&mut quiet, &asker, Some(&session), &off);
+        assert!(quiet.registry().get("propose_follow_up").is_none());
+        assert!(quiet.ctx().recorded_session.is_some());
+        let mut disabled = on.clone();
+        disabled.tools.disabled = vec!["propose_follow_up".into()];
+        let mut withheld = fresh();
+        install_frontend_tools(&mut withheld, &asker, Some(&session), &disabled);
+        assert!(withheld.registry().get("propose_follow_up").is_none());
     }
 
     #[test]

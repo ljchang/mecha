@@ -268,8 +268,12 @@ impl FollowUpStore {
     /// Resolve an abbreviated id — head or tail — and refuse an ambiguous one
     /// rather than guessing, as the question store does.
     pub fn find(&self, needle: &str) -> Result<FollowUp> {
-        if let Ok(f) = self.get(needle) {
-            return Ok(f);
+        // A record that is there and cannot be read is said as that, never
+        // as "no such follow-up": distress is not absence (review of #896).
+        match self.get(needle) {
+            Ok(f) => return Ok(f),
+            Err(e) if self.path(needle).is_ok_and(|p| p.exists()) => return Err(e),
+            Err(_) => {}
         }
         let matches: Vec<FollowUp> = self
             .items()?
@@ -559,6 +563,16 @@ mod tests {
         // A decided one frees its place.
         s.decide(&first.id, REJECTED, n, |_| Ok(())).unwrap();
         propose("sess-a").unwrap();
+    }
+
+    #[test]
+    fn a_corrupt_record_reads_unreadable_not_missing() {
+        let (_d, s) = store();
+        std::fs::write(s.root().join("20261118T120000-broken12.json"), "{").unwrap();
+        let e = format!("{:#}", s.find("20261118T120000-broken12").unwrap_err());
+        assert!(e.contains("unreadable"), "{e}");
+        let e = format!("{:#}", s.find("nothing-here").unwrap_err());
+        assert!(e.contains("no such follow-up"), "{e}");
     }
 
     #[test]

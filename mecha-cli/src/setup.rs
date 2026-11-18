@@ -3139,11 +3139,22 @@ pub fn register_recall(agent: &mut Agent, session: &mecha_core::session::Session
 /// per-run, the `register_recall` reason). Not yet the readline `mecha
 /// chat` either, which records a session and could: web first, then the
 /// TUI, is the owner's order (design F4), and the REPL follows with Slack. The tool refuses at call time
-/// where the run records no session (`ToolCtx::recorded_session`). A store
-/// that cannot be opened leaves the tool out and says so on each build (the
-/// web chat rebuilds on a model switch), rather than offering a proposal
-/// that could never be recorded.
-pub fn register_follow_ups(agent: &mut Agent) {
+/// where the run records no session (`ToolCtx::recorded_session`).
+///
+/// **Off unless the owner switched it on** — `[features] followups`, the
+/// switch Settings → Features writes — and withheld like any tool by
+/// `[tools] disabled` (or an `[tools] enabled` list that does not name it),
+/// the predicate `mecha features` reads for the row. A store that cannot
+/// be opened leaves the tool out, and the reason comes back for the caller
+/// to show where its surface can: the TUI's switch path holds the
+/// alternate screen, where a stderr line would be drawn over and lost.
+pub fn register_follow_ups(agent: &mut Agent, cfg: &mecha_core::config::Config) -> Option<String> {
+    let name = mecha_core::tool::follow_up::NAME;
+    if !mecha_core::feature::switched_on(cfg, mecha_core::feature::Feature::Followups)
+        || !cfg.tools.registers(name)
+    {
+        return None;
+    }
     match mecha_core::followup::FollowUpStore::open_default() {
         Ok(store) => {
             agent.registry_mut().insert(Arc::new(
@@ -3152,10 +3163,11 @@ pub fn register_follow_ups(agent: &mut Agent) {
                     Arc::new(mecha_core::clock::SystemClock),
                 ),
             ));
+            None
         }
-        Err(e) => eprintln!(
-            "mecha: proposed follow-ups are unavailable: the store could not be opened ({e:#})"
-        ),
+        Err(e) => Some(format!(
+            "proposed follow-ups are unavailable: the store could not be opened ({e:#})"
+        )),
     }
 }
 

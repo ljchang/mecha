@@ -79,6 +79,8 @@ mean it.
 | F2 | **The owner accepts** in the Review tab's proposals pane. In auto review mode an untainted proposal is accepted automatically — the drafts rule, `review_policy::auto_releases` — and the owner intends to relax this once trust is built. |
 | F3 | **The answer goes where the follow-up was proposed.** On the web that is the chat; the way back to it is the workflow's reminder, on Home and in Tasks → workflows, with an Open chat link. No new tab. |
 | F4 | **Web first.** The TUI and Slack follow. |
+| F5 | **It has an off switch** (2026-11-18): `[features] followups`, the Settings → Features toggle, off until the owner turns it on; `[tools] disabled` withholds the tool too. Off stops new proposals; decided and waiting ones stay. |
+| F6 | **Voice calls propose too** (2026-11-18): a spoken turn in a web chat and the voice facade's own slot both name their conversation, so a follow-up from a call returns to it. |
 
 **The shape.** A run calls `propose_follow_up` with one line and a time; the
 tool writes a record to `~/.mecha/followups/` (`followup.rs`) carrying the
@@ -95,8 +97,9 @@ only proposals, and acceptance crosses the owner.
   end that records the conversation (the web chat per turn, the TUI per
   agent build, so a switch keeps it), never derived from the outbox route —
   and refuses where there is none: a batch, an eval, an incognito chat.
-  Voice turns, which ride the web chat's agent, withhold the tool until a
-  later step reaches them.
+  Voice calls name theirs on both doors (F6): `begin_turn` stamps a spoken
+  turn like a typed one, and the facade slot stamps its own recorded
+  session.
 - **Taint is recorded fail-closed** and shown at decision time: a proposal
   from a conversation that had read outside content is an injection's way to
   schedule itself, so `show` warns and auto-accept (F2) never takes one.

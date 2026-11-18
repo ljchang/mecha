@@ -478,6 +478,7 @@ setup` asks about it. `mecha features enable <id>` writes `true` in place; a
 # memory = false     # the assistant's own encrypted memory of its runs
 # corrections = false  # drafts you changed or rejected, steers and next messages read as corrections, recalled on a like ask
 # recall = false     # what your earlier chats and runs said, found when it bears on a chat
+# followups = false  # a conversation offers to check back later; each waits in Review for you
 ```
 
 `mail_rules` requires `mail` and defaults off. With either switch off, the
@@ -485,6 +486,13 @@ five-minute timer and post-classify hook skip once with an explanation; rules
 cannot act. Install the sibling `mecha-mail` binary and the timer units as
 shown in the [CLI reference](/docs/reference/cli#mail-rule). Rule list, show,
 ledger and revocation remain available while disabled.
+
+`followups` defaults off. On, the web chat, its voice calls and the TUI offer
+`propose_follow_up`: a conversation can offer to check back on something
+later, and each offer waits in Review → Proposals → Follow-ups until you
+accept it. `[tools] disabled = ["propose_follow_up"]` takes the tool away too.
+Switching it off stops new proposals only; ones already made stay in Review,
+and `mecha followups` still lists, accepts and rejects them.
 
 The switch is the only switch; a settings table such as `[image]` or
 `[documents]` is only settings. What a switch that is not `true` turns off

@@ -52,10 +52,22 @@ fn detail(f: &FollowUp, tz: chrono_tz::Tz) -> String {
     if f.armed() {
         d.push_str(" · proposed after reading outside content");
     }
+    if f.is_proposed() && f.due_at <= Utc::now() {
+        d.push_str(" · its time has passed; accepting it makes it due now");
+    }
     if !f.is_proposed() {
         d.push_str(&format!(" · {}", f.status));
     }
     d
+}
+
+/// Where the owner picks the conversation back up: the web app's link, and
+/// the TUI's resume for a terminal, which has no Open-chat button.
+fn way_back(f: &FollowUp) -> String {
+    format!(
+        "Open chat on its workflow in Tasks → Workflows, or `mecha tui --resume {}`",
+        f.session_id
+    )
 }
 
 fn owner_tz() -> chrono_tz::Tz {
@@ -74,6 +86,7 @@ fn show(f: &FollowUp, tz: chrono_tz::Tz) -> String {
         f.due_at.with_timezone(&tz).format("%Y-%m-%d %H:%M %Z")
     ));
     out.push_str(&format!("from chat   {}\n", f.session_id));
+    out.push_str(&format!("back to it  {}\n", way_back(f)));
     if let Some(w) = &f.workflow_id {
         out.push_str(&format!("workflow    {w}\n"));
     }
@@ -198,11 +211,19 @@ pub fn run(args: Args) -> Result<()> {
                 &id,
                 outbox_root,
             )?;
+            let when = if f.due_at <= Utc::now() {
+                "now — its time had already passed".to_string()
+            } else {
+                f.due_at
+                    .with_timezone(&tz)
+                    .format("at %Y-%m-%d %H:%M %Z")
+                    .to_string()
+            };
             println!(
-                "Accepted {}: workflow {} reminds you at {}.",
+                "Accepted {}: workflow {} reminds you {when}.\n{}.",
                 followup::short(&f.id),
                 f.workflow_id.as_deref().unwrap_or("?"),
-                f.due_at.with_timezone(&tz).format("%Y-%m-%d %H:%M %Z")
+                way_back(&f)
             );
         }
         Cmd::Reject { id, reason } => {

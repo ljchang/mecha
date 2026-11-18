@@ -48,8 +48,6 @@ mod frontdoor;
 mod gate;
 mod hud;
 pub(crate) mod incognito;
-// What a spoken turn withholds, for the voice facade's own door.
-pub(crate) use chat::withheld_when_spoken;
 mod late;
 mod library;
 mod listen;

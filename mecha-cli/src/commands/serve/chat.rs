@@ -592,9 +592,12 @@ impl ChatState {
                 ));
                 // Shared by every chat; each call names its own conversation
                 // (`ToolCtx::recorded_session`, stamped per turn in
-                // `begin_turn`), and an incognito chat, which records none,
-                // is refused. A spoken turn withholds it there.
-                setup::register_follow_ups(&mut prepared.agent);
+                // `begin_turn`, spoken turns included), and an incognito
+                // chat, which records none, is refused.
+                if let Some(why) = setup::register_follow_ups(&mut prepared.agent, &prepared.config)
+                {
+                    tracing::warn!("{why}");
+                }
             })
         };
         let follower = Arc::new(crate::follow::Follower::start(opts, finish).await?);
@@ -3205,20 +3208,6 @@ fn spoken_turn_may_enter(opts: &TurnOpts, incognito: bool) -> Result<(), String>
 const UNVOUCHED_CALL: &str = "an incognito chat takes a voice call only from a worker that \
      keeps no text of it — restart the voice worker from this build";
 
-/// What a spoken turn may not dispatch, beside whatever its chat already
-/// withholds: `propose_follow_up`, until the follow-up design reaches voice
-/// (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` F4). One function for both of
-/// voice's doors — `begin_turn` with `spoken`, and the facade slot in
-/// `voice::completion` — so they cannot drift (review of #896).
-pub(crate) fn withheld_when_spoken(base: &[String]) -> Arc<[String]> {
-    let name = mecha_core::tool::follow_up::NAME;
-    let mut out = base.to_vec();
-    if !out.iter().any(|n| n == name) {
-        out.push(name.to_string());
-    }
-    out.into()
-}
-
 /// `--voice-yes` does not survive hearing ourselves.
 ///
 /// A spoken turn runs with the approver off, so an echo that reaches the model
@@ -3902,12 +3891,6 @@ fn begin_turn(
     // Whatever this session may not dispatch. Empty for an ordinary chat, so
     // the assignment costs nothing and there is one place it is applied.
     cx.withheld = incognito_withheld.unwrap_or_else(|| Arc::clone(&ws.withheld));
-    // A spoken turn withholds `propose_follow_up` until the follow-up design
-    // reaches voice (F4's order). This is voice's ordinary door — the facade
-    // slot in `voice::completion` withholds it on the other (review of #896).
-    if opts.spoken {
-        cx.withheld = withheld_when_spoken(&cx.withheld);
-    }
     // No hooks in an incognito run: `pre_tool` and `post_tool` receive tool
     // input and output, and a user command is somewhere this chat's words
     // would go that it cannot follow (`INCOGNITO-DESIGN.md` §3.3).
@@ -7958,16 +7941,6 @@ mod held_tests {
             1,
             "and the switch no longer sees it"
         );
-    }
-
-    /// Both of voice's doors withhold `propose_follow_up`, and keep what the
-    /// chat already withheld.
-    #[test]
-    fn a_spoken_turn_withholds_the_follow_up_tool_and_keeps_the_chats_own() {
-        let w = withheld_when_spoken(&["kg_task_update".to_string()]);
-        assert_eq!(&*w, ["kg_task_update", mecha_core::tool::follow_up::NAME]);
-        let twice = withheld_when_spoken(&w);
-        assert_eq!(twice.len(), 2, "withholding twice does not repeat the name");
     }
 
     /// A spoken turn sends its guidance as a run note and stores only what

@@ -7744,7 +7744,10 @@ follow-ups). `propose_follow_up` writes `~/.mecha/followups/`, never the
 workflow store; `mecha followups accept` — the proposals pane's verb — writes
 the workflow, with the proposal's session and a dateless commitment whose
 `follow_up_at` is the proposed time. The tool refuses without
-`ToolCtx::recorded_session`, records taint fail-closed, and `forget` purges a
+`ToolCtx::recorded_session` (stamped by the web chat per turn, spoken ones
+included, the voice facade per slot and the TUI per agent build — never from
+the outbox route), is off unless `[features] followups` is on, records taint
+fail-closed, and `forget` purges a
 session's proposals. Waking a run when one comes due is the design's step 2
 and not built; until then a due follow-up is the ordinary in-app reminder.
 

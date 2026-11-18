@@ -579,6 +579,7 @@ pub fn examine_with(home: &Path, mail: &MailStores, now: DateTime<Utc>) -> Vec<F
     findings.extend(check_mail_rules(home, mail, now));
     findings.extend(check_outbox(&home.join("outbox"), now, charter));
     findings.extend(check_questions(&home.join("questions"), now, charter));
+    findings.extend(check_followups(&home.join("followups"), now));
     findings.extend(check_frontdoor(&home.join("requests"), now, charter));
     findings.extend(check_triggers(&home.join("triggers"), now, charter));
     findings.extend(check_hud(&home.join("hud"), now));
@@ -1327,6 +1328,78 @@ fn check_questions(
                 description: "see what the agent is stuck on — doctor never answers for you"
                     .to_string(),
                 argv: vec!["mecha".into(), "questions".into(), "list".into()],
+                needs_terminal: true,
+            }),
+        });
+    }
+    out
+}
+
+// --- follow-ups -------------------------------------------------------------
+
+/// The follow-up store's distress: records that cannot be read — which stop
+/// every new proposal until they are fixed (`FollowUpStore::propose`) — and
+/// proposals still undecided after the time they named, a reminder the owner
+/// never agreed to and that is now late. Read without creating the store:
+/// never proposed is not a problem.
+fn check_followups(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+    let mut out = Vec::new();
+    if !root.is_dir() {
+        return out;
+    }
+    let store = crate::followup::FollowUpStore::open_unchecked(root.to_path_buf());
+    let (items, skipped) = match store.items_counting() {
+        Ok(read) => read,
+        Err(e) => {
+            out.push(Finding::unreadable(
+                "followups",
+                "the follow-up store",
+                format!("{}: {e:#}", root.display()),
+            ));
+            return out;
+        }
+    };
+    if skipped > 0 {
+        out.push(Finding::unreadable(
+            "followups",
+            &format!(
+                "{skipped} follow-up record{} could not be read — no conversation can propose \
+                 another until {} fixed or removed",
+                if skipped == 1 { "" } else { "s" },
+                if skipped == 1 { "it is" } else { "they are" }
+            ),
+            root.display().to_string(),
+        ));
+    }
+    let mut late: Vec<String> = items
+        .iter()
+        .filter(|f| f.is_proposed() && f.due_at <= now)
+        .map(|f| {
+            format!(
+                "{} · {} — was due {}",
+                crate::followup::short(&f.id),
+                f.what,
+                render_age(now, &f.due_at.to_rfc3339())
+            )
+        })
+        .collect();
+    if !late.is_empty() {
+        late.sort();
+        out.push(Finding {
+            component: "followups".to_string(),
+            severity: Severity::Attention,
+            summary: format!(
+                "{} proposed follow-up{} still undecided past {} own time",
+                late.len(),
+                if late.len() == 1 { "" } else { "s" },
+                if late.len() == 1 { "its" } else { "their" }
+            ),
+            detail: late.join("\n"),
+            // A list, not a decision: accepting schedules a reminder on the
+            // owner's word, and doctor never speaks it for them.
+            remedy: Some(Remedy {
+                description: "accept or reject them — doctor never decides for you".to_string(),
+                argv: vec!["mecha".into(), "followups".into(), "list".into()],
                 needs_terminal: true,
             }),
         });
@@ -3358,6 +3431,51 @@ fn render_age(now: DateTime<Utc>, stamp: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No store is no finding; an unreadable record is one, because it stops
+    /// every new proposal; and a proposal undecided past its own time is
+    /// named, while one still ahead of its time is not.
+    #[test]
+    fn the_follow_up_store_s_distress_is_named_and_its_absence_is_not() {
+        let root = std::env::temp_dir().join(format!("mecha-doctor-fu-{}", uuid::Uuid::new_v4()));
+        let now: DateTime<Utc> = "2026-11-18T12:00:00Z".parse().unwrap();
+        assert!(check_followups(&root, now).is_empty());
+        let store = crate::followup::FollowUpStore::open(&root).unwrap();
+        let earlier = now - chrono::Duration::days(2);
+        let late = store
+            .propose(
+                "check the build".into(),
+                earlier + chrono::Duration::hours(1),
+                "s",
+                None,
+                crate::agent::Taint::default(),
+                earlier,
+            )
+            .unwrap();
+        store
+            .propose(
+                "not yet".into(),
+                now + chrono::Duration::hours(3),
+                "s",
+                None,
+                crate::agent::Taint::default(),
+                now,
+            )
+            .unwrap();
+        let found = check_followups(&root, now);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].detail.contains(crate::followup::short(&late.id)));
+        assert!(!found[0].detail.contains("not yet"));
+        std::fs::write(root.join("broken.json"), "{").unwrap();
+        let found = check_followups(&root, now);
+        assert!(
+            found
+                .iter()
+                .any(|f| f.summary.starts_with("store unreadable")),
+            "{found:?}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     /// A corrections file that is not there is a home that never used the
     /// feature; one with a line that cannot be read is a finding, and so is
