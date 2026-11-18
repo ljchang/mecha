@@ -840,8 +840,14 @@ fn note_pass(index: &Path, took: std::time::Duration) -> Result<()> {
     // was last opened (review of #891). Asked first without the write lock,
     // since that common pass then takes none: a chat's first search runs
     // beside it and has 250 ms to keep its own count (`note_search`).
-    if unchanged(&conn, &counts(&conn)?)? {
-        return Ok(());
+    // In one deferred transaction, so its reads share one snapshot and a
+    // writer committing between them cannot make a changed index read as
+    // unchanged (review of #899, pass 3); a deferred one takes no write lock.
+    {
+        let look = conn.transaction()?;
+        if unchanged(&look, &counts(&look)?)? {
+            return Ok(());
+        }
     }
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let counts = counts(&tx)?;
@@ -2419,6 +2425,70 @@ mod tests {
             "{}",
             out.content
         );
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// An index an older build counted kept the pass's time in whole
+    /// seconds. It reads as milliseconds, the newer key wins where both are
+    /// kept, and the next pass that changes a count leaves only the newer
+    /// one. Broken, the row would say the index was never counted (review
+    /// of #899, pass 3).
+    #[tokio::test]
+    async fn a_count_kept_in_seconds_is_read_as_milliseconds_and_replaced() {
+        let home = home();
+        let sessions = home.join("sessions");
+        let web = |text: &str| {
+            let path = session(&sessions, SessionKind::Web, vec![Message::user(text)]);
+            use std::io::Write;
+            let line = serde_json::to_string(&Record::Taint(crate::agent::Taint {
+                private: true,
+                untrusted: false,
+            }))
+            .unwrap();
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            writeln!(file, "{line}").unwrap();
+        };
+        web("berth C has a notice, the fender line is condemned");
+        let spans = Spans::shared(
+            dir_in(&home),
+            sessions.clone(),
+            Embedder::new(&embeddings().await).unwrap(),
+        );
+        spans.refresh().await.unwrap();
+        let meta = |sql: &str| open(&dir_in(&home)).unwrap().execute_batch(sql).unwrap();
+        let keys = || -> Vec<String> {
+            let conn = open(&dir_in(&home)).unwrap();
+            let mut q = conn
+                .prepare(
+                    "SELECT key FROM meta WHERE key IN ('counted_ms', 'counted_secs') ORDER BY key",
+                )
+                .unwrap();
+            q.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        // As an older build left it.
+        meta(
+            "DELETE FROM meta WHERE key = 'counted_ms';
+              INSERT INTO meta VALUES ('counted_secs', '33');",
+        );
+        let counted = standing(&home).unwrap().unwrap().counted.unwrap();
+        assert_eq!(counted.ms, 33_000, "{counted:?}");
+        // Both kept: the newer is this build's.
+        meta("INSERT INTO meta VALUES ('counted_ms', '7');");
+        assert_eq!(standing(&home).unwrap().unwrap().counted.unwrap().ms, 7);
+        // A pass that changes nothing leaves both as they were.
+        spans.refresh().await.unwrap();
+        assert_eq!(keys(), ["counted_ms", "counted_secs"]);
+        // One that changes a count keeps milliseconds only.
+        web("the pilot ladder on berth F is short");
+        spans.refresh().await.unwrap();
+        assert_eq!(keys(), ["counted_ms"]);
+        assert_ne!(standing(&home).unwrap().unwrap().counted.unwrap().ms, 7);
         let _ = std::fs::remove_dir_all(home);
     }
 
