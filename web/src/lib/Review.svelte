@@ -20,7 +20,7 @@
   // and failed loudly on a `...spread`, which is the guard working. The
   // proposal stores are what is left after the panes that own their own
   // component, so the two lists cannot drift.
-  const panes = ['outbox', 'graph', 'frontdoor', 'harness', 'rules', 'entities'];
+  const panes = ['outbox', 'graph', 'frontdoor', 'harness', 'rules', 'entities', 'followups'];
   const ownPanes = ['outbox', 'graph', 'frontdoor'];
   const proposalStores = panes.filter((p) => !ownPanes.includes(p));
   // Derived, never copied into state — `Settings.svelte` records this trap

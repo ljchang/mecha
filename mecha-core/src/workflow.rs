@@ -1,6 +1,8 @@
 //! Durable follow-through, by reference to the stores that own the work.
 //!
-//! No model tool mutates this store. Owner commands establish commitments and
+//! No model tool mutates this store — a model's proposed follow-up lands in
+//! `crate::followup` and becomes a workflow only on the owner's accept.
+//! Owner commands establish commitments and
 //! completion checks; task runners record their lifecycle. Refresh observes
 //! questions and deliveries without resuming a conversation or granting authority.
 use anyhow::{ensure, Context, Result};

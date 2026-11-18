@@ -50,6 +50,9 @@ pub struct Roots {
     pub home: PathBuf,
     pub outbox: PathBuf,
     pub questions: PathBuf,
+    /// Follow-ups a run proposed (`crate::followup`): each names the
+    /// conversation it returns to, so it goes with that conversation.
+    pub followups: PathBuf,
     pub messages: PathBuf,
     pub learning: PathBuf,
     pub harness: PathBuf,
@@ -97,6 +100,7 @@ impl Roots {
             sessions: Session::default_dir()?,
             outbox: crate::outbox::OutboxStore::default_root()?,
             questions: crate::questions::QuestionStore::default_root()?,
+            followups: crate::followup::FollowUpStore::default_root()?,
             messages: crate::mailbox::MailboxStore::default_root()?,
             learning: crate::learning::LearningStore::default_root()?,
             harness: crate::harness::HarnessStore::default_root()?,
@@ -123,6 +127,7 @@ impl Roots {
             sessions: home.join("sessions"),
             outbox: home.join("outbox"),
             questions: home.join("questions"),
+            followups: home.join("followups"),
             messages: home.join("messages"),
             learning: home.join("learning"),
             harness: home.join("learning").join("harness"),
@@ -276,6 +281,12 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
         }
     };
     report.attempt("messages", purge_mailbox(&roots.messages, id));
+    // Proposed follow-ups: the conversation's own words about what to come
+    // back to. An accepted one's workflow is the workflows store's, below.
+    report.attempt(
+        "follow-ups",
+        remove_items(&roots.followups, |v| field_is(v, "session_id", id)).map(|v| v.len()),
+    );
     // The index of what earlier sessions read and said (`tool::spans`):
     // passages copied out of the transcript, found by meaning.
     report.attempt("spans", crate::tool::spans::forget(&roots.home, id));
@@ -1120,6 +1131,7 @@ fn still_naming(roots: &Roots, id: &str) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut stack: Vec<PathBuf> = [
         &roots.outbox,
         &roots.questions,
+        &roots.followups,
         &roots.messages,
         &roots.learning,
         &roots.harness,

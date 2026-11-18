@@ -1135,6 +1135,7 @@ fn install_frontend_tools(
     }
     if let Some(s) = session {
         setup::register_recall(agent, s);
+        setup::register_follow_ups(agent);
     }
 }
 

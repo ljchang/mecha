@@ -147,6 +147,14 @@ fn seeded(home: &Path) -> Roots {
         &format!(r#"{{"id":"q2","session_id":"{KEPT}","question":"ok?"}}"#),
     );
     write(
+        &roots.followups.join("f1.json"),
+        &format!(r#"{{"id":"f1","session_id":"{GONE}","what":"{CANARY}"}}"#),
+    );
+    write(
+        &roots.followups.join("f2.json"),
+        &format!(r#"{{"id":"f2","session_id":"{KEPT}","what":"ok"}}"#),
+    );
+    write(
         &roots.messages.join("hermes/m1.json"),
         &format!(r#"{{"id":"m1","from_session":"{GONE}","body":"{CANARY}"}}"#),
     );
@@ -384,6 +392,7 @@ fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
     for (path, needle) in [
         ("outbox/item-kept.json", KEPT),
         ("questions/q2.json", KEPT),
+        ("followups/f2.json", KEPT),
         ("messages/hermes/m2.json", KEPT),
         ("learning/mined.jsonl", KEPT),
         ("learning/distilled.jsonl", KEPT),

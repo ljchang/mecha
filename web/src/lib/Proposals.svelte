@@ -17,7 +17,7 @@
 
   // Short enough to sit three-across on a phone. The store's own word for
   // itself ("harness candidates") comes from the API and heads the list.
-  const shortName = { harness: 'Harness', rules: 'Rules', entities: 'Entities' };
+  const shortName = { harness: 'Harness', rules: 'Rules', entities: 'Entities', followups: 'Follow-ups' };
 
   let stores = $state(null);
   let listing = $state(null); // { label, rows }
@@ -164,7 +164,7 @@
     <div class="chips">
       <!-- The entities store is the graph's: with the graph off its routes
            answer `feature_off`, so it is not offered. -->
-      {#each (stores ?? [{ store: 'harness' }, { store: 'rules' }, { store: 'entities' }]).filter((s) => s.store !== 'entities' || !refuses(features.rows, 'graph')) as s}
+      {#each (stores ?? [{ store: 'harness' }, { store: 'rules' }, { store: 'entities' }, { store: 'followups' }]).filter((s) => s.store !== 'entities' || !refuses(features.rows, 'graph')) as s}
         <button class="chipbtn" class:active={s.store === store} onclick={() => pick(s.store)}>
           {shortName[s.store] ?? s.store}
           <span class="chipcount">{dash(s.depth)}</span>
@@ -242,6 +242,9 @@
           a layer your own config beats. Anything else is only marked.
         {:else if noUndo}
           Accepting applies the proposal to the graph. A merge cannot be undone.
+        {:else if store === 'followups'}
+          Accepting schedules it: at its time a reminder appears in Tasks → Workflows, with a
+          link back to the chat it came from.
         {:else}
           Decided here exactly as the command line decides it.
         {/if}

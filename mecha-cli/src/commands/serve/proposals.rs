@@ -40,10 +40,11 @@ type St = State<super::WebState>;
 /// (`#review/harness`); the queue name is the one `collect_queues` emits and
 /// the only key `review_source` knows. `graph shadow` is deliberately absent:
 /// it has its own pane already, riding the sample deck's endpoints.
-const STORES: [(&str, &str); 3] = [
+const STORES: [(&str, &str); 4] = [
     ("harness", "harness changes"),
     ("rules", "rule proposals"),
     ("entities", "graph entities"),
+    ("followups", "follow-ups"),
 ];
 
 pub(super) fn queue_of(store: &str) -> Option<&'static str> {
@@ -550,7 +551,12 @@ mod tests {
     /// child. Asserting on the composed argv is what makes it reachable.
     #[test]
     fn no_flag_is_ever_pushed_after_the_separator() {
-        for store in ["harness changes", "rule proposals", "graph entities"] {
+        for store in [
+            "harness changes",
+            "rule proposals",
+            "graph entities",
+            "follow-ups",
+        ] {
             let src = review_source(store).expect(store);
             for accepting in [true, false] {
                 let argv = decide_argv(&src, "the-id", accepting, "because");
@@ -576,7 +582,7 @@ mod tests {
     /// ahead of the separator. The graph store takes no `--reason` at all.
     #[test]
     fn a_reason_rides_ahead_of_the_separator_and_only_where_it_is_kept() {
-        for store in ["harness changes", "rule proposals"] {
+        for store in ["harness changes", "rule proposals", "follow-ups"] {
             let src = review_source(store).expect(store);
             let argv = decide_argv(&src, "id", false, "the evidence does not support it");
             let at = argv.iter().position(|a| a == "--reason").expect(store);

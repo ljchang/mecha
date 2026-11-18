@@ -7437,6 +7437,11 @@ impl Agent {
             work: Some(work),
             host_calls,
             program_room,
+            recorded_session: cx
+                .outbox
+                .as_ref()
+                .and_then(|o| o.session_id())
+                .or_else(|| cx.tools.recorded_session.clone()),
             ..(*cx.tools).clone()
         })
     }

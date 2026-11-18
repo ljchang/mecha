@@ -590,6 +590,10 @@ impl ChatState {
                         lookup,
                     })),
                 ));
+                // Shared by every chat; each call names its own conversation
+                // (`ToolCtx::recorded_session`, from the run's outbox route),
+                // and an incognito chat, which records none, is refused.
+                setup::register_follow_ups(&mut prepared.agent);
             })
         };
         let follower = Arc::new(crate::follow::Follower::start(opts, finish).await?);
