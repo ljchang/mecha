@@ -29,9 +29,15 @@ Taken by the owner on 2026-11-17, in the session that produced this file.
 | G5 | **New pull requests from outside contributors appear alongside new issues.** |
 | G6 | **The first set is broad** — every non-archived repository the owner owns, and the organizations the owner named. Which organizations is the owner's configuration and lives in the selection file (§2), never in this repository. |
 
-**Proposed here, not yet ruled** (§9): the typed reference as the form G2
-takes; summaries written by a quarantined pass in the collector; and the
-collector shelling out to `gh` until the vault exists.
+Taken by the owner on 2026-11-18:
+
+| # | Ruling |
+|---|---|
+| G7 | **G2 is met by the typed reference (§4)**, not by a pane outside the HUD. `LIVE-DASHBOARD-DESIGN.md` §2.2 points here for the one exception. |
+| G8 | **Quick summaries come from a quarantined pass in the collector (§5).** |
+| G9 | **`gh` holds the GitHub login (§8)** until the credential vault is designed. The vault's research waits until the autonomous-work shape (follow-ups, unattended ask-and-resume) is built, so that its use cases are known. |
+
+**Still open** (§9): how often the collector runs.
 
 ## 1. The shape
 
@@ -46,8 +52,10 @@ This is `system.rs`'s shape again, and for the same reason: **the HUD holds
 no code for any one source and nothing in it samples**
 (`ARCHITECTURE.md` §The HUD). A collector writes a SQLite file; the board
 reads it through an ordinary `sqlite` source registered in
-`~/.mecha/hud/sources.toml` with no `content` line, which makes it
-third-party — an issue title is a stranger's text.
+`~/.mecha/hud/sources.toml` with `content = "third-party"` written out —
+an issue title is a stranger's text. Leaving the line off classifies the
+same way (`LIVE-DASHBOARD-DESIGN.md` §3.1, fail-closed), but the file
+should say what this design argues, as §2's `forks = false` does.
 
 The collector is a command, never a trigger. A trigger's action is a prompt
 (`ARCHITECTURE.md` §Triggers), and nothing here wants an agent: the fetch is
@@ -137,16 +145,27 @@ our code and neither the spec nor the data supplies an address:
 ```
 
 - The spec names three **fields**. It cannot name a host, a path or a query.
+- **The spec gate is the control** (`hud/spec.rs`, the typed shape with
+  `deny_unknown_fields`): a column becomes an enum of a field name or a
+  reference, the reference's `ref` is a closed set holding `github` alone,
+  and an unknown `ref` or an unknown key beside the three is refused at
+  validation, before any renderer sees it. The checks below are the
+  convenience behind it, as `LIVE-DASHBOARD-DESIGN.md` §2.2 splits them.
 - The renderer builds `https://github.com/{owner}/{repo}/issues/{number}`
   and nothing else. GitHub redirects that path to the pull request when the
   number is one, so there is one form.
 - `owner` and `repo` must each match GitHub's own name grammar and `number`
   must be a positive integer, checked in the renderer and again where the
-  dataset is served. A value that fails renders as its text, no anchor.
-- **The pair must be one the selection file includes**, checked where the
-  dataset is served. Without this an issue's text could not move the link,
-  but a poisoned row could still point a click at a repository of a
-  stranger's choosing.
+  dataset is served. The grammar refuses `.` and `..` as a whole name and
+  any `%`, so no value can walk the path or smuggle an escape. A value that
+  fails renders as its text, no anchor.
+- **The pair must be a repository the collector both saw and selected** —
+  a row of `inventory` that the selection file includes — checked where the
+  dataset is served. The selection file alone is not enough: an owner with
+  `include = "all"`, which G6 makes the default, names no repositories, so
+  the repo half would be unconstrained. Without this check an issue's text
+  could not move the link, but a poisoned row could still point a click at
+  a repository of a stranger's choosing.
 - The anchor carries `rel="noopener noreferrer"` and a `no-referrer` policy,
   so GitHub is not told which board the click came from.
 - **Tailnet boards only.** A board published to the factory renders the
@@ -177,10 +196,14 @@ call, returning a typed value — a summary of bounded length and a closed
   summary published is reviewed as a publish. On the tailnet board it is the
   owner reading their own tool's output; if this board is ever published,
   the `summary` column does not go with it.
-- **The privileged side never reads it.** No tool hands `summaries` to an
-  agent run. If a later step lets a run act on an issue (§8), it reads the
-  issue through a tool that declares `untrusted_input` and marks its result
-  `.from_outside()`, like any other fetch.
+- **The privileged side reads it only as third-party content.** A run
+  that drafts or edits a board can see rows: `hud_sources` returns a few
+  rows of every table in a registered source and of a query over it, and
+  `hud_preview` returns each dataset's first rows. What makes that safe is
+  not the absence of a tool but the source's `content = "third-party"`
+  (§1): those results are `.from_outside()`, so the interlock arms
+  `untrusted` and the run loses chosen egress. If a later step lets a run
+  act on an issue (§8), it reads the issue the same way.
 - A summary is keyed by a hash of the body, so an unchanged issue is never
   summarised twice, and an edited one is. The pass takes a background seat
   through `permit.rs` and yields like any other; a morning with forty new
@@ -215,7 +238,7 @@ Each step is useful alone and is its own pull request.
 |---|---|---|
 | 1 | `mecha github collect`, the selection file read, `inventory`, `ci_runs`, `items`, `counts`, `collect_log`; a systemd timer beside `mecha-triggers.service` | a run against the owner's login fills the tables; a revoked login is a `doctor` finding, not an empty table |
 | 2 | The board, installed: views 1 and 2 without summaries or links | the owner opens it and it is right about one known red repository |
-| 3 | The typed reference (§4), renderer and serve-side check | a row naming a repository outside the selection renders no anchor; `hud.mjs` fails on a second link sink |
+| 3 | The typed reference (§4): spec gate, renderer and serve-side check | the spec gate refuses an unknown `ref` and an unknown key beside the three; a row naming a repository outside inventory ∩ selection, or `..` as a name, renders no anchor; `hud.mjs` fails on a second link sink |
 | 4 | Summaries (§5) | an issue whose body is an instruction to the reader produces a summary and nothing else; unchanged bodies are not re-summarised |
 | 5 | `traffic`, `releases`, view 3; then the package mapping and registry counts | totals carry their since-date; a repository without push access shows a dash |
 | 6 | The picker page (G3) | select-all on an owner writes the file the collector then obeys |
@@ -243,14 +266,9 @@ It is an optional feature, so step 1 starts at `ARCHITECTURE.md` §Features →
 
 ## 9. Open
 
-1. **The typed reference (§4)** as the way G2 is met — against the
-   alternative of a dedicated pane outside the HUD, with links rendered by
-   pane code as mail's are. The reference keeps one renderer; the pane
-   leaves the HUD's no-destination rule untouched.
-2. **Summaries by a quarantined pass in the collector (§5)** — against
-   showing the first lines of the body verbatim, which needs no model and
-   says less.
-3. **`gh` as the credential holder (§8)** until the vault is designed.
-4. **How often.** Ten minutes for CI and items, daily for traffic and
+Ruled on 2026-11-18 and moved to §0 (G7–G9): the typed reference, the
+quarantined summaries, and `gh` as the credential holder.
+
+1. **How often.** Ten minutes for CI and items, daily for traffic and
    counts, is the proposal; the limit that matters is the API's, measured in
    step 1.
