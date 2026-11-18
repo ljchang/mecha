@@ -976,11 +976,11 @@ impl ChatState {
         use mecha_core::workflow::{FOLLOW_UP_ANSWERED, FOLLOW_UP_FAILED, FOLLOW_UP_WOKEN};
         let session_id = w.session_id.clone().ok_or(WakeSkip::Later)?;
         let bound = self.follower.current();
+        // Off is a pause, not a refusal: the reminder stands, and switching
+        // follow-ups back on wakes what came due meanwhile (review of #897).
         if !mecha_core::feature::switched_on(&bound.config, mecha_core::feature::Feature::Followups)
         {
-            return Err(WakeSkip::Never(
-                "follow-ups are switched off, so no run was started".into(),
-            ));
+            return Err(WakeSkip::Later);
         }
         // Staging-only is the outbox's to enforce: with no route a woken
         // run's send would deliver, with nobody watching.
@@ -1058,17 +1058,33 @@ impl ChatState {
                 },
             };
             // Never over a turn in flight, typed or spoken: the next minute.
+            // And never onto a trailing user message (a turn cancelled
+            // mid-tool): `begin_turn` would fold the wake into that message,
+            // and it would be recorded as the owner's (review of #897). The
+            // owner's next turn ends that state; until then, the next minute.
             let idle = sessions
                 .get(&key)
                 .and_then(ChatSlot::ordinary)
-                .is_some_and(|ws| ws.live.is_none() && ws.conversation.is_some());
+                .is_some_and(|ws| {
+                    ws.live.is_none()
+                        && ws.conversation.as_ref().is_some_and(|c| {
+                            c.messages
+                                .last()
+                                .is_none_or(|m| m.role != mecha_core::message::Role::User)
+                        })
+                });
             if !idle {
                 return Err(WakeSkip::Later);
             }
             // The mark lands before the turn, so a crash mid-turn never wakes
             // it twice. A mark that cannot be written starts nothing.
+            // A claim, not a note: `update` re-reads under the store's
+            // lock, so a second `serve` on this home that saw the same due
+            // workflow loses here instead of writing the same transcript
+            // (review of #897).
             store
                 .update(&w.id, |w| {
+                    anyhow::ensure!(w.woken_at.is_none(), "already woken");
                     let now = chrono::Utc::now();
                     w.woken_at = Some(now);
                     w.record(FOLLOW_UP_WOKEN, session_id.clone(), now);
@@ -4018,7 +4034,10 @@ fn begin_turn(
                     && ws.withheld.iter().any(|t| t == "kg_task_update")),
             opts.approve_all,
             *ws.mode.lock().unwrap_or_else(|e| e.into_inner()),
-            started_by_a_run(),
+            // A woken follow-up has nobody in the conversation: its posture
+            // says so, as its approver does, so a shell it runs is never
+            // read as the owner's (`closure::cause`; review of #897).
+            started_by_a_run() || opts.unattended,
         )),
         // The session's workspace and its own spill directory: the agent's
         // is shared by every session this process serves (`for_session`).
@@ -9167,10 +9186,51 @@ mod wake_tests {
         }
     }
 
+    /// A read-only tool that records the run posture its call carried.
+    struct PostureProbe(Arc<StdMutex<Option<mecha_core::closure::RunPosture>>>);
+    #[async_trait::async_trait]
+    impl mecha_core::tool::Tool for PostureProbe {
+        fn name(&self) -> &str {
+            "note_posture"
+        }
+        fn description(&self) -> &str {
+            "Say who is here."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(
+            &self,
+            _: serde_json::Value,
+            ctx: &ToolCtx,
+        ) -> Result<mecha_core::tool::ToolOutput> {
+            *self.0.lock().unwrap() = ctx.run_posture;
+            Ok(mecha_core::tool::ToolOutput::ok("noted"))
+        }
+    }
+
     fn waking_chat_with(
         on: bool,
         outbox: bool,
         write: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) -> (
+        Arc<ChatState>,
+        Arc<StdMutex<Vec<mecha_core::message::CompletionRequest>>>,
+    ) {
+        waking_chat_tools(
+            on,
+            outbox,
+            write.map(|ran| Arc::new(WriteNote(ran)) as Arc<dyn mecha_core::tool::Tool>),
+        )
+    }
+
+    fn waking_chat_tools(
+        on: bool,
+        outbox: bool,
+        tool: Option<Arc<dyn mecha_core::tool::Tool>>,
     ) -> (
         Arc<ChatState>,
         Arc<StdMutex<Vec<mecha_core::message::CompletionRequest>>>,
@@ -9199,11 +9259,11 @@ mod wake_tests {
                 };
                 // With a writing tool on offer, the first answer reaches for
                 // it; every answer after is the reply.
-                if first && req.tools.iter().any(|t| t.name == "write_note") {
+                if let Some(tool) = req.tools.first().filter(|_| first) {
                     return Ok(mecha_core::message::CompletionResponse {
                         message: Message::assistant(vec![mecha_core::message::Block::ToolUse {
                             id: "w1".into(),
-                            name: "write_note".into(),
+                            name: tool.name.clone(),
                             input: serde_json::json!({}),
                         }]),
                         stop_reason: mecha_core::message::StopReason::ToolUse,
@@ -9220,8 +9280,8 @@ mod wake_tests {
         }
         let seen = Arc::new(StdMutex::new(Vec::new()));
         let mut registry = mecha_core::tool::Registry::new();
-        if let Some(ran) = write {
-            registry.insert(Arc::new(WriteNote(ran)));
+        if let Some(tool) = tool {
+            registry.insert(tool);
         }
         let test_root = test_scratch_root();
         let mut config = answering_config(true);
@@ -9410,10 +9470,7 @@ mod wake_tests {
     /// nothing runs; the reason is recorded once and the reminder stands.
     #[tokio::test]
     async fn no_switch_or_no_outbox_starts_nothing_and_says_why() {
-        for (on, outbox, why) in [
-            (false, true, "switched off"),
-            (true, false, "no outbox route"),
-        ] {
+        for (on, outbox, why) in [(true, false, "no outbox route")] {
             let home = crate::testenv::HomeGuard::new("wake-refused");
             let (chat, seen) = waking_chat(on, outbox);
             let (id, _) = due_follow_up(&chat, &home.dir);
@@ -9426,6 +9483,98 @@ mod wake_tests {
             assert!(w.woken_at.is_some(), "{why}: said once, not every minute");
             drop(home);
         }
+    }
+
+    /// Switched off is a pause: nothing runs and nothing is recorded, so
+    /// switching back on wakes what came due meanwhile.
+    #[tokio::test]
+    async fn switched_off_pauses_and_switching_on_wakes_what_came_due() {
+        let home = crate::testenv::HomeGuard::new("wake-paused");
+        let (off, seen_off) = waking_chat(false, true);
+        let (id, _) = due_follow_up(&off, &home.dir);
+        off.wake_due_follow_ups().await;
+        assert!(seen_off.lock().unwrap().is_empty());
+        let w = WorkflowStore::default_store().unwrap().get(&id).unwrap();
+        assert!(w.woken_at.is_none(), "a pause, not a refusal");
+        let (on, seen_on) = waking_chat(true, true);
+        // The same conversation, reached from the switched-on chat's store.
+        std::fs::create_dir_all(on.sessions_dir()).unwrap();
+        for e in std::fs::read_dir(off.sessions_dir()).unwrap() {
+            let e = e.unwrap();
+            std::fs::copy(e.path(), on.sessions_dir().join(e.file_name())).unwrap();
+        }
+        on.wake_due_follow_ups().await;
+        assert_eq!(seen_on.lock().unwrap().len(), 1, "woken once switched on");
+    }
+
+    /// The woken turn's posture is unattended, as its approver is: a shell
+    /// it ran would never be read as the owner's approval.
+    #[tokio::test]
+    async fn a_woken_turn_carries_the_unattended_posture() {
+        let home = crate::testenv::HomeGuard::new("wake-posture");
+        let posture = Arc::new(StdMutex::new(None));
+        let (chat, _) = waking_chat_tools(
+            true,
+            true,
+            Some(Arc::new(PostureProbe(Arc::clone(&posture)))),
+        );
+        // A chat this process already holds, open in `Ask` — the case that
+        // needed the fix; a resumed chat opens read-only, which reads
+        // unattended either way.
+        let (_, session) = due_follow_up(&chat, &home.dir);
+        {
+            let mut sessions = chat.sessions.lock().await;
+            let key = resume_locked(&chat, &mut sessions, &session, false).unwrap();
+            let ws = sessions
+                .get_mut(&key)
+                .and_then(ChatSlot::ordinary_mut)
+                .unwrap();
+            *ws.mode.lock().unwrap() = PermissionMode::Ask;
+        }
+        chat.wake_due_follow_ups().await;
+        assert_eq!(
+            *posture.lock().unwrap(),
+            Some(mecha_core::closure::RunPosture::Unattended)
+        );
+    }
+
+    /// A conversation that ends on a user message is not woken: the wake
+    /// would be folded into that message and recorded as the owner's.
+    #[tokio::test]
+    async fn a_conversation_ending_on_a_user_message_waits() {
+        let home = crate::testenv::HomeGuard::new("wake-tail");
+        let (chat, seen) = waking_chat(true, true);
+        let (id, session) = due_follow_up(&chat, &home.dir);
+        let path = Session::find(chat.sessions_dir(), &session).unwrap();
+        Session {
+            meta: Session::read(&path).unwrap().meta,
+            path,
+        }
+        .append(&Record::Message(Message::user("the owner's last word")))
+        .unwrap();
+        chat.wake_due_follow_ups().await;
+        assert!(seen.lock().unwrap().is_empty());
+        let w = WorkflowStore::default_store().unwrap().get(&id).unwrap();
+        assert!(w.woken_at.is_none(), "it waits, it is not retired");
+    }
+
+    /// A waker that saw the workflow before another claimed it starts
+    /// nothing: the mark is taken under the store's lock.
+    #[tokio::test]
+    async fn a_waker_that_lost_the_claim_starts_nothing() {
+        let home = crate::testenv::HomeGuard::new("wake-claim");
+        let (chat, seen) = waking_chat(true, true);
+        let (id, _) = due_follow_up(&chat, &home.dir);
+        let store = WorkflowStore::default_store().unwrap();
+        let stale = store.get(&id).unwrap();
+        store
+            .update(&id, |w| {
+                w.woken_at = Some(chrono::Utc::now());
+                Ok(())
+            })
+            .unwrap();
+        assert!(chat.wake_follow_up(&stale).await.is_err());
+        assert!(seen.lock().unwrap().is_empty(), "the loser ran a turn");
     }
 
     /// The page shows a wake as a note, keyed on core's stem; the two copies
