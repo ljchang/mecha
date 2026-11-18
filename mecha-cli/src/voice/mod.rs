@@ -2819,6 +2819,43 @@ mod tests {
         );
     }
 
+    /// The fourth mechanism on the same two doors: both withhold
+    /// `propose_follow_up` through one helper, the hosted one only when the
+    /// turn is spoken. `a_spoken_turn_withholds_the_follow_up_tool_and_keeps_
+    /// the_chats_own` tests the helper; this reads that both doors call it,
+    /// since a hand-built test stays green with both call sites deleted
+    /// (found on review of #896).
+    #[test]
+    fn both_spoken_doors_withhold_the_follow_up_tool() {
+        let call = ["withheld_", "when_spoken("].concat();
+        let src = include_str!("mod.rs");
+        let i = src
+            .find("\nasync fn completion(")
+            .expect("the request handler is still here");
+        let body = &src[i + 1..][..src[i + 1..]
+            .find("\n}\n")
+            .expect("`completion` still has a closing brace at column zero")];
+        assert!(
+            body.contains(&call),
+            "the facade slot no longer withholds the follow-up tool"
+        );
+        let chat = include_str!("../commands/serve/chat.rs");
+        let i = chat
+            .find("\nfn begin_turn(")
+            .expect("the shared turn constructor is still here");
+        let body = &chat[i + 1..][..chat[i + 1..]
+            .find("\n}\n")
+            .expect("`begin_turn` still has a closing brace at column zero")];
+        let at = body
+            .find(&call)
+            .expect("`begin_turn` no longer withholds the follow-up tool on a spoken turn");
+        let guard = &body[at.saturating_sub(120)..at];
+        assert!(
+            guard.contains("opts.spoken"),
+            "the hosted door's withhold is not guarded by `opts.spoken`: {guard:?}"
+        );
+    }
+
     #[test]
     fn the_voice_block_carries_no_markdown() {
         // D10: the block teaches ear-shaped output; it had better practice

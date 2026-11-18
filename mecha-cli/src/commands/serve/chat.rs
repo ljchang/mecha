@@ -3205,6 +3205,20 @@ fn spoken_turn_may_enter(opts: &TurnOpts, incognito: bool) -> Result<(), String>
 const UNVOUCHED_CALL: &str = "an incognito chat takes a voice call only from a worker that \
      keeps no text of it — restart the voice worker from this build";
 
+/// What a spoken turn may not dispatch, beside whatever its chat already
+/// withholds: `propose_follow_up`, until the follow-up design reaches voice
+/// (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` F4). One function for both of
+/// voice's doors — `begin_turn` with `spoken`, and the facade slot in
+/// `voice::completion` — so they cannot drift (review of #896).
+pub(crate) fn withheld_when_spoken(base: &[String]) -> Arc<[String]> {
+    let name = mecha_core::tool::follow_up::NAME;
+    let mut out = base.to_vec();
+    if !out.iter().any(|n| n == name) {
+        out.push(name.to_string());
+    }
+    out.into()
+}
+
 /// `--voice-yes` does not survive hearing ourselves.
 ///
 /// A spoken turn runs with the approver off, so an echo that reaches the model
@@ -3227,20 +3241,6 @@ const UNVOUCHED_CALL: &str = "an incognito chat takes a voice call only from a w
 /// It only ever narrows, and that is asserted rather than described: a typed
 /// turn with the same words keeps its `approve_all`, because the page's mode
 /// is a decision a person made about typing.
-/// What a spoken turn may not dispatch, beside whatever its chat already
-/// withholds: `propose_follow_up`, until the follow-up design reaches voice
-/// (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` F4). One function for both of
-/// voice's doors — `begin_turn` with `spoken`, and the facade slot in
-/// `voice::completion` — so they cannot drift (review of #896).
-pub(crate) fn withheld_when_spoken(base: &[String]) -> Arc<[String]> {
-    let name = mecha_core::tool::follow_up::NAME;
-    let mut out = base.to_vec();
-    if !out.iter().any(|n| n == name) {
-        out.push(name.to_string());
-    }
-    out.into()
-}
-
 fn narrow_for_echo(opts: TurnOpts, last_reply: Option<&str>, text: &str) -> TurnOpts {
     if !opts.spoken || !opts.approve_all {
         return opts;

@@ -1412,6 +1412,7 @@ mod tests {
             ("graph entities", true, "proposals"),
             ("rule proposals", false, "proposals"),
             ("harness changes", false, "harness"),
+            ("follow-ups", false, "followups"),
         ] {
             let src = row(name, 3, "")
                 .review_source()
