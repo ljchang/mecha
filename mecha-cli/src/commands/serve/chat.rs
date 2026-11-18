@@ -4260,7 +4260,7 @@ fn begin_turn(
     // model names (`Egress::Chosen`) that `[outbox] tools` does not route
     // would dispatch for real — `http_fetch` is read-only by design, so no
     // approver is ever asked about it. Withheld from the unattended turn
-    // (review of #897); `Blind` egress, which names no destination, stays.
+    // (review of #897), with every other unrouted sender and `ask_user`.
     if opts.unattended {
         // The route this turn dispatches through, set just above.
         let route = cx.outbox.clone();
@@ -4268,9 +4268,17 @@ fn begin_turn(
             .agent
             .registry()
             .iter()
-            .filter(|t| t.capabilities().egress == mecha_core::tool::Egress::Chosen)
+            // Any egress, not only `Chosen`: a tool's class is its static
+            // declaration, and `web_search` declares `Blind` while a deep
+            // search reaches a chosen backend (review of #897). With nobody
+            // watching, nothing unrouted that can send runs at all.
+            .filter(|t| t.capabilities().egress != mecha_core::tool::Egress::None)
             .map(|t| t.name().to_string())
             .filter(|n| !route.as_ref().is_some_and(|r| r.routes(n)))
+            // And `ask_user`: nobody is there to answer, and its card would
+            // hold this turn's seat for ten minutes. A woken run says what it
+            // would have asked in its answer instead.
+            .chain(std::iter::once("ask_user".to_string()))
             .collect();
         if !unrouted.is_empty() {
             cx.withheld = cx
@@ -9743,6 +9751,73 @@ mod wake_tests {
     /// A read-only tool whose destination the model names, and says
     /// whether it ran — `http_fetch`'s shape.
     struct FetchPage(Arc<std::sync::atomic::AtomicBool>);
+
+    /// A read-only tool under any name and egress class, saying whether it
+    /// ran: a blind sender, or a stand-in for `ask_user`.
+    struct Probe {
+        name: &'static str,
+        egress: mecha_core::tool::Egress,
+        ran: Arc<std::sync::atomic::AtomicBool>,
+    }
+    #[async_trait::async_trait]
+    impl mecha_core::tool::Tool for Probe {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "A probe."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        fn capabilities(&self) -> mecha_core::tool::Capabilities {
+            mecha_core::tool::Capabilities {
+                egress: self.egress,
+                ..Default::default()
+            }
+        }
+        async fn call(
+            &self,
+            _: serde_json::Value,
+            _: &ToolCtx,
+        ) -> Result<mecha_core::tool::ToolOutput> {
+            self.ran.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(mecha_core::tool::ToolOutput::ok("done"))
+        }
+    }
+
+    /// Neither a blind sender (a deep `web_search` is chosen under a blind
+    /// declaration) nor `ask_user` (nobody to answer) runs from a woken
+    /// turn; a read-only tool that sends nothing still does.
+    #[tokio::test]
+    async fn a_woken_turn_withholds_every_unrouted_sender_and_ask_user() {
+        for (name, egress, may_run) in [
+            ("search_blind", mecha_core::tool::Egress::Blind, false),
+            ("ask_user", mecha_core::tool::Egress::None, false),
+            ("read_notes", mecha_core::tool::Egress::None, true),
+        ] {
+            let home = crate::testenv::HomeGuard::new("wake-withhold");
+            let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let probe = Probe {
+                name,
+                egress,
+                ran: Arc::clone(&ran),
+            };
+            let (chat, seen) = waking_chat_tools(true, true, Some(Arc::new(probe)));
+            due_follow_up(&chat, &home.dir);
+            chat.wake_due_follow_ups().await;
+            assert!(!seen.lock().unwrap().is_empty(), "{name}: the turn ran");
+            assert_eq!(
+                ran.load(std::sync::atomic::Ordering::SeqCst),
+                may_run,
+                "{name}"
+            );
+            drop(home);
+        }
+    }
     #[async_trait::async_trait]
     impl mecha_core::tool::Tool for FetchPage {
         fn name(&self) -> &str {

@@ -157,14 +157,15 @@ still only reminds.
   launders none. Unattended: a call that needs an approval is refused in the
   machine's voice, as `questions answer --unattended` does; routed sends
   stage. Staging-only is enforced per tool, not by a route existing: every
-  tool whose destination the model names (`Egress::Chosen`) that `[outbox]
+  tool that can send anything (`Egress` other than `None`) that `[outbox]
   tools` does not route is withheld from the woken turn — `http_fetch` is
-  read-only, so no approver would ever be asked about it. `Blind` egress
-  stays — `web_search` at quick depth over blind backends; a deep search, or
-  a non-blind backend, is `Chosen` and is withheld with the rest. `shell` does not, on a machine whose sandbox can
-  reach the network: there its egress is `Chosen`, so a woken turn cannot
-  run a command, and the canonical "check whether the build passed" needs a
-  network-isolating sandbox or a routed or blind tool to answer it. Its run posture is `unattended` too, so a shell it runs is never
+  read-only, so no approver would ever be asked about it, and `web_search`
+  declares `Blind` while a deep search reaches a chosen backend. `shell`
+  goes too wherever its sandbox can reach the network, so the canonical
+  "check whether the build passed" needs a network-isolating sandbox or a
+  routed tool to answer it. `ask_user` is withheld as well: nobody is there
+  to answer, and a woken run says what it would have asked in its answer.
+  Its run posture is `unattended` too, so a shell it runs is never
   read as the owner's approval (`closure::cause`). It takes a background
   seat (`permit.rs`), like any unattended run.
 - **After.** The answer is in the chat. The workflow records

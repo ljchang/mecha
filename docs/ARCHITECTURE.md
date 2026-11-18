@@ -7759,8 +7759,9 @@ reminds. Once a minute it resumes the conversation if it is not held, writes
 `woken_at` before the turn (a crash never wakes twice), and starts an
 unattended, harness-voiced turn through `begin_turn` (`TurnOpts::unattended`:
 `ModeApprover { Ask }`, so approvals are `Blocked` in the machine's voice and
-routed sends still stage; every unrouted `Egress::Chosen` tool is withheld,
-since a read-only one like `http_fetch` never reaches the approver; the turn is recorded `harness: true` under
+routed sends still stage; every unrouted tool that can send is withheld, and
+`ask_user` too, since a read-only sender like `http_fetch` never reaches the
+approver and a deep `web_search` is `Chosen` under a `Blind` declaration; the turn is recorded `harness: true` under
 `followup::WAKE_STEM`, which the page shows as a note). It refuses for good,
 with the reason on the workflow, when the switch is off, there is no outbox
 route, the transcript is gone or it is a memory chat; it waits a minute when a
