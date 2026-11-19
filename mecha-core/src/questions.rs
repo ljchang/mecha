@@ -146,6 +146,13 @@ pub struct Question {
     /// `background`, the only way a question resumed before this existed.
     #[serde(default)]
     pub resume: Resume,
+    /// The trigger whose run parked this, when one did. That run writes its
+    /// transcript's taint checkpoint and ledger row *after* the park, and a
+    /// trigger session has no live-writer marker, so a chat answer waits for
+    /// the trigger's own running marker to clear (review of #904). Absent on
+    /// every other question and on records older than the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
 }
 
 /// The three states a question can be in. Named so a reader elsewhere
@@ -385,6 +392,7 @@ impl QuestionStore {
             workspace,
             taint,
             goal,
+            None,
         )
     }
 
@@ -400,6 +408,7 @@ impl QuestionStore {
         workspace: Option<PathBuf>,
         taint: Taint,
         goal: Option<crate::goal::GoalHypothesis>,
+        trigger: Option<String>,
     ) -> Result<Question> {
         let q = Question {
             id: Session::new_id(),
@@ -415,6 +424,7 @@ impl QuestionStore {
             answer: None,
             goal,
             resume,
+            trigger,
         };
         let _lock = self.lock()?;
         self.put(&q)?;
@@ -530,6 +540,7 @@ pub struct ParkingAsker {
     session_id: String,
     task_id: Option<String>,
     resume: Resume,
+    trigger: Option<String>,
     parked: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
@@ -544,6 +555,7 @@ impl ParkingAsker {
             session_id: session_id.into(),
             task_id,
             resume: Resume::Background,
+            trigger: None,
             parked: Default::default(),
         }
     }
@@ -552,6 +564,13 @@ impl ParkingAsker {
     /// trigger's run and a woken follow-up's turn park `Chat` (A2).
     pub fn resuming(mut self, resume: Resume) -> Self {
         self.resume = resume;
+        self
+    }
+
+    /// Record every question this asker parks as asked by trigger `name`'s
+    /// run, so an answer can wait for that run to finish writing.
+    pub fn from_trigger(mut self, name: impl Into<String>) -> Self {
+        self.trigger = Some(name.into());
         self
     }
 
@@ -618,6 +637,7 @@ impl ParkingAsker {
             workspace,
             taint,
             goal.cloned(),
+            self.trigger.clone(),
         ) {
             Ok(q) => {
                 if let Ok(mut p) = self.parked.lock() {

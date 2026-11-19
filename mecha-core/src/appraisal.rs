@@ -5210,6 +5210,7 @@ text = "Tell me the truth early."
             answer: (status == "answered").then(|| "personal".to_string()),
             goal: None,
             resume: Default::default(),
+            trigger: None,
         }
     }
 

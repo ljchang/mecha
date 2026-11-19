@@ -666,6 +666,7 @@ mod tests {
                 None,
                 Taint::default(),
                 None,
+                None,
             )
             .unwrap();
         for unattended in [false, true] {

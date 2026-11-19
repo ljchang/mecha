@@ -4245,6 +4245,7 @@ mod tests {
             answer: None,
             goal: None,
             resume: Default::default(),
+            trigger: None,
         };
         std::fs::write(
             dir.join(format!("{id}.json")),

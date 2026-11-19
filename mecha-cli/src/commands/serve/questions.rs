@@ -309,6 +309,7 @@ mod tests {
             answer: None,
             goal: None,
             resume: Default::default(),
+            trigger: None,
         }
     }
 

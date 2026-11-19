@@ -1248,7 +1248,8 @@ async fn run_agent(
         Ok(store) => {
             let asker = std::sync::Arc::new(
                 ParkingAsker::new(std::sync::Arc::new(store), &session.meta.id, None)
-                    .resuming(Resume::Chat),
+                    .resuming(Resume::Chat)
+                    .from_trigger(&t.name),
             );
             prepared.agent.registry_mut().insert(std::sync::Arc::new(
                 mecha_core::tool::ask::AskUserTool::new(std::sync::Arc::clone(&asker)

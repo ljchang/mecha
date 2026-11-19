@@ -260,6 +260,14 @@ minutes with nobody to answer). This extends the parking to both.
   open in Tasks → Waiting with no row pointing at it.
 - A chat resumed cold opens read-only, so an answering turn can read and
   stage but not write until the owner changes the chat's mode.
+- A second `ask_user` in the owner's answering turn goes up as a card in
+  the chat, as any owner turn's does, while the owner may still be on Tasks;
+  it declines after the card's timeout. Parking it into Tasks → Waiting
+  instead would change how a live chat asks, which is the owner's call.
+- An answer waits for the asking trigger's run to finish writing: the
+  question names its trigger, and serve refuses while that trigger's running
+  marker stands. The resumed chat also merges the question's own taint, so a
+  transcript that lost its taint checkpoint never resumes clean.
 - A carrying trigger carries a `waiting` run's transcript like an `ok` one:
   answered, its last words are the answer; unanswered, where it got to.
 

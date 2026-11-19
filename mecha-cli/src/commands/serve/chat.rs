@@ -6295,6 +6295,24 @@ pub(super) async fn answer_in_chat(
     };
     #[cfg(not(feature = "memory-prototype"))]
     let remembered = false;
+    // The trigger run that parked this still finishing — its taint checkpoint
+    // and ledger row are written after the park, and a trigger session has no
+    // live-writer marker for `resume_locked` to see. Answering now would be a
+    // second writer on its transcript (review of #904).
+    if let Some(name) = asked.trigger.as_deref() {
+        let running = mecha_core::trigger::TriggerStore::open_default()
+            .map(|store| store.running(name).is_some())
+            .unwrap_or(true);
+        if running {
+            return Err((
+                StatusCode::CONFLICT,
+                format!(
+                    "the `{name}` run that asked this is still finishing — your answer was not \
+                     sent; try again in a moment\n"
+                ),
+            ));
+        }
+    }
     // The model this turn runs on, entered before the sessions lock as the
     // typed door enters it: a switch in progress is waited out, not raced.
     let (mut held, bound) = chat
@@ -6310,6 +6328,18 @@ pub(super) async fn answer_in_chat(
         ));
     }
     let key = resume_locked(chat, &mut sessions, &asked.session_id, remembered, true)?;
+    // The question's own taint into the resumed conversation: the transcript's
+    // `Record::Taint` is written after the park, so a transcript that lost it
+    // (a kill, a full disk) would resume clean of what the run read. The
+    // question's taint fails closed at park time; merging only ever grows
+    // (review of #904).
+    if let Some(convo) = sessions
+        .get_mut(&key)
+        .and_then(ChatSlot::ordinary_mut)
+        .and_then(|ws| ws.conversation.as_mut())
+    {
+        convo.taint.merge(asked.taint);
+    }
     // Idle and holding its conversation, or the answer waits for the owner
     // to send it again: steering it into a turn in flight would make it part
     // of someone else's run.
@@ -10671,6 +10701,17 @@ mod wake_tests {
     /// trigger's run, as the ledger leaves it — carrying third-party taint,
     /// and the open `chat` question it parked.
     fn asked_in_a_chat(chat: &ChatState, home: &std::path::Path) -> (String, String) {
+        asked_in_a_chat_as(chat, home, true, None)
+    }
+
+    /// [`asked_in_a_chat`], choosing whether the transcript holds its taint
+    /// checkpoint and which trigger (if any) the question names.
+    fn asked_in_a_chat_as(
+        chat: &ChatState,
+        home: &std::path::Path,
+        taint_checkpoint: bool,
+        trigger: Option<&str>,
+    ) -> (String, String) {
         let workspace = home.join("ws");
         std::fs::create_dir_all(&workspace).unwrap();
         let session = Session::create(
@@ -10715,7 +10756,9 @@ mod wake_tests {
             private: true,
             untrusted: true,
         };
-        session.append(&Record::Taint(armed)).unwrap();
+        if taint_checkpoint {
+            session.append(&Record::Taint(armed)).unwrap();
+        }
         let q = question_store()
             .park_as(
                 mecha_core::questions::Resume::Chat,
@@ -10726,6 +10769,7 @@ mod wake_tests {
                 Some(workspace),
                 armed,
                 None,
+                trigger.map(str::to_string),
             )
             .unwrap();
         (session.meta.id.clone(), q.id)
@@ -10755,6 +10799,77 @@ mod wake_tests {
     /// turn runs, the question is closed with the owner's words, the page is
     /// handed the chat's key (and stays where it is), the resumed chat keeps
     /// the transcript's recorded taint, and a second answer is refused.
+    /// The trigger's taint checkpoint comes after the park; a transcript
+    /// without it still resumes armed, from the question's own taint.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_answer_resumes_with_the_question_s_taint_when_the_transcript_lost_it() {
+        let home = crate::testenv::HomeGuard::new("answer-taint");
+        let chat = waking_chat_over(
+            true,
+            true,
+            Vec::new(),
+            Box::new(Scripted {
+                seen: Arc::default(),
+                steps: vec![Step::Say("noted")],
+            }),
+            Arc::default(),
+        );
+        let (_, qid) = asked_in_a_chat_as(&chat, &home.dir, false, None);
+        let key = answer_in_chat(&chat, &question_store(), &qid, "the small one")
+            .await
+            .unwrap();
+        settled(&chat, &key).await;
+        let sessions = chat.sessions.lock().await;
+        let convo = sessions
+            .get(&key)
+            .and_then(ChatSlot::ordinary)
+            .and_then(|ws| ws.conversation.as_ref())
+            .unwrap();
+        assert!(
+            convo.taint.untrusted && convo.taint.private,
+            "resumed clean of what the asking run read"
+        );
+    }
+
+    /// While the trigger that asked is still running, an answer is refused
+    /// and the question stays open; once its marker clears, it goes through.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_answer_waits_for_the_asking_trigger_to_finish() {
+        let home = crate::testenv::HomeGuard::new("answer-trigger-running");
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let chat = waking_chat_over(
+            true,
+            true,
+            Vec::new(),
+            Box::new(Scripted {
+                seen: Arc::clone(&seen),
+                steps: vec![Step::Say("noted")],
+            }),
+            Arc::default(),
+        );
+        let (_, qid) = asked_in_a_chat_as(&chat, &home.dir, true, Some("morning"));
+        let triggers = mecha_core::trigger::TriggerStore::open_default().unwrap();
+        triggers.mark_running("morning", None).unwrap();
+        let err = answer_in_chat(&chat, &question_store(), &qid, "the small one")
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, StatusCode::CONFLICT, "{}", err.1);
+        assert!(err.1.contains("still finishing"), "{}", err.1);
+        assert_eq!(
+            question_store().get(&qid).unwrap().status,
+            mecha_core::questions::OPEN
+        );
+        assert!(chat.sessions.lock().await.is_empty(), "nothing was resumed");
+        assert!(seen.lock().unwrap().is_empty(), "no turn ran");
+
+        triggers.clear_running("morning");
+        let key = answer_in_chat(&chat, &question_store(), &qid, "the small one")
+            .await
+            .unwrap();
+        settled(&chat, &key).await;
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
     #[tokio::test]
     async fn answering_a_chat_question_from_the_web_resumes_it_as_the_owner_s_turn() {
         use axum::extract::State;
