@@ -313,11 +313,12 @@ mod tests {
             .collect()
     }
 
-    /// The staleness window is set for the shipped timer: past a day plus the
-    /// timer's spread (a run late by it still reads as running), and short
-    /// of two days (a missed day does not). Guards the next edit to either
-    /// file — a shorter cadence keeps passing, a longer one or a wider spread
-    /// fails until this window moves with it.
+    /// The staleness window fits the shipped timer: past a day plus the
+    /// timer's spread, so a run late by it still reads as running, and short
+    /// of two days, so a missed day does not. A cadence shorter than daily
+    /// passes untouched — G10's "a shorter cadence is a change to the timer
+    /// alone" — and only a longer one (weekly, a day of the week, a day of
+    /// the month) or a wider spread fails, until the window moves with it.
     #[test]
     fn the_staleness_window_fits_the_shipped_timer() {
         let timer = include_str!("../../../scripts/mecha-github-collect.timer");
@@ -325,20 +326,37 @@ mod tests {
             timer
                 .lines()
                 .find_map(|l| l.trim().strip_prefix(key))
-                .unwrap_or_else(|| panic!("the timer has no {key}"))
-                .trim()
-                .to_string()
+                .map(|v| v.trim().to_string())
         };
-        let calendar = field("OnCalendar=");
-        let daily = calendar.starts_with("*-*-* ") || calendar == "daily";
+        let calendar = field("OnCalendar=").expect("the timer has an OnCalendar line");
+        let longer_than_daily = ["weekly", "monthly", "quarterly", "yearly", "annually"]
+            .iter()
+            .any(|w| calendar.eq_ignore_ascii_case(w))
+            || ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+                .iter()
+                .any(|d| calendar.to_ascii_lowercase().starts_with(d))
+            || calendar
+                .split_whitespace()
+                .next()
+                .and_then(|date| date.rsplit('-').next())
+                .is_some_and(|day| day != "*" && day.chars().all(|c| c.is_ascii_digit()));
         assert!(
-            daily,
-            "the window is set for a daily timer, not {calendar:?}"
+            !longer_than_daily,
+            "{calendar:?} runs less often than daily; GITHUB_STALE_AFTER is set for a day"
         );
-        let spread: i64 = field("RandomizedDelaySec=").parse().unwrap();
-        let worst = Duration::days(1) + Duration::seconds(spread);
+        // systemd's time spans: a bare number is seconds; `s`, `min`, `h`.
+        let spread = field("RandomizedDelaySec=").map_or(Duration::zero(), |v| {
+            let digits: String = v.chars().take_while(char::is_ascii_digit).collect();
+            let n: i64 = digits.parse().expect("a time span");
+            match v[digits.len()..].trim() {
+                "" | "s" | "sec" => Duration::seconds(n),
+                "m" | "min" => Duration::minutes(n),
+                "h" | "hr" => Duration::hours(n),
+                unit => panic!("a RandomizedDelaySec unit this test does not read: {unit}"),
+            }
+        });
         assert!(
-            GITHUB_STALE_AFTER > worst,
+            GITHUB_STALE_AFTER > Duration::days(1) + spread,
             "a run late by the spread would read as stale"
         );
         assert!(
