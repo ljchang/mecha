@@ -41,7 +41,7 @@ Taken by the owner on 2026-11-19:
 
 | # | Ruling |
 |---|---|
-| G10 | **The collector runs once a day to start** (`scripts/mecha-github-collect.timer`, 07:00 local, catching up a missed day). A shorter cadence is a change to that file alone; `collect_log`'s `finished` row records the API quota each run spent, which is what a shorter one would be judged by. |
+| G10 | **The collector runs once a day to start** (`scripts/mecha-github-collect.timer`, 06:45 in the owner's zone, before the 07:00 `morning` briefing, catching up a missed day). A shorter cadence is a change to that file alone; `collect_log`'s `finished` row records the API quota each run spent, which is what a shorter one would be judged by. |
 
 Nothing is left open (§9).
 
