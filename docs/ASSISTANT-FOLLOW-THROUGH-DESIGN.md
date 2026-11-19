@@ -251,5 +251,17 @@ minutes with nobody to answer). This extends the parking to both.
 - The parked question reaches the owner where questions already do: Tasks →
   Waiting and Home's Questions card.
 
+**Known limits** (review of #904, left for the owner):
+- A chat question is answerable only through `mecha serve` with chat on;
+  `mecha questions answer` refuses it. A machine running triggers without the
+  web app can park a briefing's question it has no door to answer.
+- A turn that parks two questions in one round (tools run concurrently)
+  records the first in the ledger row and the workflow event; the second is
+  open in Tasks → Waiting with no row pointing at it.
+- A chat resumed cold opens read-only, so an answering turn can read and
+  stage but not write until the owner changes the chat's mode.
+- A carrying trigger carries a `waiting` run's transcript like an `ok` one:
+  answered, its last words are the answer; unanswered, where it got to.
+
 **Not here:** a Slack or TUI answer path for chat questions; parking from
 other unattended runs (A1).

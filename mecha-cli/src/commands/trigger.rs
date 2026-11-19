@@ -1021,8 +1021,8 @@ const CARRY_LOOKBACK: usize = 7;
 /// The block a carrying trigger's next run starts with, and the session it
 /// was read from.
 ///
-/// `Ok(None)` only when this trigger has no earlier `ok` run with a
-/// transcript: a first run has nothing to carry and that is not a fault.
+/// `Ok(None)` only when this trigger has no earlier `ok` or `waiting` run
+/// with a transcript: a first run has nothing to carry and that is not a fault.
 /// Every other way of carrying nothing is an `Err` — the newest such runs
 /// all ended without an answer, or their transcripts are gone — because a
 /// briefing quietly back to repeating itself must be told apart, in the
@@ -1039,7 +1039,12 @@ fn last_answer(
 ) -> Result<Option<(String, String)>> {
     let mut candidates: Vec<RunRecord> = Vec::new();
     store.scan_runs_rev(|row| {
-        if row.trigger == t.name && row.status == RunStatus::Ok && row.session_id.is_some() {
+        // A run that ended on a question carries too: once answered, its
+        // transcript's last words are the answer; unanswered, they are where
+        // it got to. Skipping it dropped the thread whenever a briefing
+        // asked (review of #904). An `Error` run still does not carry.
+        let carries = matches!(row.status, RunStatus::Ok | RunStatus::Waiting);
+        if row.trigger == t.name && carries && row.session_id.is_some() {
             candidates.push(row);
         }
         candidates.len() < CARRY_LOOKBACK
@@ -1656,6 +1661,18 @@ mod tests {
         answer: &str,
         taint: Option<mecha_core::agent::Taint>,
     ) -> String {
+        ran_as(store, sessions, when, answer, taint, RunStatus::Ok)
+    }
+
+    /// [`ran`], with the row's status.
+    fn ran_as(
+        store: &TriggerStore,
+        sessions: &std::path::Path,
+        when: &str,
+        answer: &str,
+        taint: Option<mecha_core::agent::Taint>,
+        status: RunStatus,
+    ) -> String {
         let session = Session::create(
             sessions,
             SessionMeta {
@@ -1684,6 +1701,7 @@ mod tests {
         row.started_at = when.parse().unwrap();
         row.session_id = Some(session.meta.id.clone());
         row.taint = taint.unwrap_or_default();
+        row.status = status;
         store.append_run(&row).unwrap();
         session.meta.id.clone()
     }
@@ -1735,6 +1753,28 @@ mod tests {
             !taint.untrusted,
             "the run it came from recorded itself clean"
         );
+    }
+
+    /// A run that parked a question is carried like a finished one: its
+    /// answered transcript's last words are what the next briefing needs.
+    #[test]
+    fn a_run_that_waited_on_a_question_is_carried() {
+        let (store, sessions) = carry_home("waited");
+        // Its only run parked a question: the old reader saw no `ok` run and
+        // called this a first run with nothing to carry.
+        let id = ran_as(
+            &store,
+            &sessions,
+            "2026-03-02T12:00:00Z",
+            "Moved the review to Thursday, as you said.",
+            CLEAN,
+            RunStatus::Waiting,
+        );
+        let (from, block) = last_answer(&store, &sessions, &morning(), chrono_tz::UTC)
+            .unwrap()
+            .expect("the waiting run is carried, not skipped as a first run");
+        assert_eq!(from, id);
+        assert!(block.contains("Moved the review to Thursday"));
     }
 
     #[test]

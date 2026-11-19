@@ -11,14 +11,18 @@
 /// Will answering this question continue its conversation as a chat?
 export const resumesInChat = (q) => q?.resume === 'chat';
 
-/// The chat an answer continued, from `POST /api/questions/answer`'s reply,
-/// or null when the resume was the detached background one (or the reply
-/// named no usable key — then there is no link to offer, and none is made up).
+/// The conversation an answer continued, as its session id, from
+/// `POST /api/questions/answer`'s reply — or null when the resume was the
+/// detached background one (or the reply named no usable session: then there
+/// is no link to offer, and none is made up). The session id, never the key:
+/// `#chat/<id>` resolves a session id and resumes it, handing back the live
+/// key when serve already holds the conversation — the board's door into a
+/// chat. A key in that slot is looked up as a session and 404s (review of #904).
 export function answeredChat(reply) {
   if (reply?.resumed !== 'chat') return null;
-  const key = typeof reply.key === 'string' ? reply.key.trim() : '';
-  return key || null;
+  const session = typeof reply.session === 'string' ? reply.session.trim() : '';
+  return session || null;
 }
 
-/// Where *Open chat* goes.
-export const chatHref = (key) => `#chat/${encodeURIComponent(key)}`;
+/// Where *Open chat* goes: the chat route, by session id.
+export const chatHref = (session) => `#chat/${encodeURIComponent(session)}`;

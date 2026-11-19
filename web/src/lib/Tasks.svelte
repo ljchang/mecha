@@ -164,9 +164,9 @@
       error = null;
       // A chat resume answered in this request, synchronously: the turn has
       // begun and the question is closed, so there is nothing to watch for.
-      const key = answeredChat(await res.json().catch(() => null));
-      if (key) {
-        continued = [{ id: q.id, question: q.question, key }, ...continued.filter((c) => c.id !== q.id)];
+      const session = answeredChat(await res.json().catch(() => null));
+      if (session) {
+        continued = [{ id: q.id, question: q.question, session }, ...continued.filter((c) => c.id !== q.id)];
         answers[q.id] = '';
         await load();
         return;
@@ -829,7 +829,7 @@
           <div class="qtext">{c.question}</div>
           <div class="qnote">continuing as your turn in its chat.</div>
           <div class="statusrow">
-            <button class="statusbtn" onclick={() => (location.hash = chatHref(c.key))}>Open chat</button>
+            <button class="statusbtn" onclick={() => (location.hash = chatHref(c.session))}>Open chat</button>
           </div>
         </div>
       {/each}
