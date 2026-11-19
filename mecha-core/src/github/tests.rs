@@ -1006,8 +1006,8 @@ fn the_run_budget_fits_inside_the_units_start_timeout() {
             .any(|l| l.trim() == "ExecStart=%h/.cargo/bin/mecha github collect"),
         "the unit runs the collector"
     );
-    // The cadence is the timer's, the owner's open decision (§9), never a
-    // constant here.
+    // The cadence is the timer's — once a day, the owner's ruling G10 — never
+    // a constant here.
     let timer = std::fs::read_to_string(scripts.join("mecha-github-collect.timer")).unwrap();
     assert!(timer.lines().any(|l| l.starts_with("OnCalendar=")));
 }

@@ -4,7 +4,7 @@
 //! through `gh`'s own login.
 //!
 //! `collect` is what `scripts/mecha-github-collect.timer` runs. How often is
-//! the timer's setting, the owner's open decision (design §9), and never a
+//! the timer's setting — once a day, the owner's ruling G10 — and never a
 //! constant here.
 
 use anyhow::Result;

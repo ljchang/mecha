@@ -267,8 +267,9 @@ It is an optional feature, so step 1 starts at `ARCHITECTURE.md` §Features →
   first notice sent is one that can be counted.
 - **Diagnosing a failure** by reading CI logs. A log is untrusted text and
   the reader would be a run; a later design.
-- Webhooks. Polling every ten to fifteen minutes is within the API's limits
-  for the selected set, and nothing listens for inbound HTTP today.
+- Webhooks. A daily poll (G10), or any cadence down to a few minutes, is
+  within the API's limits for the selected set, and nothing listens for
+  inbound HTTP today.
 
 ## 9. Open
 

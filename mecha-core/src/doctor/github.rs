@@ -313,6 +313,40 @@ mod tests {
             .collect()
     }
 
+    /// The staleness window is set for the shipped timer: past a day plus the
+    /// timer's spread (a run late by it still reads as running), and short
+    /// of two days (a missed day does not). Guards the next edit to either
+    /// file — a shorter cadence keeps passing, a longer one or a wider spread
+    /// fails until this window moves with it.
+    #[test]
+    fn the_staleness_window_fits_the_shipped_timer() {
+        let timer = include_str!("../../../scripts/mecha-github-collect.timer");
+        let field = |key: &str| {
+            timer
+                .lines()
+                .find_map(|l| l.trim().strip_prefix(key))
+                .unwrap_or_else(|| panic!("the timer has no {key}"))
+                .trim()
+                .to_string()
+        };
+        let calendar = field("OnCalendar=");
+        let daily = calendar.starts_with("*-*-* ") || calendar == "daily";
+        assert!(
+            daily,
+            "the window is set for a daily timer, not {calendar:?}"
+        );
+        let spread: i64 = field("RandomizedDelaySec=").parse().unwrap();
+        let worst = Duration::days(1) + Duration::seconds(spread);
+        assert!(
+            GITHUB_STALE_AFTER > worst,
+            "a run late by the spread would read as stale"
+        );
+        assert!(
+            GITHUB_STALE_AFTER < Duration::days(2),
+            "a missed day would still read as running"
+        );
+    }
+
     #[test]
     fn a_home_without_the_store_has_nothing_to_say_unless_switched_on() {
         let h = home("absent");
