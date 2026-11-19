@@ -7736,7 +7736,9 @@ project configuration. The trigger tick refreshes linked events and runs the sam
 deterministic reminder computation as `workflow tick --dry-run`. In-app reminders
 are coalesced and persisted, with timezone-aware quiet hours, snoozing and daily
 deduplication. The daily view still shows overdue work during a snooze. Nothing
-here automatically starts an agent or sends a notification to another service.
+here sends a notification to another service, and nothing starts an agent with
+one exception: `mecha serve` wakes an accepted follow-up's conversation when
+its time comes (below).
 
 **A model proposes follow-ups; only the owner makes them workflows**
 (`followup.rs`, `ASSISTANT-FOLLOW-THROUGH-DESIGN.md` §Model-proposed
@@ -7748,8 +7750,27 @@ the workflow, with the proposal's session and a dateless commitment whose
 included, the voice facade per slot and the TUI per agent build — never from
 the outbox route), is off unless `[features] followups` is on, records taint
 fail-closed, and `forget` purges a
-session's proposals. Waking a run when one comes due is the design's step 2
-and not built; until then a due follow-up is the ordinary in-app reminder.
+session's proposals.
+
+**A due follow-up wakes its conversation, in `mecha serve` only**
+(`ChatState::spawn_follow_up_waker`, design §Step 2). Serve holds the web
+chats, and a second writer on a transcript forks it, so the trigger tick only
+reminds. Once a minute it resumes the conversation if it is not held, writes
+`woken_at` before the turn (a crash never wakes twice), and starts an
+unattended, harness-voiced turn through `begin_turn` (`TurnOpts::unattended`:
+`ModeApprover`, `Ask` or the chat's own `ReadOnly` and never wider, so approvals are `Blocked` in the machine's voice and
+routed sends still stage; every unrouted tool that can send is withheld, and
+`ask_user` too, since a read-only sender like `http_fetch` never reaches the
+approver and a deep `web_search` is `Chosen` under a `Blind` declaration; the turn is recorded `harness: true` under
+`followup::WAKE_STEM`, which the page shows as a note). Only a memory chat
+(typed input only) is refused for good, with the reason on the workflow; an
+ordinary chat the server remembers is resumed with its memory. No outbox route
+and a transcript that cannot be found or classified wait, said once on the
+workflow (`follow_up_waiting`) and retried each minute; the switch being off is
+a silent pause; a busy seat, writer or turn, or a transcript ending on a user
+message, waits a minute; a turn that cannot start gives its claim back. The
+claim is taken under the workflow store's lock, re-checking the whole rule. The
+outcome is an event the tick turns into the owner's notice.
 
 ## The meeting poll lifecycle
 
@@ -11925,7 +11946,19 @@ for the whole door (`serve::chat::Recall`).
   first version said its counts at `info`, where nobody saw them (review
   of #890). A count the index did not keep is said as not kept, never as
   zero, and `standing` opens the file read-only so that asking makes no
-  index. A model that calls `span_recall` itself
+  index. The search count is a floor: a search made while a pass holds the
+  index gives up its tally after 250 ms rather than wait, and a pass that
+  changes nothing asks without the write lock so that a chat's first
+  search seldom meets one. A pass's duration is kept in milliseconds; in
+  whole seconds every pass after the first build read "0 s" (review of
+  #891). What a chat was handed is kept under both names a search knows
+  it by: the page's key its turn is stamped with, which the door's search
+  and the model's own share, and the session's id the door names, which
+  outlives a resume's new page key. So neither search hands again what the
+  other did (review of #890), and a resumed chat is not handed again what
+  the door handed it (review of #899). What the model alone was handed
+  after the door's last search is under the page key only, and a resume
+  forgets it. A model that calls `span_recall` itself
   gets outside passages as outside content, envelope and taint and all.
 - **Which sessions are history is a closed list read from each header**
   (`quotable`): one-shot runs, and web chats for the shared index. A

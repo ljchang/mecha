@@ -904,6 +904,372 @@ impl ChatState {
         });
     }
 
+    /// Wake each accepted follow-up whose time has come, in its own
+    /// conversation, once a minute (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md`
+    /// §Step 2). This process is the only waker: it holds the web chats, and
+    /// a second writer on a transcript forks it. The trigger tick goes on
+    /// raising the reminder and never starts a run.
+    pub fn spawn_follow_up_waker(self: &Arc<Self>) {
+        let chat = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = chat.stopping.cancelled() => break,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
+                        chat.wake_due_follow_ups().await;
+                    }
+                }
+            }
+        });
+    }
+
+    async fn wake_due_follow_ups(self: &Arc<Self>) {
+        // Switched off, the pass costs nothing: no store is read (review of
+        // #897). The per-follow-up check below stays, for a switch flipped
+        // mid-pass.
+        if !mecha_core::feature::switched_on(
+            &self.follower.current().config,
+            mecha_core::feature::Feature::Followups,
+        ) {
+            return;
+        }
+        let store = match mecha_core::workflow::WorkflowStore::default_store() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("follow-ups cannot wake: the workflow store: {e:#}");
+                return;
+            }
+        };
+        let now = chrono::Utc::now();
+        let due: Vec<_> = match store.list() {
+            Ok(all) => all
+                .into_iter()
+                .filter(|w| mecha_core::followup::due_to_wake(w, now))
+                .collect(),
+            Err(e) => {
+                tracing::warn!("follow-ups cannot wake: the workflow store: {e:#}");
+                return;
+            }
+        };
+        // A few per pass: what accumulated while the outbox was unset (or
+        // serve was down) wakes over the next minutes, not as one burst of
+        // unattended turns (review of #897). Oldest first.
+        let mut due = due;
+        due.sort_by_key(|w| w.commitment.as_ref().and_then(|c| c.follow_up_at));
+        // The cap counts wakes, not candidates: a follow-up that waits or is
+        // refused takes no slot, so three stuck ones cannot starve the rest
+        // (review of #897).
+        let mut woken = 0;
+        for w in due {
+            if woken >= WAKES_PER_PASS {
+                break;
+            }
+            match self.wake_follow_up(&w).await {
+                Ok(()) => woken += 1,
+                Err(WakeSkip::Later) => {}
+                Err(WakeSkip::Waiting(why)) => {
+                    let id = w.id.clone();
+                    let said = w.events.iter().any(|e| {
+                        e.kind == mecha_core::workflow::FOLLOW_UP_WAITING && e.detail == why
+                    });
+                    if !said {
+                        if let Err(e) = store.update(&id, |w| {
+                            w.record(
+                                mecha_core::workflow::FOLLOW_UP_WAITING,
+                                why.clone(),
+                                chrono::Utc::now(),
+                            );
+                            Ok(())
+                        }) {
+                            tracing::warn!(workflow = %id, "could not record why a follow-up waits: {e:#}");
+                        }
+                    }
+                }
+                // Said once, on the workflow, and never tried again: the
+                // reminder still comes due, and the card says why no run did.
+                Err(WakeSkip::Never(why)) => {
+                    let id = w.id.clone();
+                    let marked = store.update(&id, |w| {
+                        w.woken_at = Some(chrono::Utc::now());
+                        w.record(
+                            mecha_core::workflow::FOLLOW_UP_NOT_WOKEN,
+                            why.clone(),
+                            chrono::Utc::now(),
+                        );
+                        Ok(())
+                    });
+                    if let Err(e) = marked {
+                        tracing::warn!(workflow = %id, "could not record why a follow-up did not wake: {e:#}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// One due follow-up: the conversation resumed if this process does not
+    /// hold it, its woken mark written, and a harness-voiced, unattended
+    /// turn started and followed to its end.
+    async fn wake_follow_up(
+        self: &Arc<Self>,
+        w: &mecha_core::workflow::Workflow,
+    ) -> Result<(), WakeSkip> {
+        use mecha_core::workflow::{FOLLOW_UP_ANSWERED, FOLLOW_UP_FAILED, FOLLOW_UP_WOKEN};
+        let session_id = w.session_id.clone().ok_or(WakeSkip::Later)?;
+        let bound = self.follower.current();
+        // Off is a pause, not a refusal: the reminder stands, and switching
+        // follow-ups back on wakes what came due meanwhile (review of #897).
+        if !mecha_core::feature::switched_on(&bound.config, mecha_core::feature::Feature::Followups)
+        {
+            return Err(WakeSkip::Later);
+        }
+        // Staging-only is the outbox's to enforce: with no route a woken
+        // run's send would deliver, with nobody watching.
+        if bound.agent.context().outbox.is_none() {
+            return Err(WakeSkip::Waiting(
+                "no outbox route: a woken run could send directly, so none is started until \
+                 `[outbox] tools` names your send tools"
+                    .into(),
+            ));
+        }
+        let path = Session::find(self.sessions_dir(), &session_id).map_err(|e| {
+            WakeSkip::Waiting(format!("its conversation could not be found ({e:#})"))
+        })?;
+        // An ordinary chat this server remembers is resumed with its memory,
+        // as `POST /api/resume` resumes it — on a box with ordinary-chat
+        // memory on, every web chat carries the marker, and reading it as a
+        // memory chat retired every follow-up (review of #897).
+        #[cfg(feature = "memory-prototype")]
+        let remembered = self.ordinary_memory.is_some() && super::web_memory::open_marked(&path);
+        #[cfg(not(feature = "memory-prototype"))]
+        let remembered = false;
+        // A memory chat takes verified typed input only (`speak`'s rule).
+        // An unreadable transcript is not a memory chat: it waits, said
+        // once, rather than retiring under a reason that is false (review
+        // of #897). Fail-closed either way: neither wakes.
+        match memory_marked(&path) {
+            Ok(false) => {}
+            Ok(true) if remembered => {}
+            Ok(true) => {
+                return Err(WakeSkip::Never(
+                    "it is a memory chat, which takes typed input only".into(),
+                ))
+            }
+            Err(e) => {
+                return Err(WakeSkip::Waiting(format!(
+                    "its transcript could not be classified ({e:#})"
+                )))
+            }
+        }
+        // "Cannot tell" is not "no writer": an unreadable marker store
+        // waits, as a held transcript does (review of #897).
+        match crate::commands::tasks::markers() {
+            Ok(m) if m.live_writer_of(&session_id).is_none() => {}
+            _ => return Err(WakeSkip::Later),
+        }
+        // The cheapest refusals before a seat or the router hold is taken: a
+        // chat with a turn in flight, or one ending on the owner's own words,
+        // waits — and re-checked under the lock below (review of #897).
+        {
+            let sessions = self.sessions.lock().await;
+            let held = sessions
+                .values()
+                .filter_map(ChatSlot::ordinary)
+                .find(|ws| ws.session.id() == session_id);
+            let must_wait = match held {
+                Some(ws) => {
+                    ws.live.is_some()
+                        || ws
+                            .conversation
+                            .as_ref()
+                            .is_none_or(|c| c.messages.last().is_some_and(owners_words))
+                }
+                None => Session::read(&path)
+                    .ok()
+                    .and_then(|t| t.convo.messages.last().cloned())
+                    .is_some_and(|m| owners_words(&m)),
+            };
+            if must_wait {
+                return Err(WakeSkip::Later);
+            }
+        }
+        // A background run like any other: a seat, or the next minute.
+        let _seat = match crate::commands::tasks::permits()
+            .and_then(|p| p.take(&format!("follow-up {}", w.id)))
+        {
+            Ok(Ok(held)) => held,
+            Ok(Err(_busy)) => return Err(WakeSkip::Later),
+            Err(e) => {
+                tracing::warn!("follow-up {}: no seat could be taken: {e:#}", w.id);
+                return Err(WakeSkip::Later);
+            }
+        };
+        let (mut held, bound) = match self.follower.enter("follow-up", |_| {}).await {
+            Ok(entered) => entered,
+            Err(_) => return Err(WakeSkip::Later),
+        };
+        let tz = bound.config.agent.timezone().unwrap_or(chrono_tz::UTC);
+        let proposed_at = mecha_core::followup::proposal_of(w)
+            .and_then(|id| {
+                mecha_core::followup::FollowUpStore::open_existing_default()?
+                    .get(id)
+                    .ok()
+            })
+            .map(|f| f.proposed_at)
+            .unwrap_or(w.created_at);
+        let what = w
+            .commitment
+            .as_ref()
+            .and_then(|c| c.expectation.clone())
+            .unwrap_or_else(|| w.title.clone());
+        let text = mecha_core::followup::render_wake(&what, proposed_at, tz);
+        let store =
+            mecha_core::workflow::WorkflowStore::default_store().map_err(|_| WakeSkip::Later)?;
+        let started = {
+            let mut sessions = self.sessions.lock().await;
+            let key = match sessions
+                .iter()
+                .filter_map(|(k, slot)| slot.ordinary().map(|ws| (k, ws)))
+                .find(|(_, ws)| ws.session.id() == session_id)
+                .map(|(k, _)| k.clone())
+            {
+                Some(k) => k,
+                // Not held: read the tail before resuming, so a chat that
+                // must wait is never lifted into the owner's rail and left
+                // there with nothing to say why (review of #897).
+                None if Session::read(&path)
+                    .ok()
+                    .and_then(|t| t.convo.messages.last().cloned())
+                    .is_some_and(|m| owners_words(&m)) =>
+                {
+                    return Err(WakeSkip::Later)
+                }
+                None => match resume_locked(self, &mut sessions, &session_id, remembered, false) {
+                    Ok(k) => k,
+                    // The same condition `Session::find` meets above, and
+                    // the same answer: it waits, said once (review of #897).
+                    Err((StatusCode::NOT_FOUND, why)) => {
+                        return Err(WakeSkip::Waiting(format!(
+                            "its conversation could not be found ({})",
+                            why.trim()
+                        )))
+                    }
+                    // Loading the transcript or proving its jail failed: no
+                    // amount of waiting a minute fixes that, so it is said on
+                    // the card (review of #897). A conflict stays silent.
+                    Err((StatusCode::INTERNAL_SERVER_ERROR, why)) => {
+                        return Err(WakeSkip::Waiting(format!(
+                            "its conversation could not be resumed ({})",
+                            why.trim()
+                        )))
+                    }
+                    Err(_) => return Err(WakeSkip::Later),
+                },
+            };
+            // Never over a turn in flight, typed or spoken: the next minute.
+            // And never onto a trailing user message (a turn cancelled
+            // mid-tool): `begin_turn` would fold the wake into that message,
+            // and it would be recorded as the owner's (review of #897). The
+            // owner's next turn ends that state; until then, the next minute.
+            let idle = sessions
+                .get(&key)
+                .and_then(ChatSlot::ordinary)
+                .is_some_and(|ws| {
+                    ws.live.is_none()
+                        && ws.conversation.as_ref().is_some_and(|c| {
+                            // Only the owner's own words: a tail of tool
+                            // results (a turn stopped mid-round) takes the
+                            // wake folded in, marked the harness's, and must
+                            // not stall it (review of #897).
+                            c.messages.last().is_none_or(|m| !owners_words(m))
+                        })
+                });
+            if !idle {
+                return Err(WakeSkip::Later);
+            }
+            // The mark lands before the turn, so a crash mid-turn never wakes
+            // it twice. A mark that cannot be written starts nothing.
+            // A claim, not a note: `update` re-reads under the store's
+            // lock, so a second `serve` on this home that saw the same due
+            // workflow loses here instead of writing the same transcript
+            // (review of #897).
+            store
+                .update(&w.id, |w| {
+                    // The whole rule, re-read under the lock: a workflow the
+                    // owner closed or snoozed since the list was taken, or
+                    // another waker claimed, is not woken (review of #897).
+                    anyhow::ensure!(
+                        mecha_core::followup::due_to_wake(w, chrono::Utc::now()),
+                        "no longer due to wake"
+                    );
+                    // The mark alone: the event waits until the turn has
+                    // started, so a claim given back leaves nothing behind
+                    // (review of #897).
+                    w.woken_at = Some(chrono::Utc::now());
+                    Ok(())
+                })
+                .map_err(|_| WakeSkip::Later)?;
+            begin_turn(
+                self,
+                &bound,
+                &mut held,
+                &mut sessions,
+                &key,
+                &text,
+                TurnOpts {
+                    owner_input: false,
+                    request_id: None,
+                    spoken: false,
+                    approve_all: false,
+                    unlogged: false,
+                    tts_streams: false,
+                    images: Vec::new(),
+                    draw: None,
+                    unattended: true,
+                },
+            )
+        };
+        let started = match started {
+            Ok(started) => started,
+            // The turn never started, so the claim is given back: a refusal
+            // to begin (busy, shutting down, a record that would not take)
+            // must not retire the follow-up. It waits, said once, and the
+            // next minute tries again (review of #897).
+            Err(e) => {
+                let why = match e {
+                    TurnError::Held => "the conversation was busy".to_string(),
+                    TurnError::Failed(e) => e,
+                };
+                if let Err(e) = store.update(&w.id, |w| {
+                    w.woken_at = None;
+                    Ok(())
+                }) {
+                    tracing::warn!(workflow = %w.id, "could not release a follow-up's claim: {e:#}");
+                }
+                return Err(WakeSkip::Waiting(format!(
+                    "its turn could not start: {why}"
+                )));
+            }
+        };
+        if let Err(e) = store.update(&w.id, |w| {
+            w.record(FOLLOW_UP_WOKEN, session_id.clone(), chrono::Utc::now());
+            Ok(())
+        }) {
+            tracing::warn!(workflow = %w.id, "could not record that a follow-up woke: {e:#}");
+        }
+        let (kind, detail) = match started.done.await {
+            Ok(Ok(_)) => (FOLLOW_UP_ANSWERED, session_id),
+            Ok(Err(e)) => (FOLLOW_UP_FAILED, e),
+            Err(_) => (FOLLOW_UP_FAILED, "the run ended without an answer".into()),
+        };
+        if let Err(e) = store.update(&w.id, |w| {
+            w.record(kind, detail.clone(), chrono::Utc::now());
+            Ok(())
+        }) {
+            tracing::warn!(workflow = %w.id, "could not record the follow-up's outcome: {e:#}");
+        }
+        Ok(())
+    }
+
     /// Mark an open incognito chat used now; `false` when it is not open.
     pub(super) async fn room_touch(&self, key: &str) -> bool {
         let sessions = self.sessions.lock().await;
@@ -1751,6 +2117,10 @@ pub(super) fn transcript_entries_with(
         match message.role {
             Role::User => {
                 let mut text = String::new();
+                // A follow-up's wake, its own entry ahead of whatever else the
+                // message holds, so a steer folded onto it keeps the owner's
+                // bubble (review of #897).
+                let mut wake: Option<String> = None;
                 // A picture beside tool results is one a tool put in front
                 // of the model (`ToolOutput::image`, from `image_view`). The
                 // page draws it under that tool's row, from the result's
@@ -1789,6 +2159,15 @@ pub(super) fn transcript_entries_with(
                         // something the owner typed; the voice preamble
                         // stripped just below is the same call already made
                         // once.
+                        // Save one: a follow-up's wake, which the page shows
+                        // as its own note rather than the owner's bubble —
+                        // dropped here, a reopened chat showed the answer
+                        // and nothing of what prompted it (review of #897).
+                        Block::Text { text: t }
+                            if t.trim_start().starts_with(mecha_core::followup::WAKE_STEM) =>
+                        {
+                            wake = Some(t.trim_start().to_string());
+                        }
                         Block::Text { text: t } if mecha_core::title::is_derived(t) => {}
                         Block::Text { text: t } => {
                             if !text.is_empty() {
@@ -1834,6 +2213,12 @@ pub(super) fn transcript_entries_with(
                         }
                         _ => {}
                     }
+                }
+                if let Some(wake) = wake {
+                    entries.push(Entry::User {
+                        text: wake,
+                        steered: false,
+                    });
                 }
                 if !text.is_empty() {
                     entries.push(Entry::User {
@@ -2037,6 +2422,7 @@ pub(super) async fn open_task_conversation(
                 tts_streams: false,
                 images: Vec::new(),
                 draw: None,
+                unattended: false,
             },
         );
     }
@@ -3094,6 +3480,7 @@ async fn send_text(
             request_id: Some(request_id),
             images,
             draw,
+            unattended: false,
         },
     ) {
         // How many pictures the text names and the model was not shown —
@@ -3186,6 +3573,12 @@ struct TurnOpts {
     /// A picture the harness draws before the model replies: a Regenerate
     /// or painted regions ([`HarnessDraw`]). Typed turns only.
     draw: Option<HarnessDraw>,
+    /// Nobody is watching: a due follow-up waking its conversation
+    /// (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` §Step 2). Anything that needs
+    /// an approval is refused in the machine's voice, as an unattended
+    /// `questions answer` refuses it; routed sends still stage, since
+    /// staging never asks the approver.
+    unattended: bool,
 }
 
 /// Whether a spoken turn may enter this conversation.
@@ -3260,6 +3653,7 @@ mod narrowing_tests {
             tts_streams: false,
             images: Vec::new(),
             draw: None,
+            unattended: false,
         }
     }
 
@@ -3291,6 +3685,7 @@ mod narrowing_tests {
             tts_streams: false,
             images: Vec::new(),
             draw: None,
+            unattended: false,
         };
         assert!(narrow_for_echo(typed, Some(OFFER), "delete it").approve_all);
     }
@@ -3306,6 +3701,7 @@ mod narrowing_tests {
             tts_streams: false,
             images: Vec::new(),
             draw: None,
+            unattended: false,
         };
         assert!(!narrow_for_echo(off, Some(OFFER), "delete it").approve_all);
     }
@@ -3366,6 +3762,34 @@ mod narrowing_tests {
     fn a_first_turn_has_no_reply_to_echo() {
         assert!(narrow_for_echo(spoken_yes(), None, "delete it").approve_all);
     }
+}
+
+/// Whether `m` is the owner's own words at a conversation's tail — what a
+/// wake must not be folded into. A previous wake left there (a crashed woken
+/// run) is the harness's, not the owner's, so it does not hold the next one.
+fn owners_words(m: &Message) -> bool {
+    // Per block, not per message: a tool-results tail can carry a steer the
+    // owner typed mid-run, and those are the owner's words too (review of
+    // #897). `owner_text` reads a harness-marked message as nobody's.
+    m.role == mecha_core::message::Role::User && !mecha_core::agent::owner_text(m).is_empty()
+}
+
+/// How many due follow-ups one minute's pass may wake; the rest wait for
+/// the next.
+const WAKES_PER_PASS: usize = 3;
+
+/// Why a due follow-up's conversation was not woken this minute.
+enum WakeSkip {
+    /// Try again next minute: a seat, the conversation, or a writer is busy.
+    Later,
+    /// Try again next minute, and say why on the workflow — once, not every
+    /// minute: a condition the owner can change (configuring the outbox),
+    /// so it must not retire the follow-up, and must not be silent either
+    /// (review of #897).
+    Waiting(String),
+    /// Not this follow-up, ever: the reason is recorded on its workflow and
+    /// the reminder alone stands.
+    Never(String),
 }
 
 /// Why a turn could not start.
@@ -3607,9 +4031,16 @@ fn begin_turn(
         // unrecorded turn is invisible to distill, recall and the
         // run-quality corpus, whichever way it entered the conversation.
         let pre_fold = conversation.messages.clone();
+        // An unattended turn folds only onto a message that holds none of the
+        // owner's words (the waker refuses a plain-text tail), so the folded
+        // message is the harness's, as the push branch marks its own.
+        let owners = conversation.messages.last().is_some_and(owners_words);
         mecha_core::agent::append_user_text(&mut conversation.messages, text.clone());
         if let Some(last) = conversation.messages.last_mut() {
             last.content.extend(opts.images);
+            if opts.unattended && !owners {
+                last.harness = true;
+            }
         }
         // An incognito chat records nothing — there is no transcript to fail.
         if let Some(session) = ws.session.kept() {
@@ -3625,6 +4056,15 @@ fn begin_turn(
     } else {
         let mut user = Message::user(&text);
         user.content.extend(opts.images);
+        // An unattended turn's words are the harness's (a follow-up's wake),
+        // never the owner's: marked so on the record, beside the stem.
+        user.harness = opts.unattended;
+        // An unattended turn's text must be a registered harness voice, or
+        // the readers that go by the stem would take it for the owner's.
+        debug_assert!(
+            !opts.unattended || mecha_core::title::is_derived(&text),
+            "an unattended turn's text is not a registered harness voice"
+        );
         conversation.push(user.clone());
         if let Some(session) = ws.session.kept() {
             if let Err(e) = session.append(&Record::Message(user)) {
@@ -3786,7 +4226,10 @@ fn begin_turn(
                     && ws.withheld.iter().any(|t| t == "kg_task_update")),
             opts.approve_all,
             *ws.mode.lock().unwrap_or_else(|e| e.into_inner()),
-            started_by_a_run(),
+            // A woken follow-up has nobody in the conversation: its posture
+            // says so, as its approver does, so a shell it runs is never
+            // read as the owner's (`closure::cause`; review of #897).
+            started_by_a_run() || opts.unattended,
         )),
         // The session's workspace and its own spill directory: the agent's
         // is shared by every session this process serves (`for_session`).
@@ -3831,7 +4274,16 @@ fn begin_turn(
         events: ws.events.clone(),
         timeout: super::present::APPROVAL_TIMEOUT,
     };
-    cx.approver = if opts.approve_all {
+    cx.approver = if opts.unattended {
+        // Narrowed from the chat's own mode, never widened: `Ask` honours an
+        // owner's `allow` rule on `permit`, which `ReadOnly` refuses, so a
+        // read-only chat stays read-only when woken (review of #897).
+        let mode = match *ws.mode.lock().unwrap_or_else(|e| e.into_inner()) {
+            PermissionMode::ReadOnly => PermissionMode::ReadOnly,
+            _ => PermissionMode::Ask,
+        };
+        Arc::new(mecha_core::tool::ModeApprover { mode }) as Arc<dyn mecha_core::tool::Approver>
+    } else if opts.approve_all {
         Arc::new(super::present::VoiceApprover { page }) as Arc<dyn mecha_core::tool::Approver>
     } else {
         Arc::new(page)
@@ -3916,6 +4368,41 @@ fn begin_turn(
                 mine.set_session_id(&session.meta.id);
             }
             cx.outbox = Some(Arc::new(mine));
+        }
+    }
+    // **Staging-only is enforced per tool, not by a route existing.** A
+    // woken follow-up has nobody watching, and a tool whose destination the
+    // model names (`Egress::Chosen`) that `[outbox] tools` does not route
+    // would dispatch for real — `http_fetch` is read-only by design, so no
+    // approver is ever asked about it. Withheld from the unattended turn
+    // (review of #897), with every other unrouted sender and `ask_user`.
+    if opts.unattended {
+        // The route this turn dispatches through, set just above.
+        let route = cx.outbox.clone();
+        let unrouted: Vec<String> = bound
+            .agent
+            .registry()
+            .iter()
+            // Any egress, not only `Chosen`: a tool's class is its static
+            // declaration, and `web_search` declares `Blind` while a deep
+            // search reaches a chosen backend (review of #897). With nobody
+            // watching, nothing unrouted that can send runs at all.
+            .filter(|t| t.capabilities().egress != mecha_core::tool::Egress::None)
+            .map(|t| t.name().to_string())
+            .filter(|n| !route.as_ref().is_some_and(|r| r.routes(n)))
+            // And `ask_user`: nobody is there to answer, and its card would
+            // hold this turn's seat for ten minutes. A woken run says what it
+            // would have asked in its answer instead.
+            .chain(std::iter::once("ask_user".to_string()))
+            .collect();
+        if !unrouted.is_empty() {
+            cx.withheld = cx
+                .withheld
+                .iter()
+                .cloned()
+                .chain(unrouted)
+                .collect::<Vec<_>>()
+                .into();
         }
     }
 
@@ -4898,6 +5385,7 @@ impl crate::voice::SessionHost for VoiceHost {
                             tts_streams,
                             images: Vec::new(),
                             draw: None,
+                            unattended: false,
                         },
                     ) {
                         Ok(started) => {
@@ -5693,14 +6181,36 @@ pub async fn resume(
     {
         return super::memory_chat::unsupported();
     }
-    let dir = chat.sessions_dir().to_path_buf();
+    #[cfg(not(feature = "memory-prototype"))]
+    let remembered = false;
     let mut sessions = chat.sessions.lock().await;
+    match resume_locked(&chat, &mut sessions, &body.id, remembered, true) {
+        Ok(key) => Json(serde_json::json!({ "key": key })).into_response(),
+        Err((status, why)) => (status, why).into_response(),
+    }
+}
+
+/// Put a recorded conversation in the session map under its resume key,
+/// or say why not — the half of `POST /api/resume` that needs the map
+/// locked, so a caller that must start a turn on the result (the
+/// follow-up waker) holds one lock across both. The key it hands back is
+/// the live one when this process already holds the conversation.
+fn resume_locked(
+    chat: &Arc<ChatState>,
+    sessions: &mut HashMap<String, ChatSlot>,
+    id: &str,
+    remembered: bool,
+    by_owner: bool,
+) -> Result<String, (StatusCode, String)> {
+    #[cfg(not(feature = "memory-prototype"))]
+    let _ = remembered;
+    let dir = chat.sessions_dir().to_path_buf();
     if let Some((k, _)) = sessions
         .iter()
         .filter_map(|(key, slot)| slot.ordinary().map(|ws| (key, ws)))
-        .find(|(_, ws)| ws.session.id() == body.id)
+        .find(|(_, ws)| ws.session.id() == id)
     {
-        return Json(serde_json::json!({ "key": k })).into_response();
+        return Ok(k.clone());
     }
     // **And the same question asked of the other processes.** The check above
     // is this process's own, and a delegated run is a *detached child*: its
@@ -5713,20 +6223,20 @@ pub async fn resume(
     // the way past, so a crashed run does not lock its transcript out.
     if let Some(task) = crate::commands::tasks::markers()
         .ok()
-        .and_then(|m| m.live_writer_of(&body.id))
+        .and_then(|m| m.live_writer_of(id))
     {
-        return (
+        return Err((
             StatusCode::CONFLICT,
             format!(
                 "a run is working {task} in this transcript — stop it first \
                  (`mecha tasks stop {task}`), or steer it where it is\n"
-            ),
-        )
-            .into_response();
+            )
+            .to_string(),
+        ));
     }
-    let path = match Session::find(&dir, &body.id) {
+    let path = match Session::find(&dir, id) {
         Ok(p) => p,
-        Err(e) => return (StatusCode::NOT_FOUND, format!("{e:#}\n")).into_response(),
+        Err(e) => return Err((StatusCode::NOT_FOUND, format!("{e:#}\n"))),
     };
     // `Session::load` refuses a memory-marked transcript, because a closed
     // profile may not be continued outside its own host. An ordinary
@@ -5741,7 +6251,7 @@ pub async fn resume(
     let loaded = Session::load(&path);
     let (meta, conversation) = match loaded {
         Ok(x) => x,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
+        Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n"))),
     };
     // The recorded jail, re-proved: a transcript names the workspace its
     // tool calls resolved against, and continuing it anywhere else would be
@@ -5752,14 +6262,21 @@ pub async fn resume(
         .map_err(anyhow::Error::from)
         .and_then(|()| mecha_core::work::ensure_outside_mecha_home(&workspace))
     {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("{e:#}\n").to_string(),
+        ));
     }
     // Opening an archived conversation takes it out of the archive (owner's
     // ruling, 2026-09-28): picking it back up is the owner saying it is
     // current again, and leaving the mark would file it away the moment the
     // chat closed. Not fatal — a mark left behind only keeps it filed.
-    if let Err(e) = mecha_core::archive::unarchive(&dir, &meta.id) {
-        tracing::warn!("resumed {} but could not unarchive it: {e:#}", meta.id);
+    // Only the owner's own resume: a follow-up waking the chat in the
+    // background is not the owner saying it is current (review of #897).
+    if by_owner {
+        if let Err(e) = mecha_core::archive::unarchive(&dir, &meta.id) {
+            tracing::warn!("resumed {} but could not unarchive it: {e:#}", meta.id);
+        }
     }
     let bound = chat.follower.current();
     let key = resume_key(&meta.id);
@@ -5787,11 +6304,10 @@ pub async fn resume(
     // alike, so a failure in between (the config record) leaves the
     // placeholder standing rather than the key holding nothing.
     if !valid_key(&key) || (sessions.contains_key(&key) && !squatter) {
-        return (
+        return Err((
             StatusCode::CONFLICT,
-            "could not mint a key for this session\n",
-        )
-            .into_response();
+            "could not mint a key for this session\n".to_string(),
+        ));
     }
     let withheld = task_withholding(&meta.title);
     let session = Session { meta, path };
@@ -5813,7 +6329,10 @@ pub async fn resume(
         &bound.levers_off,
         Some(&bound.rules),
     ))) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("{e:#}\n").to_string(),
+        ));
     }
     let (events, _) = broadcast::channel(512);
     let questions = super::present::Questions::default();
@@ -5898,7 +6417,7 @@ pub async fn resume(
             recorded_generation: bound.generation,
         })),
     );
-    Json(serde_json::json!({ "key": key })).into_response()
+    Ok(key)
 }
 
 /// GET /api/sessions — the rail: live sessions in this process, the default
@@ -7932,6 +8451,7 @@ mod held_tests {
                 tts_streams: false,
                 images: Vec::new(),
                 draw: None,
+                unattended: false,
             },
         );
         assert!(matches!(result, Err(TurnError::Held)));
@@ -8007,6 +8527,7 @@ mod held_tests {
                 tts_streams: true,
                 images: Vec::new(),
                 draw: None,
+                unattended: false,
             },
         )
         .unwrap_or_else(|_| panic!("the turn did not start"));
@@ -8163,6 +8684,7 @@ mod held_tests {
                 tts_streams: false,
                 images: Vec::new(),
                 draw: Some(draw),
+                unattended: false,
             },
         )
         .unwrap_or_else(|_| panic!("the turn did not start"));
@@ -8391,6 +8913,7 @@ mod held_tests {
                     tts_streams: false,
                     images: Vec::new(),
                     draw: None,
+                    unattended: false,
                 },
             )
         };
@@ -8519,6 +9042,7 @@ mod workflow_recording_tests {
                     tts_streams: false,
                     images: Vec::new(),
                     draw: None,
+                    unattended: false,
                 },
             );
             let Err(TurnError::Failed(error)) = result else {
@@ -8777,6 +9301,7 @@ permission_mode = "read-only"
                     tts_streams: false,
                     images: vec![],
                     draw: None,
+                    unattended: false,
                 },
             )
             .unwrap_or_else(|_| panic!("non-owner turn must start"));
@@ -8848,5 +9373,921 @@ permission_mode = "read-only"
         chat.drain().await;
         chat.close_mcp().await;
         server.abort();
+    }
+}
+
+#[cfg(test)]
+mod wake_tests {
+    use super::*;
+    use mecha_core::followup::{self, FollowUp};
+    use mecha_core::workflow::{
+        WorkflowStore, FOLLOW_UP_ANSWERED, FOLLOW_UP_NOT_WOKEN, FOLLOW_UP_WOKEN,
+    };
+
+    /// A chat that answers every turn with `reply`, with `[features]
+    /// followups` as given and an outbox route or none — the two things the
+    /// waker asks before it starts anything.
+    fn waking_chat(
+        on: bool,
+        outbox: bool,
+    ) -> (
+        Arc<ChatState>,
+        Arc<StdMutex<Vec<mecha_core::message::CompletionRequest>>>,
+    ) {
+        waking_chat_with(on, outbox, None)
+    }
+
+    /// A tool that changes something, and says whether it ran.
+    struct WriteNote(Arc<std::sync::atomic::AtomicBool>);
+    #[async_trait::async_trait]
+    impl mecha_core::tool::Tool for WriteNote {
+        fn name(&self) -> &str {
+            "write_note"
+        }
+        fn description(&self) -> &str {
+            "Write a note."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            false
+        }
+        async fn call(
+            &self,
+            _: serde_json::Value,
+            _: &ToolCtx,
+        ) -> Result<mecha_core::tool::ToolOutput> {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(mecha_core::tool::ToolOutput::ok("written"))
+        }
+    }
+
+    /// A read-only tool that records the run posture its call carried.
+    struct PostureProbe(Arc<StdMutex<Option<mecha_core::closure::RunPosture>>>);
+    #[async_trait::async_trait]
+    impl mecha_core::tool::Tool for PostureProbe {
+        fn name(&self) -> &str {
+            "note_posture"
+        }
+        fn description(&self) -> &str {
+            "Say who is here."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(
+            &self,
+            _: serde_json::Value,
+            ctx: &ToolCtx,
+        ) -> Result<mecha_core::tool::ToolOutput> {
+            *self.0.lock().unwrap() = ctx.run_posture;
+            Ok(mecha_core::tool::ToolOutput::ok("noted"))
+        }
+    }
+
+    fn waking_chat_with(
+        on: bool,
+        outbox: bool,
+        write: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) -> (
+        Arc<ChatState>,
+        Arc<StdMutex<Vec<mecha_core::message::CompletionRequest>>>,
+    ) {
+        waking_chat_tools(
+            on,
+            outbox,
+            write.map(|ran| Arc::new(WriteNote(ran)) as Arc<dyn mecha_core::tool::Tool>),
+        )
+    }
+
+    fn waking_chat_tools(
+        on: bool,
+        outbox: bool,
+        tool: Option<Arc<dyn mecha_core::tool::Tool>>,
+    ) -> (
+        Arc<ChatState>,
+        Arc<StdMutex<Vec<mecha_core::message::CompletionRequest>>>,
+    ) {
+        struct Sees(Arc<StdMutex<Vec<mecha_core::message::CompletionRequest>>>);
+        #[async_trait::async_trait]
+        impl mecha_core::provider::Provider for Sees {
+            fn local(&self) -> bool {
+                true
+            }
+            fn id(&self) -> &str {
+                "local"
+            }
+            fn default_model(&self) -> &str {
+                "test"
+            }
+            async fn complete(
+                &self,
+                req: &mecha_core::message::CompletionRequest,
+                sink: Option<&mecha_core::provider::StreamSink>,
+            ) -> Result<mecha_core::message::CompletionResponse> {
+                let first = {
+                    let mut seen = self.0.lock().unwrap();
+                    seen.push(req.clone());
+                    seen.len() == 1
+                };
+                // With a writing tool on offer, the first answer reaches for
+                // it; every answer after is the reply.
+                if let Some(tool) = req.tools.first().filter(|_| first) {
+                    return Ok(mecha_core::message::CompletionResponse {
+                        message: Message::assistant(vec![mecha_core::message::Block::ToolUse {
+                            id: "w1".into(),
+                            name: tool.name.clone(),
+                            input: serde_json::json!({}),
+                        }]),
+                        stop_reason: mecha_core::message::StopReason::ToolUse,
+                        usage: Usage::default(),
+                        refusal: None,
+                        model: "test".into(),
+                        malformed_tool_args: 0,
+                    });
+                }
+                Answers("checked: the build passed")
+                    .complete(req, sink)
+                    .await
+            }
+        }
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let mut registry = mecha_core::tool::Registry::new();
+        if let Some(tool) = tool {
+            registry.insert(tool);
+        }
+        let test_root = test_scratch_root();
+        let mut config = answering_config(true);
+        mecha_core::feature::set_switch(&mut config, mecha_core::feature::Feature::Followups, on);
+        let mut agent = Agent::new(
+            Box::new(Sees(Arc::clone(&seen))),
+            registry,
+            Arc::new(mecha_core::tool::ModeApprover {
+                mode: PermissionMode::ReadOnly,
+            }),
+            ToolCtx::default(),
+            config.agent.clone(),
+            None,
+        )
+        .unwrap();
+        if outbox {
+            let store = OutboxStore::open(test_root.join("outbox")).unwrap();
+            agent.set_outbox(Arc::new(OutboxRoute::new(
+                store,
+                vec!["mail_send".to_string()],
+                Vec::<String>::new(),
+            )));
+        }
+        let follower = crate::follow::Follower::fixed(agent, "local", "test", config);
+        let chat = Arc::new(ChatState {
+            follower: Arc::new(follower),
+            routes: Arc::default(),
+            outbox_root: test_root.join("outbox"),
+            attempts_dir: test_root.join("attempts"),
+            recall: None,
+            sessions_dir: test_root.join("sessions"),
+            work_dir: test_root.join("work/web"),
+            sessions: Mutex::new(HashMap::new()),
+            #[cfg(feature = "memory-prototype")]
+            memory_profile: None,
+            #[cfg(feature = "memory-prototype")]
+            ordinary_memory: None,
+            #[cfg(all(test, feature = "memory-prototype"))]
+            memory_test_hooks: Default::default(),
+            personas: Arc::new(super::super::persona_chat::PersonaChats::for_tests()),
+            stopping: Default::default(),
+            runs: Default::default(),
+            jobs: Default::default(),
+        });
+        (chat, seen)
+    }
+
+    /// A recorded conversation on disk, and an accepted follow-up's workflow
+    /// on it whose time came a minute ago.
+    fn due_follow_up(chat: &ChatState, home: &std::path::Path) -> (String, String) {
+        let workspace = home.join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session = Session::create(
+            chat.sessions_dir(),
+            SessionMeta {
+                id: Session::new_id(),
+                created_at: chrono::Utc::now(),
+                provider: "local".into(),
+                model: "test".into(),
+                workspace: workspace.clone(),
+                title: None,
+                kind: Some(mecha_core::session::SessionKind::Test),
+            },
+        )
+        .unwrap();
+        let now = chrono::Utc::now();
+        let f = FollowUp {
+            id: Session::new_id(),
+            status: followup::ACCEPTED.into(),
+            what: "check whether the build passed".into(),
+            due_at: now - chrono::Duration::minutes(1),
+            session_id: session.meta.id.clone(),
+            workspace: Some(workspace.clone()),
+            taint: Some(mecha_core::agent::Taint::default()),
+            proposed_at: now - chrono::Duration::hours(3),
+            decided_at: Some(now - chrono::Duration::hours(2)),
+            workflow_id: None,
+            reason: None,
+        };
+        let w = followup::workflow_for(&f, workspace, None, now - chrono::Duration::hours(2));
+        WorkflowStore::default_store()
+            .unwrap()
+            .create(w.clone())
+            .unwrap();
+        (w.id, session.meta.id)
+    }
+
+    fn kinds(id: &str) -> Vec<String> {
+        WorkflowStore::default_store()
+            .unwrap()
+            .get(id)
+            .unwrap()
+            .events
+            .iter()
+            .map(|e| e.kind.clone())
+            .collect()
+    }
+
+    /// The whole of step 2's promise: a due follow-up starts one turn in its
+    /// own conversation, written by the harness and quoting the proposal;
+    /// the answer lands in that conversation's record; the workflow says it
+    /// was woken and answered; and the next minute wakes nothing.
+    #[tokio::test]
+    async fn a_due_follow_up_wakes_its_conversation_once_and_records_the_answer() {
+        let home = crate::testenv::HomeGuard::new("wake-ok");
+        let (chat, seen) = waking_chat(true, true);
+        let (id, session) = due_follow_up(&chat, &home.dir);
+
+        chat.wake_due_follow_ups().await;
+
+        let asked = seen.lock().unwrap().clone();
+        assert_eq!(asked.len(), 1, "one turn, not {}", asked.len());
+        let last = asked[0].messages.last().unwrap();
+        let said = last.text();
+        assert!(
+            said.starts_with(followup::WAKE_STEM)
+                && said.contains("check whether the build passed"),
+            "the turn is the harness's, quoting the proposal: {said}"
+        );
+        let w = WorkflowStore::default_store().unwrap().get(&id).unwrap();
+        assert!(w.woken_at.is_some());
+        let k = kinds(&id);
+        assert!(k.contains(&FOLLOW_UP_WOKEN.to_string()), "{k:?}");
+        assert_eq!(
+            k.last().map(String::as_str),
+            Some(FOLLOW_UP_ANSWERED),
+            "{k:?}"
+        );
+        let path = Session::find(chat.sessions_dir(), &session).unwrap();
+        let record = std::fs::read_to_string(path).unwrap();
+        assert!(
+            record.contains("checked: the build passed"),
+            "the answer is in the chat's record"
+        );
+        let recorded = Session::read(&Session::find(chat.sessions_dir(), &session).unwrap())
+            .unwrap()
+            .convo
+            .messages;
+        let wake = recorded
+            .iter()
+            .find(|m| m.text().starts_with(followup::WAKE_STEM))
+            .expect("the wake turn is recorded");
+        assert!(
+            wake.harness,
+            "the wake turn is recorded as the harness's, not the owner's"
+        );
+
+        chat.wake_due_follow_ups().await;
+        assert_eq!(seen.lock().unwrap().len(), 1, "woken once");
+    }
+
+    /// Nobody is watching a woken turn, so nothing that needs an approval
+    /// runs: the call is refused in the machine's voice (`Blocked`, never
+    /// the owner's `Denied`), and the tool never executes.
+    #[tokio::test]
+    async fn a_woken_turn_runs_nothing_that_needs_an_approval() {
+        let home = crate::testenv::HomeGuard::new("wake-unattended");
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (chat, seen) = waking_chat_with(true, true, Some(Arc::clone(&ran)));
+        let (_, session) = due_follow_up(&chat, &home.dir);
+        chat.wake_due_follow_ups().await;
+        assert!(
+            !ran.load(std::sync::atomic::Ordering::SeqCst),
+            "a write ran with nobody there to approve it"
+        );
+        assert_eq!(seen.lock().unwrap().len(), 2, "the call, then the reply");
+        let messages = Session::read(&Session::find(chat.sessions_dir(), &session).unwrap())
+            .unwrap()
+            .convo
+            .messages;
+        let result = messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|b| match b {
+                mecha_core::message::Block::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .expect("the refused call has its result");
+        // The machine's voice, never the owner's "Denied": read-only here,
+        // since a resumed chat opens read-only and the woken turn keeps it.
+        assert!(result.starts_with("Blocked by policy:"), "{result}");
+    }
+
+    /// The unattended approver narrows the chat's mode, never widens it: a
+    /// chat open read-only stays read-only when woken. Told apart by the
+    /// refusal's words — `Ask` would refuse as non-interactive, and would
+    /// honour an owner's `allow` rule on `permit`, which `ReadOnly` refuses.
+    #[tokio::test]
+    async fn a_woken_read_only_chat_stays_read_only_against_an_allow_rule() {
+        let home = crate::testenv::HomeGuard::new("wake-narrow");
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (chat, _) = waking_chat_with(true, true, Some(Arc::clone(&ran)));
+        let (_, session) = due_follow_up(&chat, &home.dir);
+        {
+            // Resumed, the chat opens read-only — the state the waker makes.
+            let mut sessions = chat.sessions.lock().await;
+            let key = resume_locked(&chat, &mut sessions, &session, false, true).unwrap();
+            let ws = sessions
+                .get_mut(&key)
+                .and_then(ChatSlot::ordinary_mut)
+                .unwrap();
+            assert_eq!(*ws.mode.lock().unwrap(), PermissionMode::ReadOnly);
+        }
+        chat.wake_due_follow_ups().await;
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+        let messages = Session::read(&Session::find(chat.sessions_dir(), &session).unwrap())
+            .unwrap()
+            .convo
+            .messages;
+        let result = messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|b| match b {
+                mecha_core::message::Block::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(result.contains("read-only"), "{result}");
+    }
+
+    /// With the switch off, or no outbox route to keep the run staging-only,
+    /// nothing runs; the reason is recorded once and the reminder stands.
+    #[tokio::test]
+    async fn no_outbox_route_waits_and_says_why_once() {
+        // No outbox route waits, and says so once: configuring the outbox
+        // after switching follow-ups on must not have retired what came due
+        // (review of #897).
+        let home = crate::testenv::HomeGuard::new("wake-refused");
+        let (chat, seen) = waking_chat(true, false);
+        let (id, _) = due_follow_up(&chat, &home.dir);
+        chat.wake_due_follow_ups().await;
+        chat.wake_due_follow_ups().await;
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "a run started with no outbox route"
+        );
+        let w = WorkflowStore::default_store().unwrap().get(&id).unwrap();
+        let waits: Vec<_> = w
+            .events
+            .iter()
+            .filter(|e| e.kind == mecha_core::workflow::FOLLOW_UP_WAITING)
+            .collect();
+        assert_eq!(waits.len(), 1, "said once, not every minute");
+        assert!(
+            waits[0].detail.contains("no outbox route"),
+            "{}",
+            waits[0].detail
+        );
+        assert!(w.woken_at.is_none(), "waiting, not retired");
+        assert!(!w.events.iter().any(|e| e.kind == FOLLOW_UP_NOT_WOKEN));
+    }
+
+    /// Switched off is a pause: nothing runs and nothing is recorded, so
+    /// switching back on wakes what came due meanwhile.
+    #[tokio::test]
+    async fn switched_off_pauses_and_switching_on_wakes_what_came_due() {
+        let home = crate::testenv::HomeGuard::new("wake-paused");
+        let (off, seen_off) = waking_chat(false, true);
+        let (id, _) = due_follow_up(&off, &home.dir);
+        off.wake_due_follow_ups().await;
+        assert!(seen_off.lock().unwrap().is_empty());
+        let w = WorkflowStore::default_store().unwrap().get(&id).unwrap();
+        assert!(w.woken_at.is_none(), "a pause, not a refusal");
+        let (on, seen_on) = waking_chat(true, true);
+        // The same conversation, reached from the switched-on chat's store.
+        std::fs::create_dir_all(on.sessions_dir()).unwrap();
+        for e in std::fs::read_dir(off.sessions_dir()).unwrap() {
+            let e = e.unwrap();
+            std::fs::copy(e.path(), on.sessions_dir().join(e.file_name())).unwrap();
+        }
+        on.wake_due_follow_ups().await;
+        assert_eq!(seen_on.lock().unwrap().len(), 1, "woken once switched on");
+    }
+
+    /// The woken turn's posture is unattended, as its approver is: a shell
+    /// it ran would never be read as the owner's approval.
+    #[tokio::test]
+    async fn a_woken_turn_carries_the_unattended_posture() {
+        let home = crate::testenv::HomeGuard::new("wake-posture");
+        let posture = Arc::new(StdMutex::new(None));
+        let (chat, _) = waking_chat_tools(
+            true,
+            true,
+            Some(Arc::new(PostureProbe(Arc::clone(&posture)))),
+        );
+        // A chat this process already holds, open in `Ask` — the case that
+        // needed the fix; a resumed chat opens read-only, which reads
+        // unattended either way.
+        let (_, session) = due_follow_up(&chat, &home.dir);
+        {
+            let mut sessions = chat.sessions.lock().await;
+            let key = resume_locked(&chat, &mut sessions, &session, false, true).unwrap();
+            let ws = sessions
+                .get_mut(&key)
+                .and_then(ChatSlot::ordinary_mut)
+                .unwrap();
+            *ws.mode.lock().unwrap() = PermissionMode::Ask;
+        }
+        chat.wake_due_follow_ups().await;
+        assert_eq!(
+            *posture.lock().unwrap(),
+            Some(mecha_core::closure::RunPosture::Unattended)
+        );
+    }
+
+    /// A conversation that ends on a user message is not woken: the wake
+    /// would be folded into that message and recorded as the owner's.
+    #[tokio::test]
+    async fn a_conversation_ending_on_a_user_message_waits() {
+        let home = crate::testenv::HomeGuard::new("wake-tail");
+        let (chat, seen) = waking_chat(true, true);
+        let (id, session) = due_follow_up(&chat, &home.dir);
+        let path = Session::find(chat.sessions_dir(), &session).unwrap();
+        Session {
+            meta: Session::read(&path).unwrap().meta,
+            path,
+        }
+        .append(&Record::Message(Message::user("the owner's last word")))
+        .unwrap();
+        chat.wake_due_follow_ups().await;
+        assert!(seen.lock().unwrap().is_empty());
+        let w = WorkflowStore::default_store().unwrap().get(&id).unwrap();
+        assert!(w.woken_at.is_none(), "it waits, it is not retired");
+        assert!(
+            chat.sessions.lock().await.is_empty(),
+            "a chat that must wait was lifted into the rail"
+        );
+    }
+
+    /// A waker that saw the workflow before another claimed it starts
+    /// nothing: the mark is taken under the store's lock.
+    #[tokio::test]
+    async fn a_waker_that_lost_the_claim_starts_nothing() {
+        let home = crate::testenv::HomeGuard::new("wake-claim");
+        let (chat, seen) = waking_chat(true, true);
+        let (id, _) = due_follow_up(&chat, &home.dir);
+        let store = WorkflowStore::default_store().unwrap();
+        let stale = store.get(&id).unwrap();
+        store
+            .update(&id, |w| {
+                w.woken_at = Some(chrono::Utc::now());
+                Ok(())
+            })
+            .unwrap();
+        assert!(chat.wake_follow_up(&stale).await.is_err());
+        assert!(seen.lock().unwrap().is_empty(), "the loser ran a turn");
+    }
+
+    /// A read-only tool whose destination the model names, and says
+    /// whether it ran — `http_fetch`'s shape.
+    struct FetchPage(Arc<std::sync::atomic::AtomicBool>);
+
+    /// A read-only tool under any name and egress class, saying whether it
+    /// ran: a blind sender, or a stand-in for `ask_user`.
+    struct Probe {
+        name: &'static str,
+        egress: mecha_core::tool::Egress,
+        ran: Arc<std::sync::atomic::AtomicBool>,
+    }
+    #[async_trait::async_trait]
+    impl mecha_core::tool::Tool for Probe {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "A probe."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        fn capabilities(&self) -> mecha_core::tool::Capabilities {
+            mecha_core::tool::Capabilities {
+                egress: self.egress,
+                ..Default::default()
+            }
+        }
+        async fn call(
+            &self,
+            _: serde_json::Value,
+            _: &ToolCtx,
+        ) -> Result<mecha_core::tool::ToolOutput> {
+            self.ran.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(mecha_core::tool::ToolOutput::ok("done"))
+        }
+    }
+
+    /// Neither a blind sender (a deep `web_search` is chosen under a blind
+    /// declaration) nor `ask_user` (nobody to answer) runs from a woken
+    /// turn; a read-only tool that sends nothing still does.
+    #[tokio::test]
+    async fn a_woken_turn_withholds_every_unrouted_sender_and_ask_user() {
+        for (name, egress, may_run) in [
+            ("search_blind", mecha_core::tool::Egress::Blind, false),
+            ("ask_user", mecha_core::tool::Egress::None, false),
+            ("read_notes", mecha_core::tool::Egress::None, true),
+        ] {
+            let home = crate::testenv::HomeGuard::new("wake-withhold");
+            let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let probe = Probe {
+                name,
+                egress,
+                ran: Arc::clone(&ran),
+            };
+            let (chat, seen) = waking_chat_tools(true, true, Some(Arc::new(probe)));
+            due_follow_up(&chat, &home.dir);
+            chat.wake_due_follow_ups().await;
+            assert!(!seen.lock().unwrap().is_empty(), "{name}: the turn ran");
+            assert_eq!(
+                ran.load(std::sync::atomic::Ordering::SeqCst),
+                may_run,
+                "{name}"
+            );
+            drop(home);
+        }
+    }
+    #[async_trait::async_trait]
+    impl mecha_core::tool::Tool for FetchPage {
+        fn name(&self) -> &str {
+            "fetch_page"
+        }
+        fn description(&self) -> &str {
+            "Fetch a URL."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        fn capabilities(&self) -> mecha_core::tool::Capabilities {
+            mecha_core::tool::Capabilities {
+                untrusted_input: true,
+                egress: mecha_core::tool::Egress::Chosen,
+                ..Default::default()
+            }
+        }
+        async fn call(
+            &self,
+            _: serde_json::Value,
+            _: &ToolCtx,
+        ) -> Result<mecha_core::tool::ToolOutput> {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(mecha_core::tool::ToolOutput::ok("fetched").from_outside())
+        }
+    }
+
+    /// Staging-only is per tool: a chosen-egress tool the outbox does not
+    /// route is withheld from a woken turn, though it is read-only and so
+    /// would never reach the approver.
+    #[tokio::test]
+    async fn a_woken_turn_cannot_reach_an_unrouted_chosen_destination() {
+        let home = crate::testenv::HomeGuard::new("wake-egress");
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (chat, seen) =
+            waking_chat_tools(true, true, Some(Arc::new(FetchPage(Arc::clone(&ran)))));
+        due_follow_up(&chat, &home.dir);
+        chat.wake_due_follow_ups().await;
+        assert!(!seen.lock().unwrap().is_empty(), "the turn ran");
+        assert!(
+            !ran.load(std::sync::atomic::Ordering::SeqCst),
+            "an unrouted chosen-egress tool dispatched from an unattended turn"
+        );
+    }
+
+    /// A chat this process holds open in `Ask` — the page would park an
+    /// approval card for two minutes nobody answers. The woken turn's own
+    /// approver refuses at once in the machine's voice instead (review of
+    /// #897); the timeout is what fails if the page's approver answers.
+    #[tokio::test]
+    async fn a_woken_ask_chat_refuses_at_once_instead_of_parking_a_card() {
+        let home = crate::testenv::HomeGuard::new("wake-ask");
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (chat, _) = waking_chat_with(true, true, Some(Arc::clone(&ran)));
+        let (_, session) = due_follow_up(&chat, &home.dir);
+        {
+            let mut sessions = chat.sessions.lock().await;
+            let key = resume_locked(&chat, &mut sessions, &session, false, true).unwrap();
+            let ws = sessions
+                .get_mut(&key)
+                .and_then(ChatSlot::ordinary_mut)
+                .unwrap();
+            *ws.mode.lock().unwrap() = PermissionMode::Ask;
+        }
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            chat.wake_due_follow_ups(),
+        )
+        .await
+        .expect("the woken turn waited on an approval nobody can give");
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+        let messages = Session::read(&Session::find(chat.sessions_dir(), &session).unwrap())
+            .unwrap()
+            .convo
+            .messages;
+        let result = messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|b| match b {
+                mecha_core::message::Block::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(result.contains("non-interactive"), "{result}");
+    }
+
+    /// A turn that refuses to begin (here, the server is stopping) gives
+    /// its claim back and waits: it never ran, so it is not retired.
+    #[tokio::test]
+    async fn a_turn_that_cannot_start_gives_its_claim_back() {
+        let home = crate::testenv::HomeGuard::new("wake-refused-start");
+        let (chat, seen) = waking_chat(true, true);
+        let (id, _) = due_follow_up(&chat, &home.dir);
+        chat.stopping.cancel();
+        chat.wake_due_follow_ups().await;
+        assert!(seen.lock().unwrap().is_empty());
+        let w = WorkflowStore::default_store().unwrap().get(&id).unwrap();
+        assert!(w.woken_at.is_none(), "the claim was not given back");
+        assert!(
+            !w.events.iter().any(|e| e.kind == FOLLOW_UP_WOKEN),
+            "a turn that never started left a woken event behind"
+        );
+        assert!(mecha_core::followup::due_to_wake(&w, chrono::Utc::now()));
+        assert_eq!(
+            w.events.last().map(|e| e.kind.as_str()),
+            Some(mecha_core::workflow::FOLLOW_UP_WAITING)
+        );
+    }
+
+    /// The claim re-reads the whole rule under the lock: a workflow the
+    /// owner snoozed after the waker listed it is not woken.
+    #[tokio::test]
+    async fn a_follow_up_snoozed_after_the_listing_is_not_woken() {
+        let home = crate::testenv::HomeGuard::new("wake-snoozed");
+        let (chat, seen) = waking_chat(true, true);
+        let (id, _) = due_follow_up(&chat, &home.dir);
+        let store = WorkflowStore::default_store().unwrap();
+        let listed = store.get(&id).unwrap();
+        store
+            .update(&id, |w| {
+                w.snoozed_until = Some(chrono::Utc::now() + chrono::Duration::hours(1));
+                Ok(())
+            })
+            .unwrap();
+        assert!(chat.wake_follow_up(&listed).await.is_err());
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "a snoozed follow-up was woken"
+        );
+        assert!(store.get(&id).unwrap().woken_at.is_none());
+    }
+
+    /// The waker tells an ordinary remembered chat from a memory chat the
+    /// way `POST /api/resume` does, and resumes it with its memory: with
+    /// ordinary-chat memory on, every web chat carries the marker, and
+    /// reading it as a memory chat retired every follow-up (review of #897).
+    /// Read out of source, since a test chat with ordinary memory needs a
+    /// memory runtime — the same instrument the voice doors use.
+    #[cfg(feature = "memory-prototype")]
+    #[test]
+    fn the_waker_resumes_a_remembered_chat_as_the_resume_door_does() {
+        let src = include_str!("chat.rs");
+        let body = |name: &str| {
+            let i = src.find(name).expect(name);
+            &src[i..][..src[i..].find("\n    }\n").unwrap_or(4000)]
+        };
+        let waker = body("async fn wake_follow_up(");
+        for needle in [
+            "self.ordinary_memory.is_some() && super::web_memory::open_marked(&path)",
+            "Ok(true) if remembered => {}",
+            "resume_locked(self, &mut sessions, &session_id, remembered, false)",
+        ] {
+            assert!(waker.contains(needle), "the waker no longer has `{needle}`");
+        }
+        let door = &src[src.find("pub async fn resume(").unwrap()..];
+        let door = &door[..door.find("\nfn resume_locked(").unwrap()];
+        assert!(
+            door.contains("chat.ordinary_memory.is_some()")
+                && door.contains("super::web_memory::open_marked"),
+            "the resume door changed how it tells a remembered chat; keep the waker in step"
+        );
+    }
+
+    /// A backlog wakes a few at a time: four due follow-ups, one pass, three
+    /// turns; the fourth waits for the next minute.
+    #[tokio::test]
+    async fn a_pass_wakes_at_most_a_few_follow_ups() {
+        let home = crate::testenv::HomeGuard::new("wake-cap");
+        let (chat, seen) = waking_chat(true, true);
+        for _ in 0..WAKES_PER_PASS + 1 {
+            due_follow_up(&chat, &home.dir);
+        }
+        chat.wake_due_follow_ups().await;
+        assert_eq!(seen.lock().unwrap().len(), WAKES_PER_PASS);
+        chat.wake_due_follow_ups().await;
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            WAKES_PER_PASS + 1,
+            "the rest wake next"
+        );
+    }
+
+    /// A tail of tool results — a turn stopped mid-round — is not the
+    /// owner's words: the wake folds onto it, marked the harness's, rather
+    /// than waiting for the owner to type.
+    #[tokio::test]
+    async fn a_conversation_ending_on_tool_results_wakes() {
+        let home = crate::testenv::HomeGuard::new("wake-tool-tail");
+        let (chat, seen) = waking_chat(true, true);
+        let (_, session) = due_follow_up(&chat, &home.dir);
+        let path = Session::find(chat.sessions_dir(), &session).unwrap();
+        let rec = Session {
+            meta: Session::read(&path).unwrap().meta,
+            path,
+        };
+        rec.append(&Record::Message(Message::user("check the build")))
+            .unwrap();
+        rec.append(&Record::Message(Message::assistant(vec![
+            mecha_core::message::Block::ToolUse {
+                id: "t1".into(),
+                name: "read_notes".into(),
+                input: serde_json::json!({}),
+            },
+        ])))
+        .unwrap();
+        rec.append(&Record::Message(Message {
+            role: mecha_core::message::Role::User,
+            content: vec![mecha_core::message::Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "notes".into(),
+                is_error: false,
+            }],
+            ..Message::user("")
+        }))
+        .unwrap();
+        chat.wake_due_follow_ups().await;
+        assert_eq!(seen.lock().unwrap().len(), 1, "it woke");
+        let messages = Session::read(&Session::find(chat.sessions_dir(), &session).unwrap())
+            .unwrap()
+            .convo
+            .messages;
+        let folded = messages
+            .iter()
+            .find(|m| m.text().contains(followup::WAKE_STEM))
+            .expect("the wake is recorded");
+        assert!(folded.harness, "the folded wake is the harness's");
+    }
+
+    /// Follow-ups that wait take no slot: three stuck ones (oldest, so
+    /// first) do not stop a fourth from waking.
+    #[tokio::test]
+    async fn waiting_follow_ups_do_not_starve_the_rest() {
+        let home = crate::testenv::HomeGuard::new("wake-starve");
+        let (chat, seen) = waking_chat(true, true);
+        for _ in 0..WAKES_PER_PASS {
+            let (_, session) = due_follow_up(&chat, &home.dir);
+            let path = Session::find(chat.sessions_dir(), &session).unwrap();
+            Session {
+                meta: Session::read(&path).unwrap().meta,
+                path,
+            }
+            .append(&Record::Message(Message::user("the owner's last word")))
+            .unwrap();
+        }
+        // Due a little later than the stuck ones, so it sorts after them.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        due_follow_up(&chat, &home.dir);
+        chat.wake_due_follow_ups().await;
+        assert_eq!(seen.lock().unwrap().len(), 1, "the fourth woke");
+    }
+
+    /// A reopened chat shows the wake: `transcript_entries` carries it as a
+    /// user entry the page renders as its note, though it drops every other
+    /// harness voice.
+    #[test]
+    fn a_recorded_wake_reaches_the_reopened_page() {
+        let mut wake = Message::user(followup::render_wake(
+            "check the build",
+            chrono::Utc::now(),
+            chrono_tz::UTC,
+        ));
+        wake.harness = true;
+        let entries = transcript_entries(&[wake]);
+        assert!(
+            entries.iter().any(
+                |e| matches!(e, Entry::User { text, .. } if text.starts_with(followup::WAKE_STEM))
+            ),
+            "{entries:?}"
+        );
+    }
+
+    /// A steer folded onto a wake is two entries on reopen: the wake's note,
+    /// then the owner's own bubble — never the owner's words under the note.
+    #[test]
+    fn a_steer_folded_onto_a_wake_keeps_its_bubble_on_reopen() {
+        let mut m = Message::user(followup::render_wake(
+            "check the build",
+            chrono::Utc::now(),
+            chrono_tz::UTC,
+        ));
+        m.content.push(mecha_core::message::Block::Text {
+            text: "also check the docs".into(),
+        });
+        let entries = transcript_entries(&[m]);
+        let users: Vec<&String> = entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::User { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(users.len(), 2, "{entries:?}");
+        assert!(users[0].starts_with(followup::WAKE_STEM));
+        assert_eq!(users[1], "also check the docs");
+    }
+
+    /// A tool-results tail that also carries the owner's steer holds the
+    /// owner's words: the waker waits on it, and a fold would not mark it
+    /// the harness's.
+    #[test]
+    fn a_steer_among_tool_results_is_the_owner_s_words() {
+        let m = Message {
+            role: mecha_core::message::Role::User,
+            content: vec![
+                mecha_core::message::Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "notes".into(),
+                    is_error: false,
+                },
+                mecha_core::message::Block::Text {
+                    text: "stop, check the docs instead".into(),
+                },
+            ],
+            ..Message::user("")
+        };
+        assert!(owners_words(&m));
+        let results_only = Message {
+            content: vec![mecha_core::message::Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "notes".into(),
+                is_error: false,
+            }],
+            ..m.clone()
+        };
+        assert!(!owners_words(&results_only));
+    }
+
+    /// The page shows a wake as a note, keyed on core's stem; the two copies
+    /// must agree or the owner sees the harness's words in their own bubble.
+    #[test]
+    fn the_page_knows_the_wake_stem() {
+        let js = include_str!("../../../../web/src/lib/chat-wake.js");
+        assert!(
+            js.contains(&format!("'{}'", followup::WAKE_STEM)),
+            "web/src/lib/chat-wake.js's WAKE_STEM no longer matches core's"
+        );
+        // And the wrapper the page parses the proposed words out of
+        // (` — "…", proposed `), from core's own rendering (review of #897).
+        let turn = followup::render_wake("check the build", chrono::Utc::now(), chrono_tz::UTC);
+        let rest = turn.strip_prefix(followup::WAKE_STEM).unwrap();
+        assert!(
+            rest.starts_with(" — \"check the build\", proposed "),
+            "render_wake's wrapper changed; web/src/lib/chat-wake.js parses ` — \"…\", proposed `: {rest}"
+        );
+        assert!(
+            js.contains(r#"^ — "(.*?)", proposed "#),
+            "chat-wake.js's pattern moved"
+        );
     }
 }

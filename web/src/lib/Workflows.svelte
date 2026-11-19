@@ -76,6 +76,7 @@
         <p>{item.state.replaceAll('_', ' ')}{commitmentLine(item.commitment)}</p>
         {#each item.waiting_for ?? [] as reason}<p>{reason}</p>{/each}
         {#if item.notice}<p>{item.notice.reason}</p>{/if}
+        {#if item.follow_up}<p>{item.follow_up}</p>{/if}
         {#if item.snoozed_until}<p>Reminders deferred until {when(item.snoozed_until)}</p>{/if}
         {#each item.verification ?? [] as check}<p>{check.passed ? '✓' : 'Needs work:'} {check.evidence}</p>{/each}
         <div class="actions">

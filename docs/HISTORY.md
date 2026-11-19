@@ -14,6 +14,60 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Recall over earlier sessions, and in the web chat (2026-11-16 to 11-18)
+
+Design §11 of `MEMORY-RETENTION-DESIGN.md` (#885) named three layers:
+recorded, findable, built. The second is now built and on in the owner's web
+chat. `tool::spans` keeps an index of what earlier sessions read and said, at
+`~/.mecha/spans/index.db` (#887). A search is by meaning with a floor, with
+words breaking near-ties, after each call that works and before a chat's turn.
+What is found is handed over in the harness's own voice, not inside the
+outside-content envelope. When a remembered passage holds something the
+present record does not, the hand-over says so (#888).
+
+Each passage keeps its session's origin (#889). It is outside content when
+its session took any in, and also when the session's record cannot say.
+`[features] recall` (#890) hands a web chat clean passages only, and the page
+warms the embeddings server when a chat opens. #891 added the index's own
+count, read by the `mecha features` row. It also named the two records a late
+delivery writes after its checkpoint, a pending note and a late failure, as
+carrying nothing.
+
+**Measured.** On the held-out `depot` lifetime (local model, 3 seeds, 9
+probes an arm), the probes were answered as follows:
+
+| Arm | Probes answered |
+|---|---|
+| No memory | 0/9 |
+| Transcripts | 6/9 |
+| Index | 9/9 |
+| Index in own voice | 9/9 |
+
+On `yard`, the envelope and its hedge were what failed uptake. In the dev
+reruns the own-voice arm reached 6/6, against 3/6 for the wrapped arm.
+Both lifetimes are dev data from here.
+
+On the owner's history, the first index covered 196 chats and 2,003 passages
+and took 33 s to build. 977 of the passages were held from chats as outside
+content. 195 of those came from nine chats that had only ended on a picture's
+pending note; with #891, 782 remain.
+
+**Learned.**
+- A reviewer's claimed effect on a measurement was checked against the
+  recorded sessions only after it had been repeated. It was false: no
+  experiment query had carried the envelope. Check the claim against the
+  sessions first.
+- Index time was kept in whole seconds, so every pass after the first build
+  read "0 s". The follow-up PR keeps milliseconds.
+- #895: the web test's two halves shared one fake embeddings server, so a
+  pass the first half left running counted against the second. It failed CI
+  twice on unrelated PRs.
+
+The offline screen for planted content is measured, not merged. On a made-up
+set it caught every explicit instruction, missed every plainly worded false
+fact, and wrongly flagged ordinary mail asking the owner for something. How
+it may clear a passage is the owner's call.
+
 ### Durable CLI task plans and native audit recovery (2026-11-11)
 
 The opt-in CLI task-chat adapter now persists the owner's Task and the model's

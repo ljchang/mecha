@@ -234,7 +234,11 @@ struct Span {
 /// so that a message it admits as a passage is a message that leaves the
 /// session uncovered here; and a line neither can read leaves it uncovered
 /// too (review of #889).
-fn held_outside_content(transcript: &str) -> bool {
+///
+/// Public for `serve::late`'s test of what a late delivery leaves, and for
+/// nothing else.
+#[doc(hidden)]
+pub fn held_outside_content(transcript: &str) -> bool {
     use crate::session::Record;
     let (mut untrusted, mut covered, mut any) = (false, false, false);
     for line in transcript.lines().filter(|l| !l.trim().is_empty()) {
@@ -761,8 +765,10 @@ pub struct Counted {
     /// When the last pass that changed any of these counts finished, in
     /// seconds since the epoch.
     pub at: u64,
-    /// How long that pass took.
-    pub secs: u64,
+    /// How long that pass took, in milliseconds: a pass that changes a
+    /// count by one new chat takes well under a second, and in whole
+    /// seconds every such pass read "0 s" (review of #891).
+    pub ms: u64,
 }
 
 /// The standing of a home's index, and `None` when it has none yet. Opens
@@ -788,7 +794,8 @@ pub fn standing(home: &Path) -> Result<Option<Standing>> {
             embedded: n("counted_embedded")?,
             outside: n("counted_outside")?,
             at: n("counted_at")?,
-            secs: n("counted_secs")?,
+            // An index counted before milliseconds were kept has seconds.
+            ms: n("counted_ms").or_else(|| n("counted_secs").map(|s| s * 1000))?,
         })
     })();
     Ok(Some(Standing {
@@ -801,33 +808,50 @@ pub fn standing(home: &Path) -> Result<Option<Standing>> {
 
 /// Keep a finished pass's count of the index, for [`standing`].
 fn note_pass(index: &Path, took: std::time::Duration) -> Result<()> {
+    let counts = |conn: &Connection| -> Result<[(&'static str, String); 4]> {
+        let (passages, embedded, outside): (i64, i64, i64) = conn.query_row(
+            "SELECT COUNT(*), COUNT(vec), COALESCE(SUM(outside), 0) FROM spans",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        let sessions: i64 = conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))?;
+        Ok([
+            ("counted_sessions", sessions.to_string()),
+            ("counted_passages", passages.to_string()),
+            ("counted_embedded", embedded.to_string()),
+            ("counted_outside", outside.to_string()),
+        ])
+    };
+    let unchanged = |conn: &Connection, counts: &[(&str, String)]| -> Result<bool> {
+        for (key, value) in counts {
+            let had: Option<String> = conn
+                .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+                .optional()?;
+            if had.as_deref() != Some(value.as_str()) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    };
     let mut conn = open(index)?;
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let (passages, embedded, outside): (i64, i64, i64) = tx.query_row(
-        "SELECT COUNT(*), COUNT(vec), COALESCE(SUM(outside), 0) FROM spans",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    )?;
-    let sessions: i64 = tx.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))?;
-    let counts = [
-        ("counted_sessions", sessions.to_string()),
-        ("counted_passages", passages.to_string()),
-        ("counted_embedded", embedded.to_string()),
-        ("counted_outside", outside.to_string()),
-    ];
     // A pass that found the index as the last one left it keeps that one's
     // time and duration: every chat's first turn makes a pass, nearly all
-    // of them change nothing and take no time, and the row would otherwise
-    // say when a chat was last opened and "in 0 s" for good (review of
-    // #891).
-    let mut same = true;
-    for (key, value) in &counts {
-        let had: Option<String> = tx
-            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
-            .optional()?;
-        same &= had.as_deref() == Some(value.as_str());
+    // of them change nothing, and the row would otherwise say when a chat
+    // was last opened (review of #891). Asked first without the write lock,
+    // since that common pass then takes none: a chat's first search runs
+    // beside it and has 250 ms to keep its own count (`note_search`).
+    // In one deferred transaction, so its reads share one snapshot and a
+    // writer committing between them cannot make a changed index read as
+    // unchanged (review of #899, pass 3); a deferred one takes no write lock.
+    {
+        let look = conn.transaction()?;
+        if unchanged(&look, &counts(&look)?)? {
+            return Ok(());
+        }
     }
-    if same {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let counts = counts(&tx)?;
+    if unchanged(&tx, &counts)? {
         return Ok(());
     }
     // A clock that cannot say is a count not kept, never the epoch.
@@ -837,13 +861,15 @@ fn note_pass(index: &Path, took: std::time::Duration) -> Result<()> {
         .as_secs();
     for (key, value) in counts.into_iter().chain([
         ("counted_at", at.to_string()),
-        ("counted_secs", took.as_secs().to_string()),
+        ("counted_ms", took.as_millis().to_string()),
     ]) {
         tx.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
             params![key, value],
         )?;
     }
+    // The seconds an older build kept are not this pass's.
+    tx.execute("DELETE FROM meta WHERE key = 'counted_secs'", [])?;
     tx.commit()?;
     Ok(())
 }
@@ -1065,8 +1091,10 @@ pub struct Spans {
     web: bool,
     embedder: Embedder,
     /// What each conversation has been handed, so nothing is said twice in
-    /// it. Keyed by the conversation's session id, and by the empty string
-    /// for the one run a tool made with [`Spans::new`] serves.
+    /// it. Kept under each name a search knew the conversation by, the
+    /// page's key its turn is stamped with and the session's id the harness
+    /// names (`Tool::call` says why both), and under the empty string for
+    /// the one run a tool made with [`Spans::new`] serves.
     handed: Mutex<std::collections::BTreeMap<String, BTreeSet<i64>>>,
 }
 
@@ -1084,8 +1112,9 @@ impl Spans {
 
     /// One tool for every conversation of a long-lived host (the web chat):
     /// the owner's chats are history beside one-shot runs, every session is
-    /// indexed, and each search names the conversation asking so that its
-    /// own turns are left out and what it was handed is remembered for it.
+    /// indexed, and the harness's search names the session asking so that
+    /// its own turns are left out. What a conversation was handed is kept
+    /// under that name and under its turn's stamp (`handed`).
     pub fn shared(index: PathBuf, sessions: PathBuf, embedder: Embedder) -> Self {
         Spans {
             index,
@@ -1293,24 +1322,47 @@ impl Tool for Spans {
             .and_then(Value::as_str)
             .map(str::to_string);
         let clean = input.get("clean").and_then(Value::as_bool) == Some(true);
-        // What was handed is remembered for the conversation the harness
-        // named, and for a call the model made itself, which names none,
-        // for the conversation its turn is stamped with: one bucket for
-        // every such call would have one chat's hits withheld from every
-        // other for the life of the host (review of #890). The model's own
-        // call is not kept from its own session's passages: that needs the
-        // session's id, which only the harness gives.
-        let key = conversation
-            .clone()
-            .or_else(|| ctx.conversation.clone())
-            .unwrap_or_default();
+        // What was handed is remembered under every name this call knows
+        // the conversation by, and read back from all of them: the page's
+        // key its turn is stamped with, which the harness's search before a
+        // turn and the model's own search in it share, and the session's id
+        // the harness names, which outlives the page key across a resume
+        // (`resume_key` gives a resumed chat a new one). Keyed by one name
+        // only, the two searches of one chat kept two buckets and handed
+        // again what the other had (review of #890), and keyed by the stamp
+        // only, a resumed chat was handed again what it already held
+        // (review of #899). What the model alone was handed after the door's
+        // last search is under the page key alone, and a resume forgets it.
+        // One bucket for every unnamed call would have one chat's hits
+        // withheld from every other for the life of the host. The model's
+        // own call is not kept from its own session's passages: that needs
+        // the session's id, which only the harness gives.
+        let mut keys: Vec<String> = Vec::new();
+        for name in [ctx.conversation.clone(), conversation.clone()]
+            .into_iter()
+            .flatten()
+        {
+            if !keys.contains(&name) {
+                keys.push(name);
+            }
+        }
+        if keys.is_empty() {
+            keys.push(String::new());
+        }
         let web = self.web;
         let index = self.index.clone();
-        let handed = self
+        let handed: BTreeSet<i64> = self
             .handed
             .lock()
-            .map(|h| h.get(&key).cloned().unwrap_or_default())
+            .map(|h| {
+                keys.iter()
+                    .filter_map(|k| h.get(k))
+                    .flatten()
+                    .copied()
+                    .collect()
+            })
             .unwrap_or_default();
+        let before = handed.clone();
         let asking = conversation.clone();
         let hits = tokio::task::spawn_blocking(move || -> Result<Vec<(i64, Span)>> {
             let started = std::time::Instant::now();
@@ -1330,17 +1382,26 @@ impl Tool for Spans {
             Ok(hits)
         })
         .await??;
+        // Kept under every name before anything is said, a search that
+        // found nothing included: the door's search in a resumed chat finds
+        // nothing new and is what carries the session's record over to the
+        // new page key.
+        if let Ok(mut handed) = self.handed.lock() {
+            let now: BTreeSet<i64> = before
+                .into_iter()
+                .chain(hits.iter().map(|(id, _)| *id))
+                .collect();
+            for key in keys {
+                handed.entry(key).or_default().extend(now.iter().copied());
+            }
+        }
+        // Outside the lock: what a search says must not depend on the
+        // bookkeeping beside it (review of #899, pass 2).
         if hits.is_empty() {
             // The tool's own words and not `.from_outside()`, on purpose:
             // unwrapped, they are what the loop and the run command compare
             // against to say nothing.
             return Ok(ToolOutput::ok(NOTHING));
-        }
-        if let Ok(mut handed) = self.handed.lock() {
-            handed
-                .entry(key)
-                .or_default()
-                .extend(hits.iter().map(|(id, _)| *id));
         }
         let mut out = format!(
             "{} passage(s) from earlier sessions, closest first:\n",
@@ -2178,7 +2239,7 @@ mod tests {
             open(&dir_in(&home))
                 .unwrap()
                 .execute(
-                    "UPDATE meta SET value = ?1 WHERE key IN ('counted_at', 'counted_secs')",
+                    "UPDATE meta SET value = ?1 WHERE key IN ('counted_at', 'counted_ms')",
                     [at],
                 )
                 .unwrap()
@@ -2186,7 +2247,7 @@ mod tests {
         assert_eq!(mark("7"), 2);
         assert_eq!(spans.refresh().await.unwrap(), (2, 0));
         let kept = standing(&home).unwrap().unwrap().counted.unwrap();
-        assert_eq!((kept.at, kept.secs), (7, 7), "{kept:?}");
+        assert_eq!((kept.at, kept.ms), (7, 7), "{kept:?}");
         let ctx = ToolCtx::default().with_workspace(std::env::temp_dir());
         let query = r#"{"berth": "C", "length": 200, "notice": "?"}"#;
         let ask_as = |conversation: &str, clean: bool| {
@@ -2253,6 +2314,275 @@ mod tests {
         // Without the limit, the outside passage is handed over as one.
         let all = ask_as("fourth", false).await.unwrap();
         assert!(all.content.contains("reefer plugs dead") && all.external);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// An index made before passages kept their origin, or sessions their
+    /// kind, is brought forward when it is opened: the columns are added,
+    /// every old passage counted as outside until its session is read
+    /// again, and the next pass reads it again and says what it was. Made
+    /// here from a real index rewritten in the old shape, so its passages
+    /// are the passages a pass makes (review of #889).
+    #[tokio::test]
+    async fn an_index_from_before_origins_is_counted_outside_until_its_sessions_are_read_again() {
+        let home = home();
+        let sessions = home.join("sessions");
+        let path = session(
+            &sessions,
+            SessionKind::Web,
+            vec![Message::user(
+                "berth C has a notice, the fender line is condemned",
+            )],
+        );
+        {
+            use std::io::Write;
+            let line = serde_json::to_string(&Record::Taint(crate::agent::Taint {
+                private: true,
+                untrusted: false,
+            }))
+            .unwrap();
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            writeln!(file, "{line}").unwrap();
+        }
+        let spans = || {
+            let dir = dir_in(&home);
+            let sessions = sessions.clone();
+            async move { Spans::shared(dir, sessions, Embedder::new(&embeddings().await).unwrap()) }
+        };
+        spans().await.refresh().await.unwrap();
+        // The same index in the shape it had before #889: no origin, no
+        // kind, and an extraction number from then.
+        let index = dir_in(&home).join("index.db");
+        let old = dir_in(&home).join("old.db");
+        {
+            let now = Connection::open(&index).unwrap();
+            now.execute("ATTACH DATABASE ?1 AS old", [old.to_str().unwrap()])
+                .unwrap();
+            now.execute_batch(
+                "CREATE TABLE old.meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 CREATE TABLE old.sessions (session TEXT PRIMARY KEY, bytes INTEGER NOT NULL);
+                 CREATE TABLE old.spans (
+                     id INTEGER PRIMARY KEY, session TEXT NOT NULL, label TEXT NOT NULL,
+                     text TEXT NOT NULL, vec BLOB, UNIQUE (session, label, text));
+                 INSERT INTO old.meta SELECT key, value FROM meta WHERE key = 'dims';
+                 INSERT INTO old.meta VALUES ('extraction', '2');
+                 INSERT INTO old.sessions SELECT session, bytes FROM sessions;
+                 INSERT INTO old.spans SELECT id, session, label, text, vec FROM spans;
+                 DETACH DATABASE old;",
+            )
+            .unwrap();
+        }
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", index.display()));
+        }
+        std::fs::rename(&old, &index).unwrap();
+        // Opened, it gains both columns, and what it holds counts as outside
+        // and as no web chat's.
+        let conn = open(&dir_in(&home)).unwrap();
+        let (passages, outside): (i64, i64) = conn
+            .query_row("SELECT COUNT(*), SUM(outside) FROM spans", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert!(passages >= 1 && outside == passages, "{passages} {outside}");
+        let web: i64 = conn
+            .query_row("SELECT SUM(web) FROM sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(web, 0);
+        drop(conn);
+        // Opening it again is not a second migration.
+        drop(open(&dir_in(&home)).unwrap());
+        // The next pass reads the session again, and the passage is what its
+        // session made it: clean, a web chat's, and handed to another chat.
+        let tool = spans().await;
+        assert_eq!(tool.refresh().await.unwrap().0, 1);
+        let conn = open(&dir_in(&home)).unwrap();
+        let (outside, web): (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT SUM(outside) FROM spans), (SELECT SUM(web) FROM sessions)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((outside, web), (0, 1));
+        drop(conn);
+        let out = tool
+            .call(
+                json!({
+                    "query": r#"{"berth": "C", "length": 200, "notice": "?"}"#,
+                    "conversation": "another",
+                    "clean": true,
+                }),
+                &ToolCtx::default().with_workspace(std::env::temp_dir()),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("fender line is condemned"),
+            "{}",
+            out.content
+        );
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// An index an older build counted kept the pass's time in whole
+    /// seconds. It reads as milliseconds, the newer key wins where both are
+    /// kept, and the next pass that changes a count leaves only the newer
+    /// one. Broken, the row would say the index was never counted (review
+    /// of #899, pass 3).
+    #[tokio::test]
+    async fn a_count_kept_in_seconds_is_read_as_milliseconds_and_replaced() {
+        let home = home();
+        let sessions = home.join("sessions");
+        let web = |text: &str| {
+            let path = session(&sessions, SessionKind::Web, vec![Message::user(text)]);
+            use std::io::Write;
+            let line = serde_json::to_string(&Record::Taint(crate::agent::Taint {
+                private: true,
+                untrusted: false,
+            }))
+            .unwrap();
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            writeln!(file, "{line}").unwrap();
+        };
+        web("berth C has a notice, the fender line is condemned");
+        let spans = Spans::shared(
+            dir_in(&home),
+            sessions.clone(),
+            Embedder::new(&embeddings().await).unwrap(),
+        );
+        spans.refresh().await.unwrap();
+        let meta = |sql: &str| open(&dir_in(&home)).unwrap().execute_batch(sql).unwrap();
+        let keys = || -> Vec<String> {
+            let conn = open(&dir_in(&home)).unwrap();
+            let mut q = conn
+                .prepare(
+                    "SELECT key FROM meta WHERE key IN ('counted_ms', 'counted_secs') ORDER BY key",
+                )
+                .unwrap();
+            q.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        // As an older build left it.
+        meta(
+            "DELETE FROM meta WHERE key = 'counted_ms';
+              INSERT INTO meta VALUES ('counted_secs', '33');",
+        );
+        let counted = standing(&home).unwrap().unwrap().counted.unwrap();
+        assert_eq!(counted.ms, 33_000, "{counted:?}");
+        // Both kept: the newer is this build's. A value no pass of this
+        // fixture can take, so the pass below cannot land on it by chance
+        // (review of #899, pass 4).
+        meta("INSERT INTO meta VALUES ('counted_ms', '999999999');");
+        assert_eq!(
+            standing(&home).unwrap().unwrap().counted.unwrap().ms,
+            999_999_999
+        );
+        // A pass that changes nothing leaves both as they were.
+        spans.refresh().await.unwrap();
+        assert_eq!(keys(), ["counted_ms", "counted_secs"]);
+        // One that changes a count keeps milliseconds only.
+        web("the pilot ladder on berth F is short");
+        spans.refresh().await.unwrap();
+        assert_eq!(keys(), ["counted_ms"]);
+        assert_ne!(
+            standing(&home).unwrap().unwrap().counted.unwrap().ms,
+            999_999_999
+        );
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// One web chat searches twice over: the harness before a turn, naming
+    /// the chat's session, and the model during it, naming nothing, with
+    /// the turn stamped by the page's key. Both are one conversation, and a
+    /// passage handed over in one is not handed over again in the other.
+    #[tokio::test]
+    async fn what_the_harness_handed_a_chat_is_not_handed_again_to_the_model_in_it() {
+        let home = home();
+        let sessions = home.join("sessions");
+        let path = session(
+            &sessions,
+            SessionKind::Web,
+            vec![Message::user(
+                "berth C has a notice, the fender line is condemned",
+            )],
+        );
+        {
+            use std::io::Write;
+            let line = serde_json::to_string(&Record::Taint(crate::agent::Taint {
+                private: true,
+                untrusted: false,
+            }))
+            .unwrap();
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            writeln!(file, "{line}").unwrap();
+        }
+        let spans = Spans::shared(
+            dir_in(&home),
+            sessions.clone(),
+            Embedder::new(&embeddings().await).unwrap(),
+        );
+        spans.refresh().await.unwrap();
+        let in_page = |page: &str| ToolCtx {
+            conversation: Some(page.to_string()),
+            ..ToolCtx::default().with_workspace(std::env::temp_dir())
+        };
+        let query = r#"{"berth": "C", "length": 200, "notice": "?"}"#;
+        let condemned = |out: &ToolOutput| out.content.contains("fender line is condemned");
+        let harness = spans
+            .call(
+                json!({ "query": query, "conversation": "a-later-session", "clean": true }),
+                &in_page("page-a"),
+            )
+            .await
+            .unwrap();
+        assert!(condemned(&harness), "{}", harness.content);
+        let model = spans
+            .call(json!({ "query": query }), &in_page("page-a"))
+            .await
+            .unwrap();
+        assert!(!condemned(&model), "handed again: {}", model.content);
+        // Resumed, the chat has a new page key and is the same session: the
+        // door's search names the session and is not handed it again, and
+        // nor is the model's in the resumed page (review of #899).
+        let resumed = spans
+            .call(
+                json!({ "query": query, "conversation": "a-later-session", "clean": true }),
+                &in_page("r-resumed"),
+            )
+            .await
+            .unwrap();
+        assert!(
+            !condemned(&resumed),
+            "handed again after a resume: {}",
+            resumed.content
+        );
+        let model = spans
+            .call(json!({ "query": query }), &in_page("r-resumed"))
+            .await
+            .unwrap();
+        assert!(
+            !condemned(&model),
+            "handed again after a resume: {}",
+            model.content
+        );
+        // Another chat has been handed nothing yet.
+        let other = spans
+            .call(json!({ "query": query }), &in_page("page-b"))
+            .await
+            .unwrap();
+        assert!(condemned(&other), "{}", other.content);
         let _ = std::fs::remove_dir_all(home);
     }
 

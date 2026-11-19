@@ -268,6 +268,7 @@ pub async fn execute(args: Args, dynamic_goals: bool) -> Result<()> {
             };
             let c = Arc::new(c);
             c.spawn_incognito_reaper();
+            c.spawn_follow_up_waker();
             Some(c)
         }
         Err(e) => {
