@@ -11,6 +11,7 @@ pub mod concepts;
 pub mod document;
 pub mod effect;
 pub mod episodes;
+pub mod follow_up;
 pub mod goal_context;
 #[cfg(feature = "memory-prototype")]
 pub mod goal_memory;
@@ -792,6 +793,17 @@ pub struct ToolCtx {
     /// key, and its questions went to the chat that directory was first
     /// made for (2026-10-18). `None` where a front end serves one.
     pub conversation: Option<String>,
+    /// The recorded session this call's run appends to, so a tool whose
+    /// result must come back to *this conversation later* (a proposed
+    /// follow-up, `crate::followup`) can say which one. Set only by the front
+    /// end that records the conversation and offers such a tool — the web
+    /// chat per turn, the TUI per agent build — and never derived from the
+    /// outbox route: whether the outbox is configured must not decide what a
+    /// tool does (review of #896, where it made the voice path record or
+    /// refuse by config). `None` where nothing is recorded — batch, eval, an
+    /// incognito chat — and a consumer must refuse rather than guess, never
+    /// point at the wrong transcript.
+    pub recorded_session: Option<String>,
     pub shell_timeout: std::time::Duration,
     pub security: SecurityConfig,
     /// The byte budget one *turn's* tool results share, divided equally
@@ -1250,6 +1262,7 @@ impl Default for ToolCtx {
             workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             grants: crate::grant::Grants::default(),
             conversation: None,
+            recorded_session: None,
             shell_timeout: std::time::Duration::from_secs(120),
             security: SecurityConfig::default(),
             output_budget_bytes: 24_000,

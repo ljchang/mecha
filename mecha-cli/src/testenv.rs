@@ -18,9 +18,10 @@ static ENV: Mutex<()> = Mutex::new(());
 /// list `mecha_core::work::tests` keeps, for the same reason: a developer
 /// with one exported would otherwise run a moved-home test against a real
 /// store.
-const STORE_OVERRIDES: [&str; 4] = [
+const STORE_OVERRIDES: [&str; 5] = [
     "MECHA_OUTBOX_DIR",
     "MECHA_QUESTIONS_DIR",
+    "MECHA_FOLLOWUPS_DIR",
     "MECHA_LEARNING_DIR",
     // The comparison store's (#357): exported, every pointwise test that
     // moves the home would share one real directory outside it.

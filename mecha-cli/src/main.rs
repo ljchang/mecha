@@ -469,6 +469,9 @@ pub enum Command {
     /// What a delegated run got stuck on, and answering it — which resumes
     /// the run that asked, with your answer as its next turn.
     Questions(commands::questions::Args),
+    /// Follow-ups a conversation proposed: list, read, accept (schedules the
+    /// reminder) or reject.
+    Followups(commands::followups::Args),
     /// Meeting polls: where each stands, the pick card, and the timer's sweep.
     Polls(commands::polls::Args),
 
@@ -550,6 +553,11 @@ pub enum Command {
     /// one minute of the host's load by kind of work (what the timer runs).
     /// No model runs here.
     System(commands::system::Args),
+
+    /// The GitHub board's collector: `mecha github collect` asks GitHub,
+    /// through `gh`'s own login, about the repositories you selected (what
+    /// the timer runs). No model runs here.
+    Github(commands::github::Args),
 
     /// Inspect saved transcripts.
     #[command(subcommand)]
@@ -688,6 +696,8 @@ impl Command {
             // holds for itself; held here too, `--now` signalled the parent
             // and left the child running unheld (review of D13).
             Command::Workflow(_) => false,
+            // A store of proposals: list, read, accept, reject. No model.
+            Command::Followups(_) => false,
             // Long-lived: hold per turn (`follow::Follower::enter`) or per
             // fire (`trigger::run_agent`), or do not follow yet (`chat`,
             // `tui` — REMOTE-SURFACE-DESIGN §14 step 4).
@@ -720,6 +730,7 @@ impl Command {
             | Command::Charter(_)
             | Command::Hud(_)
             | Command::System(_)
+            | Command::Github(_)
             | Command::Config(_)
             | Command::Model(_) => false,
         }
@@ -817,6 +828,7 @@ impl Command {
             | Command::Features(_)
             | Command::Polls(_)
             | Command::Proposals(_)
+            | Command::Followups(_)
             | Command::Review(_)
             | Command::Skills(_)
             | Command::Imagelib(_)
@@ -824,6 +836,7 @@ impl Command {
             | Command::Charter(_)
             | Command::Hud(_)
             | Command::System(_)
+            | Command::Github(_)
             | Command::Config(_)
             | Command::Model(_) => false,
         }
@@ -1082,6 +1095,7 @@ async fn dispatch() -> Result<()> {
         Command::Tasks(args) => commands::tasks::run(&cli.global, args).await,
         Command::Workflow(args) => commands::workflow::run(&cli.global, args).await,
         Command::Questions(args) => commands::questions::run(&cli.global, args).await,
+        Command::Followups(args) => commands::followups::run(args),
         Command::Polls(args) => commands::polls::run(&cli.global, args).await,
         Command::Kg(args) => commands::kg::run(&cli.global, args).await,
         #[cfg(feature = "memory-prototype")]
@@ -1105,6 +1119,7 @@ async fn dispatch() -> Result<()> {
         Command::Charter(args) => commands::charter::execute(&cli.global, args).await,
         Command::Hud(args) => commands::hud::run(&cli.global, args).await,
         Command::System(args) => commands::system::run(&cli.global, args).await,
+        Command::Github(args) => commands::github::run(&cli.global, args).await,
         Command::Sessions(args) => commands::sessions::execute(&cli.global, args).await,
         Command::Config(args) => commands::config::execute(&cli.global, args).await,
         Command::Model(args) => commands::model::execute(&cli.global, args).await,

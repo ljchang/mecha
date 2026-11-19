@@ -14,6 +14,7 @@ mod kg;
 pub mod pump;
 pub mod remote;
 pub mod review;
+mod seen;
 pub mod send;
 pub mod show;
 mod tasks;

@@ -31,14 +31,10 @@ use super::actions::{self, Action, ActionLedger, Executor};
 use super::approve::{self, Answer, Mode, SlackApprover};
 use super::pump::{pump, PumpConfig};
 use super::review::{self, ReviewMode};
+use super::seen::SeenEvents;
 use super::threads::{Event, RunMarker, ThreadRecord, ThreadStore};
 use crate::GlobalOpts;
 use futures::FutureExt;
-
-/// How many event ids are remembered for deduplication. Slack's redelivery
-/// semantics across a dropped socket are undocumented, so handlers are
-/// idempotent and this is what makes them so.
-const SEEN_EVENTS: usize = 512;
 
 /// A run in flight, and the handles that steer or stop it.
 struct Live {
@@ -236,7 +232,7 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         live: HashMap::new(),
         conversations: HashMap::new(),
         pending: HashMap::new(),
-        seen: VecDeque::new(),
+        seen: SeenEvents::open_default(),
         approval_seq: 0,
         staged_before: HashMap::new(),
         files_before: HashMap::new(),
@@ -423,7 +419,7 @@ struct State {
     live: HashMap<String, Live>,
     conversations: HashMap<String, Conversation>,
     pending: HashMap<String, PendingApproval>,
-    seen: VecDeque<String>,
+    seen: SeenEvents,
     approval_seq: u64,
     /// Pending outbox ids as they were when each thread's run began.
     staged_before: HashMap<String, std::collections::HashSet<String>>,
@@ -473,7 +469,7 @@ impl State {
         }
         // Slack's redelivery across a dropped socket is undocumented, so
         // assume it happens.
-        if !self.first_time(&event.event_id) {
+        if !self.seen.first_time(&event.event_id) {
             return;
         }
 
@@ -796,20 +792,6 @@ impl State {
         }
 
         self.start_run(record, text, event.files).await;
-    }
-
-    fn first_time(&mut self, event_id: &str) -> bool {
-        if event_id.is_empty() {
-            return true;
-        }
-        if self.seen.iter().any(|s| s == event_id) {
-            return false;
-        }
-        self.seen.push_back(event_id.to_string());
-        if self.seen.len() > SEEN_EVENTS {
-            self.seen.pop_front();
-        }
-        true
     }
 
     /// A deferred turn, back once its switch cleared. Through the same

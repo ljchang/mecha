@@ -1077,6 +1077,25 @@ mecha workflow close FLOW_ID
 See [Workflows and Today](/docs/features/automation/workflows) for the complete walkthrough,
 including dependencies, commitments, and delivery recovery.
 
+## `followups`
+
+Follow-ups a conversation proposed with `propose_follow_up` — "check back on
+this tomorrow at nine" — waiting on your answer. Nothing is scheduled until
+you accept one: accepting creates the workflow whose reminder comes due at
+that time, in Tasks → Workflows, with a link back to the chat.
+
+```bash
+mecha followups list [--json] [--all]   # waiting on you (--all: decided too)
+mecha followups show <id>               # one whole: what, when, the chat it came from
+mecha followups accept <id>             # schedule it
+mecha followups reject <id> --reason "…"
+```
+
+The tool is offered only with `[features] followups` on (`mecha features
+enable followups`, or Settings → Features). Turning it off stops new
+proposals; these verbs still decide the ones already waiting. `show` warns
+when the proposing conversation had read content from outside.
+
 ## `questions`
 
 Read and answer a question parked by a delegated run. Answering resumes its
@@ -2024,6 +2043,45 @@ mecha system sample [--json]
   process, unit or model name. The `mecha-system-sample.timer` runs it every
   minute.
 
+## `github`
+
+The GitHub board's collector. No model runs here, and mecha never holds the
+GitHub token: every call is `gh api`, through the GitHub CLI's own login.
+Needs `[features] github`.
+
+```
+mecha github collect [--json]
+```
+
+- **`collect`** reads `~/.mecha/github/repos.toml` — which owners and
+  repositories to watch; forks and archived repositories are left out unless
+  the file says otherwise — and writes `~/.mecha/github/github.db`: every
+  repository the login can see (`inventory`), the watched ones' default-branch
+  workflow runs (`ci_runs`, kept 90 days), their open issues and the open pull
+  requests of people outside the repository (`items`, kept while open and 30
+  days after), stars, forks, watchers and open issues once a day (`counts`),
+  and a `collect_log` row for every run. A rate limit, a missing or refused
+  login, a `gh` that is not there, a repository that vanished and any other
+  failure each log their own kind, and [`mecha doctor`](#doctor) reports
+  them — an empty table after a failed run is never read as nothing failing.
+  It exits non-zero when anything was refused or failed, after writing what it
+  found. `$MECHA_GH_BIN` names a `gh` other than the one on `PATH`.
+  `scripts/mecha-github-collect.timer` runs it; how often is that file's
+  setting.
+
+```toml
+# ~/.mecha/github/repos.toml
+[[owner]]
+login = "example-lab"
+include = "all"          # or "listed": only the [[repo]] lines below
+forks = false
+archived = false
+
+[[repo]]                 # an exception either way
+name = "example-lab/old-course-site"
+include = false
+```
+
 ## `features`
 
 Which optional parts of mecha are on, the way to turn on each of the rest, and
@@ -2046,6 +2104,7 @@ mecha features disable <id>...
 | Feature | Requirement and next step |
 |---|---|
 | `mail_rules` | Requires `mail`; `mecha features enable mail mail_rules`. Install the sibling mail binary and [five-minute timer](#mail-rule). Defaults off. |
+| `github` | Needs the GitHub CLI on `PATH`, logged in (`gh auth login`), and `~/.mecha/github/repos.toml`; install `scripts/mecha-github-collect.{service,timer}` to [collect](#github) on a schedule. Defaults off. |
 
 Every optional feature has a switch in the global `config.toml`'s `[features]`
 table (see [Configuration](/docs/reference/configuration#features)), and the

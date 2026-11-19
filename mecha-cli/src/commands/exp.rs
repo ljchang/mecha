@@ -2315,7 +2315,8 @@ async fn run_one(
     // **An allowlist, not a denylist.** The child's whole store is the arm's
     // home, and `MECHA_HOME` is not the only variable that moves a store:
     // `MECHA_LEARNING_DIR`, `MECHA_OUTBOX_DIR`, `MECHA_QUESTIONS_DIR`,
-    // `MECHA_MESSAGES_DIR` and `MECHA_TRIGGERS_DIR` each point one store at
+    // `MECHA_FOLLOWUPS_DIR`, `MECHA_MESSAGES_DIR` and `MECHA_TRIGGERS_DIR`
+    // each point one store at
     // the real one ahead of the home, and `MECHA_PROVIDER` / `MECHA_MODEL` /
     // `MECHA_EFFORT` rewrite the arm above its config — so an operator with
     // any of them exported would have run a trial against their real

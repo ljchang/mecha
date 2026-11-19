@@ -114,6 +114,8 @@ pub const FEATURES_STARTER: &str = r#"
 # memory = false     # the assistant's own encrypted memory of its runs
 # corrections = false  # drafts you changed or rejected, steers and next messages read as corrections, recalled on a like ask
 # recall = false     # what your earlier chats and runs said, found when it bears on a chat
+# followups = false  # a conversation offers to check back later; each waits in Review for you
+# github = false     # the GitHub board's collector: CI, new issues, use (`mecha github collect`)
 "#;
 
 /// A commented starting point rather than a dump of defaults — the point of the

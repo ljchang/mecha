@@ -1,0 +1,15 @@
+[Unit]
+Description=Collect the GitHub board's tables
+
+[Timer]
+# How often is the owner's open decision (GITHUB-DASHBOARD-DESIGN.md §9), and
+# it lives here, never in code: ten minutes for CI and items is the proposal.
+# Counts are a row per repository per day whatever this says — a run that
+# finds today's row keeps it.
+OnCalendar=*:0/10
+# Spread off the minute other timers fire on.
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

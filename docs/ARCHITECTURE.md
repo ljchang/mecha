@@ -5964,6 +5964,15 @@ catastrophic for the answer that decides whether to start a run. It fails
 closed on a record it cannot read and skips a thing that was never a record;
 conflating those two is one stray `.DS_Store` disabling the whole feature.
 
+**The events already handled are remembered across a restart**
+(`slack::seen::SeenEvents`, `~/.mecha/slack/seen-events`, one id per line).
+Acks precede the handler and Slack's redelivery is undocumented, so an event
+is deduplicated by its `event_id`; held only in memory, a redelivery to the
+restarted connector was a first sighting and a second run. It is a dedupe and
+never a gate: a file that cannot be read or written is a warning and the ring
+carries on in memory, because refusing events whose ids could not be recorded
+would turn a disk fault into a connector that answers nobody.
+
 **Inbound text is a prompt, never a command.** `/model` rebuilds the agent,
 `/clear` drops the conversation and its taint, and `!` runs a shell command
 with no approver in front of it. Those are affordances of sitting at the
@@ -7729,6 +7738,19 @@ are coalesced and persisted, with timezone-aware quiet hours, snoozing and daily
 deduplication. The daily view still shows overdue work during a snooze. Nothing
 here automatically starts an agent or sends a notification to another service.
 
+**A model proposes follow-ups; only the owner makes them workflows**
+(`followup.rs`, `ASSISTANT-FOLLOW-THROUGH-DESIGN.md` §Model-proposed
+follow-ups). `propose_follow_up` writes `~/.mecha/followups/`, never the
+workflow store; `mecha followups accept` — the proposals pane's verb — writes
+the workflow, with the proposal's session and a dateless commitment whose
+`follow_up_at` is the proposed time. The tool refuses without
+`ToolCtx::recorded_session` (stamped by the web chat per turn, spoken ones
+included, the voice facade per slot and the TUI per agent build — never from
+the outbox route), is off unless `[features] followups` is on, records taint
+fail-closed, and `forget` purges a
+session's proposals. Waking a run when one comes due is the design's step 2
+and not built; until then a due follow-up is the ordinary in-app reminder.
+
 ## The meeting poll lifecycle
 
 `docs/MEETING-POLL-UX-DESIGN.md` is the authority; the invariants a session is
@@ -7916,6 +7938,31 @@ Five decisions, each of which is a bug if undone:
   minutes skips rather than stacking, and records why. The timeout
   (`20m` default) *cancels* rather than aborting — the partial answer
   survives, exactly as with Ctrl-C.
+
+**A run starts from nothing, taint included, unless its file asks for its
+last answer** (`carry_last_answer`, owner ruling 2026-11-17). Then the runner
+folds what that trigger last told the owner into the first user turn as its
+own block beside the prompt (`trigger::render_last_answer`), so a daily
+briefing can say what changed rather than repeat itself. It is a trifecta
+switch, and what it arms and costs is `TRIFECTA.md`'s row for it. What holds
+it up here:
+
+- **The harness reads the transcript; the model is never asked what it
+  said.** A note a run leaves for tomorrow's run is that run's account of
+  itself, and the answer the owner actually received is on disk.
+- **The ledger is read from its tail** (`TriggerStore::scan_runs_rev`), for
+  the newest `ok` runs of this trigger. One torn line from months ago fails
+  the whole-file parse and would switch the carry off for good.
+- **A night cut short is stepped over, a few runs back at most.** A run that
+  timed out mid-call records `ok` with no final answer; the carry takes the
+  newest run that did answer, and the ledger row names the session it came
+  from (`carried_from`).
+- **Carrying nothing is said, unless there was never a run.** No earlier
+  `ok` run is a first run and records neither field. Every other case —
+  none of the runs looked at had an answer, or their transcripts are gone —
+  records `carry_error` beside `notify_error`, and the run still runs: a
+  briefing quietly back to repeating itself reads exactly like one that
+  works.
 
 Two smaller ones worth not re-litigating. The cron parser is hand-rolled
 because every available crate speaks Quartz's dialect where the first field is
@@ -8149,6 +8196,49 @@ was ever deployed.
   which counts every call and names none. Do not merge the two: one would
   miss the calls a build must not stutter, and the other would leak
   incognito into briefs (design §7.3).
+
+## The GitHub collector
+
+`github.rs`, `mecha github collect`, `docs/GITHUB-DASHBOARD-DESIGN.md` (step 1
+built: the collector and its store; the board, links and summaries are later
+steps). `system.rs`'s shape again: a timer runs a command, the command writes
+`~/.mecha/github/github.db`, and the HUD will read it as an ordinary `sqlite`
+source with `content = "third-party"`, because an issue title is a stranger's
+text.
+
+- **mecha never holds the token (G9).** Every call is `gh api`, through `gh`'s
+  own login; nothing reads, passes or prints the token. `$MECHA_GH_BIN` swaps
+  the binary, which is how the tests run a fake `gh` that answers canned JSON.
+- **The selection is the owner's file, never layered config**
+  (`~/.mecha/github/repos.toml`, `deny_unknown_fields`). One that does not
+  parse selects nothing and logs `bad_selection`; an absent one logs
+  `no_selection`. The inventory is listed either way, for the picker.
+- **Refused and failed are different kinds** in `collect_log` —
+  `rate_limited`, `auth`, `gh_missing`, `vanished`, `out_of_time`,
+  `bad_selection`, `no_selection`, `failed` — and every run writes a
+  `finished` row whatever happened. The doctor reads the latest run and how
+  long each kind has lasted (`doctor/github.rs`). A failed run keeps the last
+  answer in every table; it never empties one, because an empty `items` after
+  a revoked login reads as "nothing new". The classification is by what `gh`
+  printed (exit 4 is no login; `HTTP 401` a refused one, measured with gh 2.45),
+  and for GraphQL by each error's `type`, never by the response body, which
+  holds strangers' titles.
+- **A run's calls share one budget** (`RUN_BUDGET`), held a minute under the
+  unit's `TimeoutStartSec` by a test, for the reason §System state gives: a
+  bound per call adds up past the unit's timeout, and systemd kills the run
+  before it writes. What the budget did not reach logs `out_of_time`.
+- **A run's time is its identity** in the log, to the millisecond: two runs in
+  one second were one run's rows before (found smoke-testing).
+- **Absence closes an item only from a complete listing.** An issue not seen
+  in a listing read to its end gets `gone_at`; a listing cut short marks
+  nothing. Items go 30 days after `coalesce(gone_at, last_seen)`, workflow
+  runs 90 days after they were created, and `counts` is a row per repository
+  per day — a later run that day keeps the first — kept for good.
+- **Unknown is never zero.** A count GitHub did not give is `NULL`, and a run
+  that stopped before the selection writes a `NULL` `selected`, never `0`;
+  a selection that matched nothing is its own doctor finding.
+- **The cadence is the timer's** (`scripts/mecha-github-collect.timer`), the
+  owner's open decision (design §9), never a constant in code.
 
 ## Session records and replay
 
