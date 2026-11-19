@@ -1044,7 +1044,7 @@ fn choose_for(
     // had outside passages been let through: the outside ones among the
     // best `HITS` of every candidate. Counted over every candidate over the
     // floor instead, one search said some two hundred held back of a
-    // hand-over that holds five at most (2,234 over the owner's first 11
+    // hand-over that holds two at most (2,234 over the owner's first 11
     // searches, 2026-11-19).
     let withheld = if clean {
         rank(spans, &asked, &candidates)
@@ -2569,6 +2569,30 @@ mod tests {
                 true,
             );
         }
+        // And one clean passage, which a word of the query only it holds
+        // ("C") puts first: the count is then the outside passages that the
+        // best two would have held, one, and not the five over the floor nor
+        // the two a cap alone would say (review of #901).
+        let owner = session(
+            &sessions,
+            SessionKind::Web,
+            vec![Message::user(
+                "berth C has a notice, the fender line is condemned",
+            )],
+        );
+        {
+            use std::io::Write;
+            let line = serde_json::to_string(&Record::Taint(crate::agent::Taint {
+                private: true,
+                untrusted: false,
+            }))
+            .unwrap();
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&owner)
+                .unwrap();
+            writeln!(file, "{line}").unwrap();
+        }
         let spans = Spans::shared(
             dir_in(&home),
             sessions.clone(),
@@ -2599,7 +2623,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(clean.content, NOTHING, "every passage here is outside");
+        assert!(
+            clean.content.contains("fender line is condemned") && !clean.external,
+            "{}",
+            clean.content
+        );
         let stands = standing(&home).unwrap().unwrap();
         // Started again under this rule: one search, and what it held back.
         assert_eq!(stands.searches, Some(1), "{stands:?}");
@@ -2612,13 +2640,19 @@ mod tests {
             )
             .await
             .unwrap();
-        let would = open_search.content.matches("[session ").count() as u64;
+        // The outside passages among what it hands over.
+        let would = open_search.content.matches(" · tool result]").count() as u64;
+        assert_eq!(held, would, "held back {held}, would have handed {would}");
+        // The clean passage ranks first, so one outside passage would have
+        // been handed: fewer than the cap, and fewer than the five near
+        // enough. A count that is either of those fails here.
         assert!(
-            would >= 1 && would <= HITS as u64,
+            open_search.content.find("fender line is condemned")
+                < open_search.content.find(" · tool result]"),
             "{}",
             open_search.content
         );
-        assert_eq!(held, would, "held back {held}, would have handed {would}");
+        assert_eq!(held, 1, "{}", open_search.content);
         let _ = std::fs::remove_dir_all(home);
     }
 
