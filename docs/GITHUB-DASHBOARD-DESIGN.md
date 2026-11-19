@@ -37,7 +37,13 @@ Taken by the owner on 2026-11-18:
 | G8 | **Quick summaries come from a quarantined pass in the collector (§5).** |
 | G9 | **`gh` holds the GitHub login (§8)** until the credential vault is designed. The vault's research waits until the autonomous-work shape (follow-ups, unattended ask-and-resume) is built, so that its use cases are known. |
 
-**Still open** (§9): how often the collector runs.
+Taken by the owner on 2026-11-19:
+
+| # | Ruling |
+|---|---|
+| G10 | **The collector runs once a day to start** (`scripts/mecha-github-collect.timer`, 07:00 local, catching up a missed day). A shorter cadence is a change to that file alone; `collect_log`'s `finished` row records the API quota each run spent, which is what a shorter one would be judged by. |
+
+Nothing is left open (§9).
 
 ## 1. The shape
 
@@ -266,9 +272,6 @@ It is an optional feature, so step 1 starts at `ARCHITECTURE.md` §Features →
 
 ## 9. Open
 
-Ruled on 2026-11-18 and moved to §0 (G7–G9): the typed reference, the
-quarantined summaries, and `gh` as the credential holder.
-
-1. **How often.** Ten minutes for CI and items, daily for traffic and
-   counts, is the proposal; the limit that matters is the API's, measured in
-   step 1.
+Nothing. Ruled on 2026-11-18 and moved to §0 (G7–G9): the typed
+reference, the quarantined summaries, and `gh` as the credential holder;
+on 2026-11-19 (G10), how often: once a day to start.

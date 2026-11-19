@@ -2,13 +2,14 @@
 Description=Collect the GitHub board's tables
 
 [Timer]
-# How often is the owner's open decision (GITHUB-DASHBOARD-DESIGN.md §9), and
-# it lives here, never in code: ten minutes for CI and items is the proposal.
-# Counts are a row per repository per day whatever this says — a run that
-# finds today's row keeps it.
-OnCalendar=*:0/10
+# Once a day to start (the owner's ruling G10, GITHUB-DASHBOARD-DESIGN.md
+# §0). How often lives here, never in code: a shorter cadence is this line
+# alone, and `mecha doctor`'s staleness window (`GITHUB_STALE_AFTER`) is set
+# for a daily run. Counts are a row per repository per day whatever this says.
+OnCalendar=*-*-* 07:00
 # Spread off the minute other timers fire on.
-RandomizedDelaySec=60
+RandomizedDelaySec=600
+# A day the machine was off is collected when it next starts.
 Persistent=true
 
 [Install]

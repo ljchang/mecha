@@ -13,9 +13,10 @@ use std::path::Path;
 const COMPONENT: &str = "github";
 
 /// A collector whose last run is older than this has stopped running. The
-/// timer's cadence is the owner's (design §9); this is set well past the
-/// proposed ten minutes so an hourly choice still reads as running.
-pub const GITHUB_STALE_AFTER: Duration = Duration::hours(3);
+/// shipped timer runs once a day (ruling G10), so this is a day and a half:
+/// a run late by the timer's spread, or a machine off over the hour, still
+/// reads as running; a missed day does not.
+pub const GITHUB_STALE_AFTER: Duration = Duration::hours(36);
 
 /// How long a repository that vanished stays a finding. A vanished one is
 /// an event, logged by the run that missed it, not a state every later run
@@ -243,7 +244,7 @@ pub fn check_github(db: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             remedy: Some(collect_now()),
             ..finding(
                 Severity::Attention,
-                "the GitHub collector has not run for three hours",
+                "the GitHub collector has not run for a day and a half",
                 format!(
                     "last run {}; is mecha-github-collect.timer running? `journalctl --user -u \
                      mecha-github-collect` says why a run stopped",
@@ -402,12 +403,13 @@ mod tests {
         let h = home("stale");
         let db = github::db_path(&h);
         record(&db, &run(now(), &[])).unwrap();
-        assert!(check_github(&db, now() + Duration::hours(1)).is_empty());
+        // A daily run: a day later is still running, a missed day is not.
+        assert!(check_github(&db, now() + Duration::hours(25)).is_empty());
         assert_eq!(
-            summaries(&check_github(&db, now() + Duration::hours(4))),
+            summaries(&check_github(&db, now() + Duration::hours(37))),
             [(
                 Severity::Attention,
-                "the GitHub collector has not run for three hours".into()
+                "the GitHub collector has not run for a day and a half".into()
             )]
         );
     }
