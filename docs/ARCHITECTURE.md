@@ -7772,6 +7772,14 @@ message, waits a minute; a turn that cannot start gives its claim back. The
 claim is taken under the workflow store's lock, re-checking the whole rule. The
 outcome is an event the tick turns into the owner's notice.
 
+**What the owner did about a woken answer is a sensor nothing reads**
+(`followup::measure`, `mecha followups measure`, design §Step 4): replied,
+released or rejected a draft by `Actor::Owner`'s hand, or dismissed the
+reminder (`workflow ack` records `notice_acked` with its actor, which the tick
+reads past so a dismissal never re-raises the notice), within a day; a
+source that cannot be read or a hand not provably the owner's is `unknown`,
+never none, and "opened the chat" is not recorded, so it is not measured.
+
 ## The meeting poll lifecycle
 
 `docs/MEETING-POLL-UX-DESIGN.md` is the authority; the invariants a session is

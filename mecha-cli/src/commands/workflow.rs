@@ -418,8 +418,10 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             w.notice = None;
             Ok(())
         })?)?,
+        // The dismissal is recorded with who made it, so the acted-on
+        // measure (`followup::measure`) counts only the owner's own.
         Cmd::Ack { id } => serde_json::to_value(store.update(&id, |w| {
-            w.notice = None;
+            w.acknowledge(crate::commands::actor::acting_actor(), now);
             Ok(())
         })?)?,
         Cmd::Recover { id, reason } => serde_json::to_value(store.recover(&id, &reason, now)?)?,
