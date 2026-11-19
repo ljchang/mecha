@@ -22,6 +22,21 @@ maps which document holds what.
 
 ## Where the work is
 
+**Recall (on in the owner's web chat since 2026-11-17).** `[features] recall`
+hands a web chat clean passages from earlier chats and runs.
+`mecha features` shows what the index holds and what it has kept from chats.
+Outside passages stay held until something can clear them. Open work:
+- **The offline screen.** It is on the unpushed branch `feat/recall-screen`,
+  with `mecha sessions screen` and a made-up set in `eval/recall-screen/`.
+  On the owner's index it flagged 134 of 782 outside passages; most of the 24
+  owner-side flags are likely false alarms. On the made-up set it missed
+  every plainly worded false fact. Whether it filters, clears passages, or
+  gives way to corroboration or the owner's own marking is the owner's call.
+- **Promotion and pruning (§11.2 and §11.3).** Parked by the owner until there
+  is more data. A research summary is in the memory notes, not the repo.
+- **Nothing recalled in a real chat yet.** No recall hand-over has been seen
+  in a real web chat.
+
 **Latest durable-planning qualification (2026-11-11):** the opt-in CLI task
 profile supports owner Task creation, ordered model Plan updates and authenticated
 restart/resume in Mecha memory. Actual CLI tests passed locally and on Spark,

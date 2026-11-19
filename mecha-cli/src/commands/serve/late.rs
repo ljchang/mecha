@@ -475,6 +475,75 @@ mod tests {
         assert_eq!(result_of(&convo, "s1"), (made.clone(), false));
     }
 
+    /// Recall reads a chat a late delivery wrote into as that delivery
+    /// leaves it: a picture made on this machine, finished or failed, leaves
+    /// a clean chat clean, and a result from outside marks it. Written by
+    /// `land` itself, so a record the door comes to write after its
+    /// checkpoint, which recall's reader does not name, fails here rather
+    /// than quietly closing every chat that made a picture (as the note did:
+    /// 195 passages in nine chats, before #891).
+    #[test]
+    fn a_late_delivery_leaves_a_chat_as_recall_reads_it() {
+        use mecha_core::tool::spans::held_outside_content;
+        let made = format!(
+            "{}`image_generate` is running.",
+            mecha_core::imagegen::BEING_MADE
+        );
+        for (external, failed) in [(false, false), (false, true), (true, false)] {
+            let (session, _dir) = scratch_session(&format!("recall-{external}-{failed}"));
+            // The turn as a run leaves it: its messages, then its checkpoint.
+            let mut convo = conversation_with("image_generate", "c1", &made);
+            for message in &convo.messages {
+                session.append(&Record::Message(message.clone())).unwrap();
+            }
+            session.append(&Record::Taint(convo.taint)).unwrap();
+            let before = std::fs::read_to_string(&session.path).unwrap();
+            assert!(!held_outside_content(&before), "{before}");
+
+            let mut state = LateState::default();
+            state.ended(0, true, true);
+            let output = if failed {
+                mecha_core::tool::ToolOutput::err("Image generation failed: the server went away.")
+            } else {
+                mecha_core::tool::ToolOutput::ok("images/a.png")
+            };
+            let output = if external {
+                output.from_outside()
+            } else {
+                output
+            };
+            land(
+                &mut state,
+                &session,
+                &mut convo,
+                &Delivered {
+                    key: "k".into(),
+                    call_id: "c1".into(),
+                    tool: "image_generate".into(),
+                    output,
+                    terms: mecha_core::jobs::Terms {
+                        cap: 16 * 1024,
+                        ..Default::default()
+                    },
+                    run: 0,
+                },
+            );
+            let after = std::fs::read_to_string(&session.path).unwrap();
+            // Every record the door writes after its checkpoint was written.
+            assert!(after.contains(r#""record":"pending_note""#), "{after}");
+            assert_eq!(
+                after.contains(r#""record":"late_failure""#),
+                failed,
+                "{after}"
+            );
+            assert_eq!(
+                held_outside_content(&after),
+                external,
+                "external {external}, failed {failed}: {after}"
+            );
+        }
+    }
+
     /// A failed run's notes are owed again, ahead of any that arrived while
     /// it ran.
     #[test]

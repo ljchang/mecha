@@ -1850,7 +1850,17 @@ fn render(rows: &[Row], announced: &[feature::Announcement]) -> String {
             State::Blocked { on } => (format!("needs {}", on.id()), row.next.clone()),
             State::Unknown { reason } => (reason.clone(), None),
         };
-        out.push_str(&format!("{name:<width$}  {:<7}  {say}\n", row.state.word()));
+        // A row may say more than one line; each after the first sits under
+        // the first, where the fix line goes.
+        let mut lines = say.lines();
+        out.push_str(&format!(
+            "{name:<width$}  {:<7}  {}\n",
+            row.state.word(),
+            lines.next().unwrap_or("")
+        ));
+        for more in lines {
+            out.push_str(&format!("{:<width$}  {:<7}  {more}\n", "", ""));
+        }
         if let Some(fix) = fix {
             out.push_str(&format!("{:<width$}  {:<7}  → {fix}\n", "", ""));
         }
@@ -2149,6 +2159,35 @@ mod tests {
         assert!(!text.contains("blocked"), "{text}");
         assert!(text.contains("→ add a [documents] table"), "{text}");
         assert!(text.contains("→ add an [image] table"), "{text}");
+    }
+
+    /// A row that says two lines has the second under the first's words,
+    /// where a fix line sits: the table reads as columns still.
+    #[test]
+    fn a_row_that_says_two_lines_has_the_second_under_the_first() {
+        let mut rows = feature::all(&feature::Facts::default());
+        let recall = rows.iter_mut().find(|r| r.id == Feature::Recall).unwrap();
+        recall.state = feature::State::On {
+            detail: "what the index holds\nhow it was counted".into(),
+        };
+        let text = render(&rows, &[]);
+        let lines: Vec<&str> = text.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| l.contains("what the index holds"))
+            .expect("the first line");
+        let first = lines[at];
+        let second = lines[at + 1];
+        assert!(first.trim_start().starts_with("recall"), "{text}");
+        assert_eq!(
+            second.find("how it was counted"),
+            first.find("what the index holds"),
+            "{text}"
+        );
+        assert!(
+            second[..second.find("how").unwrap()].trim().is_empty(),
+            "{text}"
+        );
     }
 
     /// A card: two sums, the host one unknown because the chat row's host

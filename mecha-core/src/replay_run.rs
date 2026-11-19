@@ -1779,7 +1779,10 @@ mod tests {
                 "mecha-core/src/tool/spans.rs",
                 "Spans",
                 None, // named by a const
-                PURE, // reads the home's index; `refresh` is the run command's, not a call's
+                // Reads the home's index, and tallies the search in it as the
+                // graph's reads tally theirs: a count no branch turns on.
+                // `refresh` is the run command's, not a call's.
+                PURE,
             ),
             (
                 "mecha-core/src/tool/recall.rs",
