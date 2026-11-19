@@ -1256,10 +1256,25 @@ impl ChatState {
         }) {
             tracing::warn!(workflow = %w.id, "could not record that a follow-up woke: {e:#}");
         }
-        let (kind, detail) = match started.done.await {
-            Ok(Ok(_)) => (FOLLOW_UP_ANSWERED, session_id),
-            Ok(Err(e)) => (FOLLOW_UP_FAILED, e),
-            Err(_) => (FOLLOW_UP_FAILED, "the run ended without an answer".into()),
+        let ended = started.done.await;
+        // A turn that parked a question asked rather than answered: the
+        // workflow says so, with the question's id, and the tick tells the
+        // owner where to answer it. The park recorded the turn's taint as it
+        // stood; the transcript's own, written as the turn ended, sharpens it.
+        let asked = started
+            .parked
+            .as_ref()
+            .and_then(|park| park.parked().first().cloned());
+        if let (Some(park), Some(_)) = (&started.parked, &asked) {
+            if let Ok(t) = Session::read(&path) {
+                park.stamp_taint(t.convo.taint);
+            }
+        }
+        let (kind, detail) = match (ended, asked) {
+            (_, Some(question)) => (mecha_core::workflow::FOLLOW_UP_ASKED, question),
+            (Ok(Ok(_)), None) => (FOLLOW_UP_ANSWERED, session_id),
+            (Ok(Err(e)), None) => (FOLLOW_UP_FAILED, e),
+            (Err(_), None) => (FOLLOW_UP_FAILED, "the run ended without an answer".into()),
         };
         if let Err(e) = store.update(&w.id, |w| {
             w.record(kind, detail.clone(), chrono::Utc::now());
@@ -3806,6 +3821,10 @@ struct Started {
     events: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
     done: tokio::sync::oneshot::Receiver<Result<crate::voice::HostedAnswer, String>>,
     cancel: mecha_core::agent::CancelHandle,
+    /// Where an unattended turn's questions were parked, when it could park
+    /// them — what the follow-up waker reads to say the turn asked rather
+    /// than answered. `None` for every turn with a person at it.
+    parked: Option<Arc<mecha_core::questions::ParkingAsker>>,
 }
 
 /// Start a turn on a session that is idle and still holds its conversation.
@@ -4375,7 +4394,37 @@ fn begin_turn(
     // model names (`Egress::Chosen`) that `[outbox] tools` does not route
     // would dispatch for real — `http_fetch` is read-only by design, so no
     // approver is ever asked about it. Withheld from the unattended turn
-    // (review of #897), with every other unrouted sender and `ask_user`.
+    // (review of #897), with every other unrouted sender.
+    //
+    // **And `ask_user` parks** (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md`
+    // §Unattended runs ask, A1): nobody is there to answer a card, so the
+    // shared asker is told so through the turn's context and stores the
+    // question at once, on this conversation, to resume as the owner's turn
+    // here (A2) — and the run ends. Only a kept chat can park (a question
+    // needs a session to resume), and a question store that cannot be
+    // opened withholds the tool as before: fail-closed, never a card in
+    // front of nobody.
+    let parked = if opts.unattended {
+        ws.session.kept().and_then(|session| {
+            let store = mecha_core::questions::QuestionStore::default_root()
+                .and_then(mecha_core::questions::QuestionStore::open)
+                .map_err(|e| tracing::warn!("a woken turn cannot park a question: {e:#}"))
+                .ok()?;
+            Some(Arc::new(
+                mecha_core::questions::ParkingAsker::new(
+                    Arc::new(store),
+                    session.meta.id.clone(),
+                    None,
+                )
+                .resuming(mecha_core::questions::Resume::Chat),
+            ))
+        })
+    } else {
+        None
+    };
+    if let Some(park) = &parked {
+        Arc::make_mut(&mut cx.tools).parks_questions = Some(Arc::clone(park));
+    }
     if opts.unattended {
         // The route this turn dispatches through, set just above.
         let route = cx.outbox.clone();
@@ -4390,10 +4439,9 @@ fn begin_turn(
             .filter(|t| t.capabilities().egress != mecha_core::tool::Egress::None)
             .map(|t| t.name().to_string())
             .filter(|n| !route.as_ref().is_some_and(|r| r.routes(n)))
-            // And `ask_user`: nobody is there to answer, and its card would
-            // hold this turn's seat for ten minutes. A woken run says what it
-            // would have asked in its answer instead.
-            .chain(std::iter::once("ask_user".to_string()))
+            // `ask_user` only where it cannot park: its card would hold this
+            // turn's seat for ten minutes in front of nobody.
+            .chain(parked.is_none().then(|| "ask_user".to_string()))
             .collect();
         if !unrouted.is_empty() {
             cx.withheld = cx
@@ -5259,6 +5307,7 @@ fn begin_turn(
         events: tap_rx,
         done: done_rx,
         cancel,
+        parked,
     })
 }
 
@@ -6187,6 +6236,154 @@ pub async fn resume(
     match resume_locked(&chat, &mut sessions, &body.id, remembered, true) {
         Ok(key) => Json(serde_json::json!({ "key": key })).into_response(),
         Err((status, why)) => (status, why).into_response(),
+    }
+}
+
+/// Answer a question that resumes as a chat (`Resume::Chat`, A2): the
+/// conversation that asked is resumed into the session map — by the owner,
+/// so an archived chat comes back to the rail — and the answer starts an
+/// ordinary owner's turn there through [`begin_turn`]: the page's own
+/// approver at the chat's own mode, steerable, never the unattended posture.
+/// Hands back the chat's key, for the page's *Open chat*.
+///
+/// **The turn begins under the question store's lock, and the question
+/// closes only once it has** (`QuestionStore::answer_with`): two answers
+/// racing for one question start one turn, the loser is refused as the
+/// detached path refuses it, and a turn that could not begin — a busy
+/// conversation, a record that would not take — leaves the question open
+/// with the owner's words still theirs to send again. The answer is the
+/// owner's own words, recorded as their message, never a harness voice.
+///
+/// Background questions never come here: a delegated run's resume is still
+/// the detached `mecha questions answer --unattended` it always was.
+pub(super) async fn answer_in_chat(
+    chat: &Arc<ChatState>,
+    store: &mecha_core::questions::QuestionStore,
+    id: &str,
+    answer: &str,
+) -> Result<String, (StatusCode, String)> {
+    let asked = store
+        .find(id)
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}\n")))?;
+    if asked.resume != mecha_core::questions::Resume::Chat {
+        return Err((
+            StatusCode::CONFLICT,
+            "that question resumes in the background, not as a chat\n".into(),
+        ));
+    }
+    // A remembered ordinary chat resumes with its memory, as `POST
+    // /api/resume` resumes it; any other memory-marked transcript has its
+    // own door and takes verified input only.
+    #[cfg(feature = "memory-prototype")]
+    let remembered = {
+        let found = Session::find(chat.sessions_dir(), &asked.session_id).ok();
+        let remembered = chat.ordinary_memory.is_some()
+            && found.as_deref().is_some_and(super::web_memory::open_marked);
+        if !remembered
+            && found
+                .as_deref()
+                .is_some_and(|path| !matches!(memory_marked(path), Ok(false)))
+        {
+            return Err((
+                StatusCode::CONFLICT,
+                "that question was asked in a memory chat, which takes typed input only — \
+                 open the chat and answer there\n"
+                    .into(),
+            ));
+        }
+        remembered
+    };
+    #[cfg(not(feature = "memory-prototype"))]
+    let remembered = false;
+    // The model this turn runs on, entered before the sessions lock as the
+    // typed door enters it: a switch in progress is waited out, not raced.
+    let (mut held, bound) = chat
+        .follower
+        .enter("question answer", |_| {})
+        .await
+        .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}\n")))?;
+    let mut sessions = chat.sessions.lock().await;
+    if chat.stopping.is_cancelled() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "server is shutting down\n".into(),
+        ));
+    }
+    let key = resume_locked(chat, &mut sessions, &asked.session_id, remembered, true)?;
+    // Idle and holding its conversation, or the answer waits for the owner
+    // to send it again: steering it into a turn in flight would make it part
+    // of someone else's run.
+    let idle = sessions
+        .get(&key)
+        .and_then(ChatSlot::ordinary)
+        .is_some_and(|ws| ws.live.is_none() && ws.conversation.is_some());
+    if !idle {
+        return Err((
+            StatusCode::CONFLICT,
+            "that conversation has a turn in flight — your answer was not sent; try again \
+             when it ends\n"
+                .into(),
+        ));
+    }
+    let mut refused: Option<(StatusCode, String)> = None;
+    let mut began = false;
+    let answered = store.answer_with(&asked.id, answer, |_| {
+        match begin_turn(
+            chat,
+            &bound,
+            &mut held,
+            &mut sessions,
+            &key,
+            answer,
+            TurnOpts {
+                // The owner's own words, typed on their authenticated page.
+                owner_input: true,
+                request_id: None,
+                spoken: false,
+                approve_all: false,
+                unlogged: false,
+                tts_streams: false,
+                images: Vec::new(),
+                draw: None,
+                unattended: false,
+            },
+        ) {
+            Ok(_started) => {
+                began = true;
+                Ok(())
+            }
+            Err(TurnError::Held) => {
+                refused = Some((
+                    StatusCode::CONFLICT,
+                    "that conversation is held by a run still landing — your answer was not \
+                     sent; try again in a moment\n"
+                        .into(),
+                ));
+                anyhow::bail!("held")
+            }
+            Err(TurnError::Failed(e)) => {
+                refused = Some((StatusCode::INTERNAL_SERVER_ERROR, format!("{e}\n")));
+                anyhow::bail!("failed")
+            }
+        }
+    });
+    match answered {
+        Ok(_) => Ok(key),
+        // The turn is running with the answer in it; only the record of the
+        // question failed to close. Said, because a question left open here
+        // would be offered again for a conversation that already moved on.
+        Err(e) if began => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "your answer went to the chat ({key}), but the question could not be marked \
+                 answered: {e:#} — give up on it in Tasks → Waiting rather than answering again\n"
+            ),
+        )),
+        Err(e) => Err(refused.unwrap_or_else(|| {
+            // Closed between the read above and the lock: somebody answered
+            // or abandoned it from another device.
+            (StatusCode::CONFLICT, format!("{e:#}\n"))
+        })),
     }
 }
 
@@ -9516,15 +9713,34 @@ mod wake_tests {
             }
         }
         let seen = Arc::new(StdMutex::new(Vec::new()));
+        let chat = waking_chat_over(
+            on,
+            outbox,
+            tool.into_iter().collect(),
+            Box::new(Sees(Arc::clone(&seen))),
+            Arc::default(),
+        );
+        (chat, seen)
+    }
+
+    /// The chat the tests above build, over any tools and provider, with the
+    /// question routes the caller may also hand a `WebAsker`.
+    fn waking_chat_over(
+        on: bool,
+        outbox: bool,
+        tools: Vec<Arc<dyn mecha_core::tool::Tool>>,
+        provider: Box<dyn mecha_core::provider::Provider>,
+        routes: QuestionRoutes,
+    ) -> Arc<ChatState> {
         let mut registry = mecha_core::tool::Registry::new();
-        if let Some(tool) = tool {
+        for tool in tools {
             registry.insert(tool);
         }
         let test_root = test_scratch_root();
         let mut config = answering_config(true);
         mecha_core::feature::set_switch(&mut config, mecha_core::feature::Feature::Followups, on);
         let mut agent = Agent::new(
-            Box::new(Sees(Arc::clone(&seen))),
+            provider,
             registry,
             Arc::new(mecha_core::tool::ModeApprover {
                 mode: PermissionMode::ReadOnly,
@@ -9543,9 +9759,9 @@ mod wake_tests {
             )));
         }
         let follower = crate::follow::Follower::fixed(agent, "local", "test", config);
-        let chat = Arc::new(ChatState {
+        Arc::new(ChatState {
             follower: Arc::new(follower),
-            routes: Arc::default(),
+            routes,
             outbox_root: test_root.join("outbox"),
             attempts_dir: test_root.join("attempts"),
             recall: None,
@@ -9562,8 +9778,7 @@ mod wake_tests {
             stopping: Default::default(),
             runs: Default::default(),
             jobs: Default::default(),
-        });
-        (chat, seen)
+        })
     }
 
     /// A recorded conversation on disk, and an accepted follow-up's workflow
@@ -9908,14 +10123,14 @@ mod wake_tests {
         }
     }
 
-    /// Neither a blind sender (a deep `web_search` is chosen under a blind
-    /// declaration) nor `ask_user` (nobody to answer) runs from a woken
-    /// turn; a read-only tool that sends nothing still does.
+    /// A blind sender (a deep `web_search` is chosen under a blind
+    /// declaration) does not run from a woken turn; a read-only tool that
+    /// sends nothing still does. (`ask_user` is no longer withheld: it parks,
+    /// below.)
     #[tokio::test]
-    async fn a_woken_turn_withholds_every_unrouted_sender_and_ask_user() {
+    async fn a_woken_turn_withholds_every_unrouted_sender() {
         for (name, egress, may_run) in [
             ("search_blind", mecha_core::tool::Egress::Blind, false),
-            ("ask_user", mecha_core::tool::Egress::None, false),
             ("read_notes", mecha_core::tool::Egress::None, true),
         ] {
             let home = crate::testenv::HomeGuard::new("wake-withhold");
@@ -10289,5 +10504,456 @@ mod wake_tests {
             js.contains(r#"^ — "(.*?)", proposed "#),
             "chat-wake.js's pattern moved"
         );
+    }
+
+    /// One step of a scripted provider's answers.
+    #[derive(Clone)]
+    enum Step {
+        Call(&'static str, serde_json::Value),
+        Say(&'static str),
+    }
+
+    /// Answers request `n` with `steps[n]` (the last step after that), and
+    /// keeps every request it was sent.
+    struct Scripted {
+        seen: Arc<StdMutex<Vec<mecha_core::message::CompletionRequest>>>,
+        steps: Vec<Step>,
+    }
+    #[async_trait::async_trait]
+    impl mecha_core::provider::Provider for Scripted {
+        fn local(&self) -> bool {
+            true
+        }
+        fn id(&self) -> &str {
+            "local"
+        }
+        fn default_model(&self) -> &str {
+            "test"
+        }
+        async fn complete(
+            &self,
+            req: &mecha_core::message::CompletionRequest,
+            sink: Option<&mecha_core::provider::StreamSink>,
+        ) -> Result<mecha_core::message::CompletionResponse> {
+            let n = {
+                let mut seen = self.seen.lock().unwrap();
+                seen.push(req.clone());
+                seen.len() - 1
+            };
+            match self.steps.get(n).or(self.steps.last()).cloned() {
+                Some(Step::Call(name, input)) => Ok(mecha_core::message::CompletionResponse {
+                    message: Message::assistant(vec![mecha_core::message::Block::ToolUse {
+                        id: format!("c{n}"),
+                        name: name.into(),
+                        input,
+                    }]),
+                    stop_reason: mecha_core::message::StopReason::ToolUse,
+                    usage: Usage::default(),
+                    refusal: None,
+                    model: "test".into(),
+                    malformed_tool_args: 0,
+                }),
+                Some(Step::Say(text)) => Answers(text).complete(req, sink).await,
+                None => Answers("nothing scripted").complete(req, sink).await,
+            }
+        }
+    }
+
+    /// The web chat's own `ask_user`, routed through `routes` as `serve`
+    /// routes it.
+    fn web_ask_user(routes: &QuestionRoutes) -> Arc<dyn mecha_core::tool::Tool> {
+        let routes = Arc::clone(routes);
+        let lookup: super::super::present::SessionLookup =
+            Arc::new(move |key: &str| routes.lock().ok().and_then(|m| m.get(key).cloned()));
+        Arc::new(mecha_core::tool::ask::AskUserTool::new(Arc::new(
+            super::super::present::WebAsker { lookup },
+        )))
+    }
+
+    fn question_store() -> mecha_core::questions::QuestionStore {
+        mecha_core::questions::QuestionStore::open(
+            mecha_core::questions::QuestionStore::default_root().unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// A woken follow-up that asks parks at once (A1): the question is
+    /// stored on its own conversation to resume as a chat, no card goes up
+    /// — with a page open on the chat, in `Ask`, subscribed, which is where
+    /// the card would have waited ten minutes — the run ends at the
+    /// question, and the workflow records `follow_up_asked` with its id.
+    /// Every other unattended rule stands: an unrouted sender is still
+    /// withheld from the turn. Bounded: the card path waits out the timeout.
+    #[tokio::test]
+    async fn a_woken_follow_up_that_asks_parks_at_once_and_says_so() {
+        let home = crate::testenv::HomeGuard::new("wake-asks");
+        let routes: QuestionRoutes = Arc::default();
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let blind = Probe {
+            name: "search_blind",
+            egress: mecha_core::tool::Egress::Blind,
+            ran: Arc::clone(&ran),
+        };
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let chat = waking_chat_over(
+            true,
+            true,
+            vec![web_ask_user(&routes), Arc::new(blind)],
+            Box::new(Scripted {
+                seen: Arc::clone(&seen),
+                steps: vec![
+                    Step::Call("search_blind", serde_json::json!({})),
+                    Step::Call(
+                        "ask_user",
+                        serde_json::json!({"question": "Which build should I check — the nightly or the release?"}),
+                    ),
+                    Step::Say("checked"),
+                ],
+            }),
+            routes,
+        );
+        let (id, session) = due_follow_up(&chat, &home.dir);
+        let (key, _watching) = {
+            let mut sessions = chat.sessions.lock().await;
+            let key = resume_locked(&chat, &mut sessions, &session, false, true).unwrap();
+            let ws = sessions
+                .get_mut(&key)
+                .and_then(ChatSlot::ordinary_mut)
+                .unwrap();
+            *ws.mode.lock().unwrap() = PermissionMode::Ask;
+            (key.clone(), ws.events.subscribe())
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            chat.wake_due_follow_ups(),
+        )
+        .await
+        .expect("the woken turn waited on a card nobody will answer");
+
+        let asked = seen.lock().unwrap().clone();
+        assert_eq!(
+            asked.len(),
+            2,
+            "the sender, then the question — and the run ended at the question"
+        );
+        assert!(
+            !ran.load(std::sync::atomic::Ordering::SeqCst),
+            "an unrouted sender ran from a woken turn"
+        );
+
+        let open = question_store().open_items().unwrap();
+        assert_eq!(open.len(), 1, "{open:?}");
+        let q = &open[0];
+        assert_eq!(q.session_id, session, "parked on its own conversation");
+        assert_eq!(q.resume, mecha_core::questions::Resume::Chat);
+        assert!(q.task_id.is_none());
+        {
+            let sessions = chat.sessions.lock().await;
+            let ws = sessions.get(&key).and_then(ChatSlot::ordinary).unwrap();
+            assert!(ws.questions.cards().is_empty(), "a card went up for nobody");
+        }
+        let w = WorkflowStore::default_store().unwrap().get(&id).unwrap();
+        let last = w.events.last().unwrap();
+        assert_eq!(
+            last.kind,
+            mecha_core::workflow::FOLLOW_UP_ASKED,
+            "{:?}",
+            w.events
+        );
+        assert_eq!(last.detail, q.id);
+        assert!(
+            !w.events.iter().any(|e| e.kind == FOLLOW_UP_ANSWERED),
+            "a turn that asked was recorded as answered"
+        );
+    }
+
+    /// A recorded conversation that ended on a parked `ask_user` — a
+    /// trigger's run, as the ledger leaves it — carrying third-party taint,
+    /// and the open `chat` question it parked.
+    fn asked_in_a_chat(chat: &ChatState, home: &std::path::Path) -> (String, String) {
+        let workspace = home.join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session = Session::create(
+            chat.sessions_dir(),
+            SessionMeta {
+                id: Session::new_id(),
+                created_at: chrono::Utc::now(),
+                provider: "local".into(),
+                model: "test".into(),
+                workspace: workspace.clone(),
+                title: Some("trigger: morning".into()),
+                kind: Some(mecha_core::session::SessionKind::Test),
+            },
+        )
+        .unwrap();
+        session
+            .append(&Record::Message(Message::user(
+                "Summarise what is waiting on me.",
+            )))
+            .unwrap();
+        session
+            .append(&Record::Message(Message::assistant(vec![
+                mecha_core::message::Block::ToolUse {
+                    id: "a1".into(),
+                    name: "ask_user".into(),
+                    input: serde_json::json!({"question": "Which room is the review in?"}),
+                },
+            ])))
+            .unwrap();
+        session
+            .append(&Record::Message(Message {
+                role: mecha_core::message::Role::User,
+                content: vec![mecha_core::message::Block::ToolResult {
+                    tool_use_id: "a1".into(),
+                    content: "Put to the owner as question 1. This run is ending here.".into(),
+                    is_error: false,
+                }],
+                ..Message::user("")
+            }))
+            .unwrap();
+        let armed = mecha_core::agent::Taint {
+            private: true,
+            untrusted: true,
+        };
+        session.append(&Record::Taint(armed)).unwrap();
+        let q = question_store()
+            .park_as(
+                mecha_core::questions::Resume::Chat,
+                "Which room is the review in?",
+                vec![],
+                &session.meta.id,
+                None,
+                Some(workspace),
+                armed,
+                None,
+            )
+            .unwrap();
+        (session.meta.id.clone(), q.id)
+    }
+
+    /// Wait for `key`'s turn to end and its conversation to come back.
+    async fn settled(chat: &ChatState, key: &str) {
+        for _ in 0..400 {
+            {
+                let sessions = chat.sessions.lock().await;
+                if sessions
+                    .get(key)
+                    .and_then(ChatSlot::ordinary)
+                    .is_some_and(|ws| ws.live.is_none() && ws.conversation.is_some())
+                {
+                    return;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("the turn on {key} never ended");
+    }
+
+    /// A2 through the web's own door: answering a `chat` question resumes
+    /// the conversation into the session map — no detached child — and the
+    /// answer is the owner's own message there, never a harness voice; the
+    /// turn runs, the question is closed with the owner's words, the page is
+    /// handed the chat's key (and stays where it is), the resumed chat keeps
+    /// the transcript's recorded taint, and a second answer is refused.
+    #[tokio::test]
+    async fn answering_a_chat_question_from_the_web_resumes_it_as_the_owner_s_turn() {
+        use axum::extract::State;
+        let home = crate::testenv::HomeGuard::new("answer-in-chat");
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let chat = waking_chat_over(
+            true,
+            true,
+            Vec::new(),
+            Box::new(Scripted {
+                seen: Arc::clone(&seen),
+                steps: vec![Step::Say("booked: the small room")],
+            }),
+            Arc::default(),
+        );
+        let (session, qid) = asked_in_a_chat(&chat, &home.dir);
+        assert!(chat.sessions.lock().await.is_empty(), "the premise");
+
+        let mut state = super::super::tests::test_state();
+        state.chat = Some(Arc::clone(&chat));
+        let answer = |state: super::super::WebState| {
+            let question = qid.clone();
+            async move {
+                super::super::questions::answer(
+                    State(state),
+                    axum::Json(super::super::questions::AnswerBody {
+                        question,
+                        answer: "the small one on the third floor".into(),
+                    }),
+                )
+                .await
+            }
+        };
+        let resp = answer(state.clone()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["resumed"], "chat", "{body}");
+        let key = body["key"].as_str().expect("the chat's key").to_string();
+        settled(&chat, &key).await;
+
+        {
+            let sessions = chat.sessions.lock().await;
+            let ws = sessions.get(&key).and_then(ChatSlot::ordinary).unwrap();
+            assert_eq!(ws.session.id(), session, "resumed into the map");
+            let convo = ws.conversation.as_ref().unwrap();
+            assert!(
+                convo.taint.untrusted && convo.taint.private,
+                "the resumed chat lost its recorded taint"
+            );
+        }
+        assert_eq!(seen.lock().unwrap().len(), 1, "the owner's turn ran");
+        let recorded = Session::read(&Session::find(chat.sessions_dir(), &session).unwrap())
+            .unwrap()
+            .convo
+            .messages;
+        let theirs = recorded
+            .iter()
+            .find(|m| mecha_core::agent::owner_text(m).contains("the small one on the third floor"))
+            .expect("the answer is recorded as the owner's words");
+        assert!(
+            !theirs.harness,
+            "the owner's answer was marked the harness's"
+        );
+        assert!(recorded
+            .iter()
+            .any(|m| m.text().contains("booked: the small room")));
+
+        let q = question_store().get(&qid).unwrap();
+        assert_eq!(q.status, mecha_core::questions::ANSWERED);
+        assert_eq!(
+            q.answer.as_deref(),
+            Some("the small one on the third floor")
+        );
+
+        let again = answer(state).await;
+        assert_eq!(
+            again.status(),
+            StatusCode::CONFLICT,
+            "a second answer resumed it"
+        );
+        assert_eq!(seen.lock().unwrap().len(), 1, "a second turn ran");
+    }
+
+    /// The owner's answering turn is theirs, at the chat's own mode: on a
+    /// chat open in `Ask`, a write the model reaches for goes to the page's
+    /// card and runs on the owner's yes — where the unattended approver
+    /// would have refused it as non-interactive, with no card at all.
+    #[tokio::test]
+    async fn the_answering_turn_runs_behind_the_page_s_approver() {
+        let home = crate::testenv::HomeGuard::new("answer-approver");
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let posture = Arc::new(StdMutex::new(None));
+        let chat = waking_chat_over(
+            true,
+            true,
+            vec![
+                Arc::new(WriteNote(Arc::clone(&ran))),
+                Arc::new(PostureProbe(Arc::clone(&posture))),
+            ],
+            Box::new(Scripted {
+                seen: Arc::default(),
+                steps: vec![
+                    Step::Call("note_posture", serde_json::json!({})),
+                    Step::Call("write_note", serde_json::json!({})),
+                    Step::Say("noted"),
+                ],
+            }),
+            Arc::default(),
+        );
+        let (session, qid) = asked_in_a_chat(&chat, &home.dir);
+        let key = {
+            let mut sessions = chat.sessions.lock().await;
+            let key = resume_locked(&chat, &mut sessions, &session, false, true).unwrap();
+            let ws = sessions
+                .get_mut(&key)
+                .and_then(ChatSlot::ordinary_mut)
+                .unwrap();
+            *ws.mode.lock().unwrap() = PermissionMode::Ask;
+            key
+        };
+        let got = answer_in_chat(&chat, &question_store(), &qid, "yes, note it")
+            .await
+            .unwrap();
+        assert_eq!(got, key, "the chat already open is the one answered");
+        let mut approved = false;
+        for _ in 0..400 {
+            let card = {
+                let sessions = chat.sessions.lock().await;
+                let ws = sessions.get(&key).and_then(ChatSlot::ordinary).unwrap();
+                ws.questions.cards().into_iter().find_map(|c| match c {
+                    WireEvent::Question { qid, kind, .. } if kind == "approval" => {
+                        Some((qid, ws.questions.clone()))
+                    }
+                    _ => None,
+                })
+            };
+            if let Some((card, questions)) = card {
+                assert!(questions.answer(card, super::super::present::Answer::Approve));
+                approved = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(approved, "no approval card reached the page");
+        settled(&chat, &key).await;
+        assert!(
+            ran.load(std::sync::atomic::Ordering::SeqCst),
+            "the owner's yes did not run it"
+        );
+        assert_eq!(
+            *posture.lock().unwrap(),
+            Some(mecha_core::closure::RunPosture::Interactive),
+            "the answering turn ran at the unattended posture"
+        );
+    }
+
+    /// A background question is not this door's: refused, still open, and
+    /// no conversation is lifted into the map — its resume stays the
+    /// detached `questions answer --unattended` (`questions::answer`).
+    #[tokio::test]
+    async fn a_background_question_is_not_answered_in_the_chat() {
+        let home = crate::testenv::HomeGuard::new("answer-background");
+        let chat = waking_chat_over(
+            true,
+            true,
+            Vec::new(),
+            Box::new(Answers("unused")),
+            Arc::default(),
+        );
+        let (session, _) = asked_in_a_chat(&chat, &home.dir);
+        let store = question_store();
+        let q = store
+            .park(
+                "Which account?",
+                vec![],
+                &session,
+                Some("task-1".into()),
+                None,
+                mecha_core::agent::Taint::default(),
+                None,
+            )
+            .unwrap();
+        let err = answer_in_chat(&chat, &store, &q.id, "the shared one")
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, StatusCode::CONFLICT, "{err:?}");
+        assert!(store.get(&q.id).unwrap().is_open());
+        assert!(chat.sessions.lock().await.is_empty());
+        // And the web door sends it down the detached path, unchanged.
+        let src = include_str!("questions.rs");
+        let door = &src[src.find("pub async fn answer(").unwrap()..];
+        let door = &door[..door.find("\n}\n").unwrap()];
+        assert!(door.contains("q.resume == mecha_core::questions::Resume::Chat"));
+        assert!(door.contains("\"--unattended\".into()"));
+        assert!(door.contains("spawn_detached_note("));
     }
 }

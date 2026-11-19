@@ -1701,10 +1701,8 @@ fn check_triggers(
                     // skipped-overlap appended after an error is bookkeeping,
                     // not a recovery, and keying on the literal last row let
                     // it hide the failure the operator needed to see.
-                    if matches!(
-                        row.status,
-                        crate::trigger::RunStatus::Ok | crate::trigger::RunStatus::Error
-                    ) {
+                    // A run that ended on a question is a run (A1).
+                    if row.status.ran() {
                         let window = recent.entry(row.trigger.clone()).or_default();
                         window.push(row);
                         if window.len() > HEALTH_WINDOW {
@@ -4246,6 +4244,7 @@ mod tests {
             answered_at: None,
             answer: None,
             goal: None,
+            resume: Default::default(),
         };
         std::fs::write(
             dir.join(format!("{id}.json")),

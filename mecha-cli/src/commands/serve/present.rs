@@ -388,6 +388,15 @@ impl Asker for WebAsker {
         options: &[String],
         goal: Option<&mecha_core::goal::GoalHypothesis>,
     ) -> Option<Reply> {
+        // **A turn with nobody present parks at once** — a woken follow-up's
+        // (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` §Unattended runs ask). Its
+        // card would hold the turn's seat for ten minutes in front of nobody
+        // and then decline; parked, the question waits in Tasks → Waiting
+        // and the run ends. Before any routing, so no card is ever shown for
+        // it, whoever happens to have the page open.
+        if let Some(park) = &ctx.parks_questions {
+            return park.ask_about(ctx, question, options, goal).await;
+        }
         // The conversation the turn was stamped with. A resumed conversation
         // keeps its recorded workspace under a new key, so the directory name
         // routed its questions to the chat that directory was made for — the
@@ -711,6 +720,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(reply, Reply::Answered("the March one".into()));
+    }
+
+    /// A turn stamped as having nobody present parks at once, with the page
+    /// open and subscribed, and puts no card up: a woken follow-up's question
+    /// must not wait ten minutes in front of an empty room. Fails on the
+    /// card path, which this test would sit in until its timeout.
+    #[tokio::test]
+    async fn a_turn_with_nobody_present_parks_without_a_card() {
+        let (web, questions, events, ctx) = asker(None);
+        let _watching = events.subscribe();
+        let park = scratch_park();
+        let ctx = ToolCtx {
+            parks_questions: Some(Arc::clone(&park)),
+            cancel: Some(tokio_util::sync::CancellationToken::new()),
+            ..ctx
+        };
+        let reply = tokio::time::timeout(
+            Duration::from_secs(5),
+            web.ask_about(&ctx, "Which room?", &[], None),
+        )
+        .await
+        .expect("an unattended ask waited on a card")
+        .unwrap();
+        assert!(matches!(reply, Reply::Parked(_)), "{reply:?}");
+        assert_eq!(park.parked().len(), 1);
+        assert!(questions.cards().is_empty(), "a card went up for nobody");
+        assert!(ctx.cancel.as_ref().unwrap().is_cancelled(), "the run ends");
     }
 
     #[tokio::test]

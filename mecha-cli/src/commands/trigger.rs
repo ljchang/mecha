@@ -20,6 +20,7 @@ use chrono_tz::Tz;
 use mecha_core::agent::{CancelHandle, Conversation, RunContext};
 use mecha_core::config::PermissionMode;
 use mecha_core::message::Message;
+use mecha_core::questions::{ParkingAsker, QuestionStore, Resume};
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
 use mecha_core::trigger::{CatchUp, Due, RunRecord, RunStatus, Trigger, TriggerStore};
 use std::io::Write;
@@ -524,6 +525,12 @@ fn print_run(r: &RunRecord) {
     } else if !r.summary.is_empty() {
         println!("    {}", r.summary);
     }
+    if let Some(q) = &r.question_id {
+        println!(
+            "    question {} — answer it in the web app (Tasks → Waiting)",
+            QuestionStore::short(q)
+        );
+    }
     // After the summary rather than instead of it: the run produced an answer,
     // and both facts matter — this one is the reason it did not arrive.
     if let Some(e) = &r.notify_error {
@@ -884,18 +891,25 @@ async fn run_one(global: &GlobalOpts, name: &str) -> Result<()> {
 /// What the model is told about the situation it is running in.
 ///
 /// Three facts, each of which changes what a good answer looks like: nobody is
-/// there, so a question is a dead end; anything outbound is a draft, so
-/// reporting it as sent would be a lie; and the answer goes to a person reading
-/// it later out of context, so it has to stand alone.
+/// there, so a question waits for hours and ends the run; anything outbound is
+/// a draft, so reporting it as sent would be a lie; and the answer goes to a
+/// person reading it later out of context, so it has to stand alone.
+///
+/// The first used to say a question was a dead end. Since A1
+/// (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` §Unattended runs ask) a trigger can
+/// park one, so the sentence keeps the assumption as the default and names
+/// asking as the way out only where the run cannot go on without the owner.
 const UNATTENDED: &str = "\
 You are running unattended, on a schedule, with nobody watching. Three things \
-follow. There is no one to answer a question, so make the reasonable \
-assumption and say plainly what you assumed rather than stopping to ask. \
-Anything that would leave this machine is staged as a draft for the user to \
-review later — report it as a draft awaiting their release, never as sent or \
-done. And your answer will be read later, out of context, by someone who has \
-not seen this conversation: lead with what they need to know, and keep it \
-short enough to read on a phone.";
+follow. There is no one to answer a question now, so make the reasonable \
+assumption and say plainly what you assumed rather than stopping to ask. Only \
+when you cannot go on without the user's own decision, ask it with `ask_user`: \
+the question waits for them and this run ends there, so say first where you \
+got to. Anything that would leave this machine is staged as a draft for the \
+user to review later — report it as a draft awaiting their release, never as \
+sent or done. And your answer will be read later, out of context, by someone \
+who has not seen this conversation: lead with what they need to know, and \
+keep it short enough to read on a phone.";
 
 /// Run one trigger to completion and record what happened.
 async fn fire(
@@ -940,6 +954,19 @@ async fn fire(
     };
 
     match run_agent(global, t, &mut record, carried, stop).await {
+        // The run asked and ended there (A1): waiting on the owner, not
+        // finished, and the delivery says so — a briefing that arrives as the
+        // run's last words would read as its answer.
+        Ok(text) if record.question_id.is_some() => {
+            record.status = RunStatus::Waiting;
+            let asked = record
+                .question_id
+                .as_deref()
+                .and_then(|id| QuestionStore::open_existing_default()?.get(id).ok());
+            let asked = asked.as_ref().map(|q| q.asked()).unwrap_or_default();
+            record.summary = first_line(&format!("waiting on you: {asked}"));
+            record.notify_error = notify(t, &workspace_of(t), &waiting_notice(t, asked, &text));
+        }
         Ok(text) => {
             record.status = RunStatus::Ok;
             record.summary = first_line(&text);
@@ -955,6 +982,25 @@ async fn fire(
     store.clear_running(&t.name);
     store.append_run(&record)?;
     Ok(())
+}
+
+/// What `notify` is handed when the run ended on a question: that it is
+/// waiting, and where to answer, ahead of the question and the run's last
+/// words. The question is the model's prose, as the answer it would
+/// otherwise deliver is.
+fn waiting_notice(t: &Trigger, asked: &str, text: &str) -> String {
+    let mut out = format!(
+        "The `{}` run has a question for you and is waiting on your answer — answer it in \
+         the web app, Tasks → Waiting; the run carries on as your turn in its chat.\n",
+        t.name
+    );
+    if !asked.trim().is_empty() {
+        out.push_str(&format!("\n{}\n", asked.trim()));
+    }
+    if !text.trim().is_empty() {
+        out.push_str(&format!("\nWhere it got to:\n\n{}\n", text.trim()));
+    }
+    out
 }
 
 /// "Switch now" cancels `fire` — this fire's own handle — and nothing above it:
@@ -1169,9 +1215,9 @@ async fn run_agent(
         ..GlobalOpts::default()
     };
 
-    // Not interactive: no terminal approver, and no `ask_user` in the registry
-    // — that tool is only ever registered by a front-end that owns a human.
-    let prepared = setup::prepare(&opts, false).await?;
+    // Not interactive: no terminal approver. `ask_user` is registered below,
+    // over the question store rather than a person (A1).
+    let mut prepared = setup::prepare(&opts, false).await?;
 
     let session = Session::create(
         &Session::default_dir()?,
@@ -1186,6 +1232,35 @@ async fn run_agent(
         },
     )?;
     record.session_id = Some(session.meta.id.clone());
+    // **A trigger may ask** (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` §Unattended
+    // runs ask, A1). Nobody is there to answer, so asking parks the question
+    // on this run's own session and ends the run — no seat or prefix held
+    // while it waits — and answering it in the web app resumes the
+    // conversation there as the owner's own turn (A2: `resume = chat`).
+    // A store that cannot be opened leaves the tool out and the run as it
+    // was: asking would then be a question nobody could ever see.
+    let asker = match QuestionStore::default_root().and_then(QuestionStore::open) {
+        Ok(store) => {
+            let asker = std::sync::Arc::new(
+                ParkingAsker::new(std::sync::Arc::new(store), &session.meta.id, None)
+                    .resuming(Resume::Chat),
+            );
+            prepared.agent.registry_mut().insert(std::sync::Arc::new(
+                mecha_core::tool::ask::AskUserTool::new(std::sync::Arc::clone(&asker)
+                    as std::sync::Arc<dyn mecha_core::tool::ask::Asker>),
+            ));
+            Some(asker)
+        }
+        Err(e) => {
+            eprintln!(
+                "mecha: trigger `{}` cannot ask a question this run — the question store: {e:#}",
+                t.name
+            );
+            None
+        }
+    };
+    // After the insert, never before: `RunConfig::of` reads the registry at
+    // call time, and the record must hold the surface the run had.
     session.append(&Record::Config(RunConfig::of(
         &prepared.agent,
         &prepared.config,
@@ -1313,6 +1388,13 @@ async fn run_agent(
     let _ = timer.await;
     let _ = canceller.await;
 
+    // The question, before anything that can fail: a run that parked is
+    // waiting on the owner however the rest of the bookkeeping goes. The
+    // taint stamp only sharpens what the park already recorded.
+    if let Some(asker) = &asker {
+        record.question_id = asker.parked().first().cloned();
+        asker.stamp_taint(convo.taint);
+    }
     session.record_run(&recorded, &convo)?;
     session.append(&Record::Taint(convo.taint))?;
     if let Some(mb) = &prepared.mailbox {
@@ -1859,6 +1941,10 @@ mod tests {
         // sent, or it writes an answer that only makes sense to someone who
         // watched it work.
         assert!(UNATTENDED.contains("no one to answer"));
+        // The assumption stays the default; asking is for a decision the run
+        // cannot make (A1), and the run is told it ends there.
+        assert!(UNATTENDED.contains("make the reasonable assumption"));
+        assert!(UNATTENDED.contains("`ask_user`") && UNATTENDED.contains("this run ends there"));
         assert!(UNATTENDED.contains("never as sent"));
         assert!(UNATTENDED.contains("out of context"));
         // And it must not tell the model to use its best judgment on missing

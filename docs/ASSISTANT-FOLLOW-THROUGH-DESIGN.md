@@ -172,8 +172,9 @@ still only reminds.
   declares `Blind` while a deep search reaches a chosen backend. `shell`
   goes too wherever its sandbox can reach the network, so the canonical
   "check whether the build passed" needs a network-isolating sandbox or a
-  routed tool to answer it. `ask_user` is withheld as well: nobody is there
-  to answer, and a woken run says what it would have asked in its answer.
+  routed tool to answer it. `ask_user` parks instead of offering a card:
+  nobody is there to answer one (§Unattended runs ask, below; it was
+  withheld until 2026-11-19).
   Its run posture is `unattended` too, so a shell it runs is never
   read as the owner's approval (`closure::cause`). It takes a background
   seat (`permit.rs`), like any unattended run.
@@ -198,7 +199,7 @@ minutes with nobody to answer). This extends the parking to both.
 | # | Ruling |
 |---|---|
 | A1 | **Triggers and woken follow-ups may park a question.** Other background runs (mail sweeps, rumination) may not. |
-| A2 | **Answering opens the run as a web chat**, and the answer is the owner's own turn there: the result, any approval card and the rest of the conversation happen in the chat, not in the background. |
+| A2 | **Answering is done in Tasks → Waiting; the run resumes as the owner's turn in its chat**, tracked from Tasks, its conversation one tap away (Open chat), never opened automatically. The result, any approval card and the rest of the conversation happen in that chat, not in the background. (Revised by the owner the same day: Tasks is the hub for background work; the first wording had the page open the chat.) |
 | A3 | **An unanswered question never expires.** It waits until the owner answers or abandons it; `mecha doctor`'s existing staleness finding still names it. |
 
 **The shape.**
@@ -215,13 +216,31 @@ minutes with nobody to answer). This extends the parking to both.
   `ask_user`, told this turn is unattended, parks at once instead of offering
   a card) in place of the withholding. Its workflow records
   `follow_up_asked`, and the tick turns that into the owner's notice.
-- **Answering a `chat` question from the web** goes through `mecha serve`,
-  never a detached child: the conversation is resumed into the session map
-  (`resume_locked`, by the owner, so an archived chat comes back to the
-  rail) and the answer starts an ordinary owner's turn through `begin_turn`
-  — the page's own approver, its own mode, steerable — and the page opens
-  that chat. The question is marked answered with the owner's words. A chat
-  question answered from the terminal says to answer it in the web app.
+- **Answering a `chat` question** is done in Tasks → Waiting, and goes
+  through `mecha serve`, never a detached child: the conversation is resumed
+  into the session map (`resume_locked`, by the owner, so an archived chat
+  comes back to the rail) and the answer starts an ordinary owner's turn
+  through `begin_turn` — the chat's own approver, its own mode, steerable —
+  so the run's history stays in one conversation. The page stays on Tasks:
+  the answer's reply carries the chat's key, and the Waiting view shows the
+  question as answered and continuing, with an *Open chat* link; nothing
+  navigates by itself. The turn begins under the question store's lock and
+  the question closes only once it has (`QuestionStore::answer_with`), so two
+  answers racing for one question start one turn and a turn that cannot
+  begin leaves the question open. The question is marked answered with the
+  owner's words. A chat question answered from the terminal says to answer
+  it in the web app, and is not consumed.
+- **A trigger's preamble** (`UNATTENDED` in `commands/trigger.rs`) used to
+  say a question was a dead end. It now keeps the reasonable assumption as
+  the default and names `ask_user` only for a decision the run cannot make
+  without the owner, saying the run ends there; without that the tool would
+  be registered and talked out of use.
+- **What the owner is told.** A trigger's `notify` is handed "a question is
+  waiting — answer it in Tasks → Waiting", the question, and where the run
+  got to, never the run's last words as if they were its answer; its ledger
+  row is `waiting` with the question's id. A woken follow-up's workflow
+  records `follow_up_asked` with the question's id, and the tick's notice is
+  "Follow-up has a question for you — answer it in Tasks → Waiting".
 - **Taint rides with the conversation.** The resumed chat carries its
   recorded taint, and the question's own taint warning (the one shown before
   any parked question is answered) still shows: an unattended run that read

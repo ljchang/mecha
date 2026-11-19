@@ -5,6 +5,7 @@
   import { opens } from './features.js';
   import Workflows from './Workflows.svelte';
   import { isActionable } from './home-view.js';
+  import { answeredChat, chatHref, resumesInChat } from './question-resume.js';
   // The GTD board, over `mecha tasks …` — which reaches the graph's own
   // store through its MCP surface. Nothing here confirms: every status is
   // one tap from where it was, and the tool surface has no delete.
@@ -143,6 +144,12 @@
   let resuming = $state({});
   const RESUME_GRACE_POLLS = 6; // ~30s: provider preflight plus MCP startup
 
+  // Questions answered here whose run went on as the owner's turn in its
+  // chat (a trigger's or a woken follow-up's). Their conversation is one tap
+  // away and never opened by itself: Tasks is the hub for background work.
+  // Kept for this page's life — the store no longer lists an answered one.
+  let continued = $state([]);
+
   async function answerQuestion(q, text) {
     const answer = (text ?? answers[q.id] ?? '').trim();
     if (!answer) return;
@@ -155,6 +162,15 @@
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       error = null;
+      // A chat resume answered in this request, synchronously: the turn has
+      // begun and the question is closed, so there is nothing to watch for.
+      const key = answeredChat(await res.json().catch(() => null));
+      if (key) {
+        continued = [{ id: q.id, question: q.question, key }, ...continued.filter((c) => c.id !== q.id)];
+        answers[q.id] = '';
+        await load();
+        return;
+      }
       resuming[q.id] = 0;
       // The resume is detached, so there is nothing to await — the same
       // arrangement `ask mecha` has, and the board is the meeting point for
@@ -694,6 +710,12 @@
            them. Better said here than discovered from a queue that grew. -->
       <div class="qnote">{more} questions parked on this task — answering one resumes the run, so answer or abandon the others too.</div>
     {/if}
+    {#if resumesInChat(q)}
+      <!-- Said before the answer, not after: this one does not resume in the
+           background. The answer becomes your own turn in the chat that
+           asked, behind that chat's approvals, tracked from here. -->
+      <div class="qnote">answering continues this conversation as your turn in its chat — it is tracked here, and opens only if you open it.</div>
+    {/if}
     {#if resuming[q.id] !== undefined}
       <div class="qnote">resuming — this card clears itself when the run picks it up.</div>
     {/if}
@@ -799,6 +821,18 @@
          renders is a delegation frozen forever, which is exactly the shape
          `/queues` exists because of. -->
     {#if filter === 'waiting'}
+      {#each continued as c (c.id)}
+        <div class="qcard">
+          <div class="qhead">
+            <span class="qlabel">answered</span>
+          </div>
+          <div class="qtext">{c.question}</div>
+          <div class="qnote">continuing as your turn in its chat.</div>
+          <div class="statusrow">
+            <button class="statusbtn" onclick={() => (location.hash = chatHref(c.key))}>Open chat</button>
+          </div>
+        </div>
+      {/each}
       {#each orphanQuestions as q}
         {@render questionCard(q, q.task ? `task ${q.task}` : 'asked outside the board')}
       {/each}

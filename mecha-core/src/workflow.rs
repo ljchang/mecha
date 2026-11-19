@@ -23,6 +23,11 @@ pub const FOLLOW_UP_NOT_WOKEN: &str = "follow_up_not_woken";
 pub const FOLLOW_UP_WAITING: &str = "follow_up_waiting";
 pub const FOLLOW_UP_ANSWERED: &str = "follow_up_answered";
 pub const FOLLOW_UP_FAILED: &str = "follow_up_failed";
+/// The woken turn parked a question to the owner and ended there; the
+/// detail is the question's id (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md`
+/// §Unattended runs ask). Answering it in Tasks → Waiting resumes the
+/// conversation as the owner's own turn.
+pub const FOLLOW_UP_ASKED: &str = "follow_up_asked";
 
 /// Recent recovery context; transcripts retain the full conversation history.
 const EVENT_HISTORY_LIMIT: usize = 128;
@@ -701,7 +706,13 @@ impl Workflow {
         let last = self.events.last().map(|e| e.kind.as_str());
         let changed = matches!(
             last,
-            Some("source_changed" | "interrupted" | FOLLOW_UP_ANSWERED | FOLLOW_UP_FAILED)
+            Some(
+                "source_changed"
+                    | "interrupted"
+                    | FOLLOW_UP_ANSWERED
+                    | FOLLOW_UP_FAILED
+                    | FOLLOW_UP_ASKED
+            )
         );
         if !due && !changed && !urgent {
             return false;
@@ -732,11 +743,13 @@ impl Workflow {
             // its own news (review of #897).
             .take_while(|e| e.at > now - chrono::Duration::days(1))
             .find_map(|e| match e.kind.as_str() {
-                FOLLOW_UP_ANSWERED | FOLLOW_UP_FAILED => Some(e.kind.as_str()),
+                FOLLOW_UP_ANSWERED | FOLLOW_UP_FAILED | FOLLOW_UP_ASKED => Some(e.kind.as_str()),
                 _ => None,
             });
         let reason = if urgent {
             "Needs attention: overdue, interrupted, or delivery uncertain"
+        } else if outcome == Some(FOLLOW_UP_ASKED) {
+            "Follow-up has a question for you — answer it in Tasks → Waiting"
         } else if outcome == Some(FOLLOW_UP_ANSWERED) {
             "Follow-up answered — open the chat"
         } else if outcome == Some(FOLLOW_UP_FAILED) {
@@ -1291,6 +1304,33 @@ mod tests {
         assert_eq!(
             w.notice.as_ref().map(|n| n.reason.as_str()),
             Some("A linked question or draft changed")
+        );
+    }
+
+    /// A woken follow-up that parked a question is its own notice: the
+    /// owner is told there is a question waiting, through the same
+    /// coalesced, quiet-hours path — not that the follow-up was answered.
+    #[test]
+    fn a_woken_follow_up_s_question_is_its_own_notice() {
+        let policy = AttentionPolicy {
+            timezone: chrono_tz::UTC,
+            ..Default::default()
+        };
+        let noon: DateTime<Utc> = "2026-11-18T12:00:00Z".parse().unwrap();
+        let night: DateTime<Utc> = "2026-11-18T23:00:00Z".parse().unwrap();
+        let mut w = Workflow::new(
+            "followup-y".into(),
+            "Follow-up: y".into(),
+            "/tmp".into(),
+            noon,
+        );
+        w.record(FOLLOW_UP_WOKEN, "sess-a", night);
+        w.record(FOLLOW_UP_ASKED, "20261118T230000-0a1b2c3d", night);
+        assert!(!w.tick(&policy, night), "quiet hours hold it");
+        assert!(w.tick(&policy, noon + chrono::Duration::days(1)));
+        assert_eq!(
+            w.notice.as_ref().map(|n| n.reason.as_str()),
+            Some("Follow-up has a question for you — answer it in Tasks → Waiting")
         );
     }
 
