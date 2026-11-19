@@ -2066,8 +2066,8 @@ mecha github collect [--json]
   them — an empty table after a failed run is never read as nothing failing.
   It exits non-zero when anything was refused or failed, after writing what it
   found. `$MECHA_GH_BIN` names a `gh` other than the one on `PATH`.
-  `scripts/mecha-github-collect.timer` runs it; how often is that file's
-  setting.
+  `scripts/mecha-github-collect.timer` runs it once a day, at 06:40 Eastern; how
+  often is that file's setting.
 
 ```toml
 # ~/.mecha/github/repos.toml

@@ -8258,8 +8258,10 @@ text.
 - **Unknown is never zero.** A count GitHub did not give is `NULL`, and a run
   that stopped before the selection writes a `NULL` `selected`, never `0`;
   a selection that matched nothing is its own doctor finding.
-- **The cadence is the timer's** (`scripts/mecha-github-collect.timer`), the
-  owner's open decision (design §9), never a constant in code.
+- **The cadence is the timer's** (`scripts/mecha-github-collect.timer`):
+  once a day, the owner's ruling G10, never a constant in code. The doctor's
+  staleness window (`GITHUB_STALE_AFTER`, 36 h) is set for it; a shorter
+  cadence is a change to the timer alone.
 
 ## Session records and replay
 

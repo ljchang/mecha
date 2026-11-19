@@ -13,9 +13,10 @@ use std::path::Path;
 const COMPONENT: &str = "github";
 
 /// A collector whose last run is older than this has stopped running. The
-/// timer's cadence is the owner's (design §9); this is set well past the
-/// proposed ten minutes so an hourly choice still reads as running.
-pub const GITHUB_STALE_AFTER: Duration = Duration::hours(3);
+/// shipped timer runs once a day (ruling G10), so this is a day and a half:
+/// a run late by the timer's spread, or a machine off over the hour, still
+/// reads as running; a missed day does not.
+pub const GITHUB_STALE_AFTER: Duration = Duration::hours(36);
 
 /// How long a repository that vanished stays a finding. A vanished one is
 /// an event, logged by the run that missed it, not a state every later run
@@ -243,7 +244,7 @@ pub fn check_github(db: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             remedy: Some(collect_now()),
             ..finding(
                 Severity::Attention,
-                "the GitHub collector has not run for three hours",
+                "the GitHub collector has not run for a day and a half",
                 format!(
                     "last run {}; is mecha-github-collect.timer running? `journalctl --user -u \
                      mecha-github-collect` says why a run stopped",
@@ -310,6 +311,62 @@ mod tests {
             .iter()
             .map(|f| (f.severity, f.summary.clone()))
             .collect()
+    }
+
+    /// The staleness window fits the shipped timer: past a day plus the
+    /// timer's spread, so a run late by it still reads as running, and short
+    /// of two days, so a missed day does not. A cadence shorter than daily
+    /// passes untouched — G10's "a shorter cadence is a change to the timer
+    /// alone" — and only a longer one (weekly, a day of the week, a day of
+    /// the month) or a wider spread fails, until the window moves with it.
+    #[test]
+    fn the_staleness_window_fits_the_shipped_timer() {
+        let timer = include_str!("../../../scripts/mecha-github-collect.timer");
+        let field = |key: &str| {
+            timer
+                .lines()
+                .find_map(|l| l.trim().strip_prefix(key))
+                .map(|v| v.trim().to_string())
+        };
+        let calendar = field("OnCalendar=").expect("the timer has an OnCalendar line");
+        let longer_than_daily = ["weekly", "monthly", "quarterly", "yearly", "annually"]
+            .iter()
+            .any(|w| calendar.eq_ignore_ascii_case(w))
+            || ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+                .iter()
+                .any(|d| calendar.to_ascii_lowercase().starts_with(d))
+            // Any day field but `*` — a literal day, a list, a repetition —
+            // is less often than daily.
+            || calendar
+                .split_whitespace()
+                .next()
+                .filter(|date| date.contains('-'))
+                .and_then(|date| date.rsplit('-').next())
+                .is_some_and(|day| day != "*");
+        assert!(
+            !longer_than_daily,
+            "{calendar:?} runs less often than daily; GITHUB_STALE_AFTER is set for a day"
+        );
+        // systemd's time spans: a bare number is seconds; `s`, `min`, `h`.
+        let spread = field("RandomizedDelaySec=").map_or(Duration::zero(), |v| {
+            let digits: String = v.chars().take_while(char::is_ascii_digit).collect();
+            let n: i64 = digits.parse().expect("a time span");
+            match v[digits.len()..].trim() {
+                "" | "s" | "sec" => Duration::seconds(n),
+                "m" | "min" => Duration::minutes(n),
+                "h" | "hr" => Duration::hours(n),
+                unit => panic!("a RandomizedDelaySec unit this test does not read: {unit}"),
+            }
+        });
+        // A named zone makes the fall-back day 25 hours long.
+        assert!(
+            GITHUB_STALE_AFTER > Duration::hours(25) + spread,
+            "a run late by the spread, on the 25-hour day, would read as stale"
+        );
+        assert!(
+            GITHUB_STALE_AFTER < Duration::days(2),
+            "a missed day would still read as running"
+        );
     }
 
     #[test]
@@ -402,12 +459,13 @@ mod tests {
         let h = home("stale");
         let db = github::db_path(&h);
         record(&db, &run(now(), &[])).unwrap();
-        assert!(check_github(&db, now() + Duration::hours(1)).is_empty());
+        // A daily run: a day later is still running, a missed day is not.
+        assert!(check_github(&db, now() + Duration::hours(25)).is_empty());
         assert_eq!(
-            summaries(&check_github(&db, now() + Duration::hours(4))),
+            summaries(&check_github(&db, now() + Duration::hours(37))),
             [(
                 Severity::Attention,
-                "the GitHub collector has not run for three hours".into()
+                "the GitHub collector has not run for a day and a half".into()
             )]
         );
     }

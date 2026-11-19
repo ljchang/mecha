@@ -133,7 +133,7 @@ data could come from or go to:
 |---|---|---|
 | `data: {name}` | **only form allowed** | binds to a dataset the dashboard declared |
 | `data.url`, `data.values` | refused | a fetch the spec chooses; inline values bypass the loader's reviewed schema. (Mind the name: the *dashboard* spec's top-level `datasets` is a list of declared names and is required (§2.1); a *chart's* `datasets` is Vega-Lite's inline data map and is refused — the renderer alone fills that map, §4.2.) |
-| `href` channel, `image` mark, `url` fields | refused | a navigation or fetch to a data-derived address |
+| `href` channel, `image` mark, `url` fields | refused | a navigation or fetch to a data-derived address. One exception, outside Vega-Lite: a table column may be a **typed reference** whose address our code builds from validated fields — `github` only, ruled 2026-11-18 (`GITHUB-DASHBOARD-DESIGN.md` §4, G7) |
 | `usermeta`, `config` | refused | config comes from the theme, not the spec |
 | `transform`: `filter`, `calculate`, `aggregate`, `joinaggregate`, `fold`, `window`, `bin`, `timeUnit`, `stack`, `flatten`, `pivot`, `density`, `regression`, `loess`, `quantile`, `impute`, `extent`, `sample` | allowed, **each with its own option keys** — an unknown sibling beside a known operation is refused, because Vega-Lite tells transforms apart by which key is present | pure data transforms, no destination; expressions run in Vega's interpreter (§4.2), bounded length |
 | `params` with `select` (`point`, `interval`) | allowed | this is where in-chart reactivity comes from — brushing, cross-filtering |
