@@ -826,6 +826,26 @@ mod tests {
     const DEAD: fn(u32) -> bool = |_| false;
     const ALIVE: fn(u32) -> bool = |_| true;
 
+    /// A pid that is never this test process: a literal one is, now and
+    /// then. `decide` refuses a live holder only when it is not this
+    /// process, so on a CI runner whose test binary happened to be pid 4242
+    /// the "other" holder at 4242 was this process, and three tests read
+    /// `TakenOver` for `Refused` (CI run 44551682060, 2026-11-19).
+    fn other_pid() -> u32 {
+        let me = std::process::id();
+        if me == 4242 {
+            4243
+        } else {
+            4242
+        }
+    }
+
+    /// A pid no process can have: above Linux's hard limit (`PID_MAX_LIMIT`,
+    /// 4,194,304 on 64-bit) and macOS's 99,999, and still a valid `pid_t`,
+    /// so `process_alive` asks the kernel rather than refusing the number.
+    /// 424242 was within reach of a busy host's pid counter.
+    const NEVER_A_PID: u32 = 4_194_400;
+
     fn header(taint: (bool, bool), prior: usize, takeover: Option<&str>) -> String {
         header_text(
             "lab",
@@ -945,7 +965,7 @@ mod tests {
     /// forever, and the thread it was using is reused rather than abandoned.
     #[test]
     fn a_dead_holder_is_taken_over_and_hands_its_thread_on() {
-        let mut old = rec("lab", "s1", 424242);
+        let mut old = rec("lab", "s1", NEVER_A_PID);
         old.thread_ts = Some("1755.0001".into());
         assert_eq!(
             decide(Some(&old), "s2", DEAD),
@@ -958,11 +978,11 @@ mod tests {
 
     #[test]
     fn a_live_holder_refuses_and_says_which_process() {
-        let old = rec("lab", "s1", 4242);
+        let old = rec("lab", "s1", other_pid());
         assert_eq!(
             decide(Some(&old), "s2", ALIVE),
             Claim::Refused {
-                pid: 4242,
+                pid: other_pid(),
                 session_id: "s1".into()
             }
         );
@@ -983,11 +1003,11 @@ mod tests {
     /// into it and only one receiving inbound lines.
     #[test]
     fn a_second_process_resuming_the_same_session_is_refused_not_welcomed() {
-        let theirs = rec("lab", "s1", 4242);
+        let theirs = rec("lab", "s1", other_pid());
         assert_eq!(
             decide(Some(&theirs), "s1", ALIVE),
             Claim::Refused {
-                pid: 4242,
+                pid: other_pid(),
                 session_id: "s1".into()
             }
         );
@@ -1011,7 +1031,7 @@ mod tests {
     /// way out, and it outranks a coincidence.
     #[test]
     fn a_cold_record_is_free_even_if_its_pid_was_recycled() {
-        let mut old = rec("lab", "s1", 4242);
+        let mut old = rec("lab", "s1", other_pid());
         old.go_cold("detached");
         assert!(matches!(
             decide(Some(&old), "s2", ALIVE),
@@ -1021,7 +1041,7 @@ mod tests {
 
     #[test]
     fn a_live_record_whose_process_is_gone_does_not_read_as_live() {
-        let mut r = rec("lab", "s1", 424242);
+        let mut r = rec("lab", "s1", NEVER_A_PID);
         assert_eq!(r.state, STATE_LIVE);
         assert!(!r.is_live(), "a dead pid must not read as live");
         r.pid = std::process::id();
@@ -1267,12 +1287,12 @@ mod tests {
     /// connector then treats as unattached.
     #[test]
     fn a_name_being_attached_by_another_live_process_is_not_takeable() {
-        let mut reserving = rec("lab", "s1", 4242);
+        let mut reserving = rec("lab", "s1", other_pid());
         reserving.state = STATE_ATTACHING.to_string();
         assert_eq!(
             decide(Some(&reserving), "s2", ALIVE),
             Claim::Refused {
-                pid: 4242,
+                pid: other_pid(),
                 session_id: "s1".into()
             }
         );
@@ -1318,7 +1338,7 @@ mod tests {
     fn a_sweep_also_cools_a_reservation_whose_process_died() {
         let store = RemoteStore::open(scratch("sweepattach")).unwrap();
         let mut stuck = AttachRecord::new("stuck", "s1", PathBuf::from("/w"));
-        stuck.pid = 424242;
+        stuck.pid = NEVER_A_PID;
         stuck.state = STATE_ATTACHING.to_string();
         store.put(&stuck).unwrap();
 
@@ -1352,7 +1372,7 @@ mod tests {
         let store = RemoteStore::open(scratch("sweep")).unwrap();
 
         let mut dead = AttachRecord::new("gone", "s1", PathBuf::from("/w"));
-        dead.pid = 424242;
+        dead.pid = NEVER_A_PID;
         store.put(&dead).unwrap();
         store
             .put(&AttachRecord::new("here", "s2", PathBuf::from("/w")))
