@@ -14,23 +14,36 @@ WITH ci AS (SELECT * FROM ci_runs WHERE status = 'completed'
             -- a red workflow green (review of #902).
             AND conclusion IN ('success', 'failure', 'timed_out', 'startup_failure')),
 ranked AS (SELECT repo, workflow_id, workflow, conclusion, created_at,
-           ROW_NUMBER() OVER (PARTITION BY repo, workflow_id ORDER BY created_at DESC) AS rn
+           -- GitHub's times are to the second; run ids only grow, so the id
+           -- breaks a tie rather than the scan order (review of #902).
+           ROW_NUMBER() OVER (PARTITION BY repo, workflow_id ORDER BY created_at DESC, id DESC) AS rn
            FROM ci),
 red AS (SELECT repo, workflow_id, workflow, created_at AS last_run FROM ranked
         WHERE rn = 1 AND conclusion IN ('failure', 'timed_out', 'startup_failure')),
-ok AS (SELECT repo, workflow_id, max(created_at) AS last_ok FROM ci
-       WHERE conclusion = 'success' GROUP BY repo, workflow_id)
-SELECT red.repo, i.owner, red.workflow,
-  (SELECT min(c.created_at) FROM ci c WHERE c.repo = red.repo
-     AND c.workflow_id = red.workflow_id AND c.created_at > coalesce(ok.last_ok, '')) AS red_since,
-  CAST(julianday('now') - julianday((SELECT min(c.created_at) FROM ci c WHERE c.repo = red.repo
-     AND c.workflow_id = red.workflow_id AND c.created_at > coalesce(ok.last_ok, ''))) AS INTEGER)
-     AS days_red,
+ok AS (SELECT repo, workflow_id, created_at AS last_ok, id AS last_ok_id FROM
+         (SELECT repo, workflow_id, created_at, id,
+            ROW_NUMBER() OVER (PARTITION BY repo, workflow_id ORDER BY created_at DESC, id DESC) AS rn
+          FROM ci WHERE conclusion = 'success')
+       WHERE rn = 1),
+-- The first deciding run after the last success, ordered as the ranking is:
+-- a failure in the same second as that success still counts.
+since AS (SELECT red.repo, red.workflow_id,
+            (SELECT min(c.created_at) FROM ci c WHERE c.repo = red.repo
+               AND c.workflow_id = red.workflow_id
+               AND (c.created_at, c.id) > (coalesce(ok.last_ok, ''), coalesce(ok.last_ok_id, -1)))
+            AS red_since
+          FROM red LEFT JOIN ok ON ok.repo = red.repo AND ok.workflow_id = red.workflow_id)
+SELECT red.repo, i.owner, red.workflow, since.red_since,
+  CAST(julianday('now') - julianday(since.red_since) AS INTEGER) AS days_red,
   CASE WHEN ok.last_ok IS NULL THEN 'never green in the kept history' ELSE ok.last_ok END
      AS last_green
 FROM red LEFT JOIN ok ON ok.repo = red.repo AND ok.workflow_id = red.workflow_id
+JOIN since ON since.repo = red.repo AND since.workflow_id = red.workflow_id
 JOIN inventory i ON i.repo = red.repo AND i.selected = 1
-ORDER BY red_since
+ORDER BY since.red_since
+-- The longest-red 200: max_rows refuses a larger answer rather than
+-- trimming it, and this is the view that matters most when it is long.
+LIMIT 200
 """
 
 [[column]]

@@ -16,7 +16,9 @@ WITH ci AS (SELECT * FROM ci_runs WHERE status = 'completed'
             -- a red workflow green (review of #902).
             AND conclusion IN ('success', 'failure', 'timed_out', 'startup_failure')),
 ranked AS (SELECT repo, workflow_id, conclusion,
-           ROW_NUMBER() OVER (PARTITION BY repo, workflow_id ORDER BY created_at DESC) AS rn
+           -- GitHub's times are to the second; run ids only grow, so the id
+           -- breaks a tie rather than the scan order (review of #902).
+           ROW_NUMBER() OVER (PARTITION BY repo, workflow_id ORDER BY created_at DESC, id DESC) AS rn
            FROM ci)
 SELECT
   (SELECT count(DISTINCT r.repo) FROM ranked r JOIN inventory i ON i.repo = r.repo AND i.selected = 1

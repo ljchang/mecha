@@ -1128,6 +1128,19 @@ fn the_shipped_board_validates_and_its_loaders_read_the_collector() {
         )
         .unwrap();
     }
+    // And a workflow whose success and failure share a second, the failure
+    // the later run: red, since that failure, in either insert order.
+    let same = at(10);
+    for (id, conclusion) in [(9102, "failure"), (9101, "success")] {
+        conn.execute(
+            "INSERT INTO ci_runs (id, repo, workflow, workflow_id, run_number, attempt, event,
+               status, conclusion, head_sha, branch, created_at, seen_at)
+             VALUES (?1, 'example-lab/tool-a', 'Same second', 778, ?1, 1, 'push',
+               'completed', ?2, 'abc', 'main', ?3, ?3)",
+            rusqlite::params![id, conclusion, same],
+        )
+        .unwrap();
+    }
     drop(conn);
 
     for (name, loader) in installed.loaders() {
@@ -1157,6 +1170,22 @@ fn the_shipped_board_validates_and_its_loaders_read_the_collector() {
         red[0][col("red_since")],
         serde_json::json!(at(40)),
         "since the first failure"
+    );
+    let tied: Vec<_> = fetched
+        .rows
+        .iter()
+        .filter(|r| r[col("workflow")] == serde_json::json!("Same second"))
+        .collect();
+    assert_eq!(
+        tied.len(),
+        1,
+        "a same-second tie was decided by scan order: {:?}",
+        fetched.rows
+    );
+    assert_eq!(
+        tied[0][col("red_since")],
+        serde_json::json!(same),
+        "{tied:?}"
     );
 
     let headline = &installed.loaders()["headline"];
