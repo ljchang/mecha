@@ -54,6 +54,26 @@ pub enum Cmd {
 const NOT_MEASURED: &str = "whether you opened the chat: nothing server-side records a page \
                             being looked at, so it is not measured";
 
+/// A transcript read for measuring, refused when any line is not a
+/// record. `Session::read` skips a malformed line and returns the rest —
+/// right for resuming a chat, wrong here: a torn append of the owner's reply
+/// would read as a conversation with no reply in it, and the follow-up as
+/// `none`, where it is `unknown` (review of #903). A record from a newer
+/// build that this one cannot name is refused the same way.
+fn read_whole(path: &std::path::Path) -> Result<mecha_core::session::Transcript> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let torn = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter(|line| serde_json::from_str::<mecha_core::session::Record>(line).is_err())
+        .count();
+    if torn > 0 {
+        anyhow::bail!("{torn} line(s) of {} could not be read", path.display());
+    }
+    mecha_core::session::Session::parse(path, &text)
+}
+
 /// Every woken-and-answered follow-up under `workflows`, measured from the
 /// transcripts in `sessions_dir` and the outbox each workflow names (or
 /// `default_outbox`), oldest answer first. A store that cannot be read
@@ -106,7 +126,7 @@ pub fn gather(
             .filter(|s| !s.is_empty())
             .context("the workflow names no conversation")
             .and_then(|id| Session::find(sessions_dir, id))
-            .and_then(|path| Session::read(&path))
+            .and_then(|path| read_whole(&path))
             .map_err(|e| format!("{e:#}"));
         let timeline = transcript
             .as_ref()
@@ -620,6 +640,25 @@ mod tests {
             .unwrap();
         // A conversation that has gone.
         follow_up("gone9012", "20261118T050000-vanished", None);
+        // One whose owner's reply was torn mid-append: the rest reads, and a
+        // skipping reader would call it a conversation with no reply.
+        chat("20261118T050000-tornrep1", true);
+        let torn = Session::find(&sessions, "20261118T050000-tornrep1").unwrap();
+        let text = std::fs::read_to_string(&torn).unwrap();
+        let cut: String = text
+            .lines()
+            .map(|line| {
+                if line.contains("thanks, that is what I needed") {
+                    line[..line.len() / 2].to_string()
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(&torn, cut).unwrap();
+        follow_up("torn3456", "20261118T050000-tornrep1", None);
 
         let rows = gather(&workflows, &sessions, &outbox_root, None, now).unwrap();
         let by_id = |tail: &str| {
@@ -632,6 +671,9 @@ mod tests {
         let gone = by_id("gone9012");
         assert_eq!(gone.response, followup::Response::Unknown);
         assert!(gone.unknown[0].contains("transcript"), "{gone:?}");
+        let torn = by_id("torn3456");
+        assert_eq!(torn.response, followup::Response::Unknown, "{torn:?}");
+        assert!(torn.unknown[0].contains("could not be read"), "{torn:?}");
 
         let readout = measure_readout(&rows, None);
         let totals = &readout["totals"];
@@ -640,7 +682,7 @@ mod tests {
             (
                 &serde_json::json!(2),
                 &serde_json::json!(2),
-                &serde_json::json!(1)
+                &serde_json::json!(2)
             )
         );
         assert_eq!(totals["acted_on_rate"], serde_json::json!(1.0));
