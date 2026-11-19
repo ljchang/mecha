@@ -1,0 +1,48 @@
+source = "github"
+schedule = "15 * * * *"
+max_rows = 200
+# Repositories whose default branch is red: per workflow (by id, so a rename
+# stays one workflow), the latest completed run of real CI — push, schedule,
+# a manual dispatch; Dependabot's `dynamic` runs are not the branch's CI —
+# failed. Since when is the first run after the last success. Longest first.
+query = """
+WITH ci AS (SELECT * FROM ci_runs WHERE status = 'completed'
+            AND event IN ('push', 'schedule', 'workflow_dispatch')),
+ranked AS (SELECT repo, workflow_id, workflow, conclusion, created_at,
+           ROW_NUMBER() OVER (PARTITION BY repo, workflow_id ORDER BY created_at DESC) AS rn
+           FROM ci),
+red AS (SELECT repo, workflow_id, workflow, created_at AS last_run FROM ranked
+        WHERE rn = 1 AND conclusion IN ('failure', 'timed_out', 'startup_failure')),
+ok AS (SELECT repo, workflow_id, max(created_at) AS last_ok FROM ci
+       WHERE conclusion = 'success' GROUP BY repo, workflow_id)
+SELECT red.repo, i.owner, red.workflow,
+  (SELECT min(c.created_at) FROM ci c WHERE c.repo = red.repo
+     AND c.workflow_id = red.workflow_id AND c.created_at > coalesce(ok.last_ok, '')) AS red_since,
+  CAST(julianday('now') - julianday((SELECT min(c.created_at) FROM ci c WHERE c.repo = red.repo
+     AND c.workflow_id = red.workflow_id AND c.created_at > coalesce(ok.last_ok, ''))) AS INTEGER)
+     AS days_red,
+  CASE WHEN ok.last_ok IS NULL THEN 'never green in the kept history' ELSE ok.last_ok END
+     AS last_green
+FROM red LEFT JOIN ok ON ok.repo = red.repo AND ok.workflow_id = red.workflow_id
+JOIN inventory i ON i.repo = red.repo AND i.selected = 1
+ORDER BY red_since
+"""
+
+[[column]]
+name = "repo"
+type = "string"
+[[column]]
+name = "owner"
+type = "string"
+[[column]]
+name = "workflow"
+type = "string"
+[[column]]
+name = "red_since"
+type = "timestamp"
+[[column]]
+name = "days_red"
+type = "integer"
+[[column]]
+name = "last_green"
+type = "string"

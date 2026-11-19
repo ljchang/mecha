@@ -1,0 +1,36 @@
+source = "github"
+schedule = "15 * * * *"
+max_rows = 1000
+# The last ten completed CI runs of every selected repository that has had a
+# run end other than green in the last thirty days: a strip per repository,
+# newest on the right, which is what tells flaky from broken.
+query = """
+WITH ci AS (SELECT * FROM ci_runs WHERE status = 'completed'
+            AND event IN ('push', 'schedule', 'workflow_dispatch')),
+troubled AS (SELECT DISTINCT repo FROM ci WHERE conclusion <> 'success'
+             AND conclusion IS NOT NULL AND created_at >= datetime('now', '-30 days')),
+ranked AS (SELECT ci.repo, ci.conclusion, ci.created_at,
+           ROW_NUMBER() OVER (PARTITION BY ci.repo ORDER BY ci.created_at DESC) AS back
+           FROM ci JOIN troubled USING (repo))
+SELECT ranked.repo, i.owner, 11 - back AS slot, coalesce(conclusion, 'unknown') AS conclusion,
+       created_at
+FROM ranked JOIN inventory i ON i.repo = ranked.repo AND i.selected = 1
+WHERE back <= 10
+ORDER BY ranked.repo, slot
+"""
+
+[[column]]
+name = "repo"
+type = "string"
+[[column]]
+name = "owner"
+type = "string"
+[[column]]
+name = "slot"
+type = "integer"
+[[column]]
+name = "conclusion"
+type = "string"
+[[column]]
+name = "created_at"
+type = "timestamp"

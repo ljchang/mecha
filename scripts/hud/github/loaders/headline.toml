@@ -1,0 +1,38 @@
+source = "github"
+schedule = "15 * * * *"
+max_rows = 1
+# One row: how many repositories are red, how many issues and outside PRs
+# arrived in the last day and week, and when the collector last finished —
+# so a stale board says it is stale.
+query = """
+WITH ci AS (SELECT * FROM ci_runs WHERE status = 'completed'
+            AND event IN ('push', 'schedule', 'workflow_dispatch')),
+ranked AS (SELECT repo, workflow_id, conclusion,
+           ROW_NUMBER() OVER (PARTITION BY repo, workflow_id ORDER BY created_at DESC) AS rn
+           FROM ci)
+SELECT
+  (SELECT count(DISTINCT r.repo) FROM ranked r JOIN inventory i ON i.repo = r.repo AND i.selected = 1
+     WHERE r.rn = 1 AND r.conclusion IN ('failure', 'timed_out', 'startup_failure')) AS failing,
+  (SELECT count(*) FROM items it JOIN inventory i ON i.repo = it.repo AND i.selected = 1
+     WHERE it.gone_at IS NULL AND it.created_at >= datetime('now', '-1 day')) AS new_day,
+  (SELECT count(*) FROM items it JOIN inventory i ON i.repo = it.repo AND i.selected = 1
+     WHERE it.gone_at IS NULL AND it.created_at >= datetime('now', '-7 days')) AS new_week,
+  (SELECT count(*) FROM inventory WHERE selected = 1) AS watched,
+  (SELECT max(run) FROM collect_log WHERE kind = 'finished') AS collected_at
+"""
+
+[[column]]
+name = "failing"
+type = "integer"
+[[column]]
+name = "new_day"
+type = "integer"
+[[column]]
+name = "new_week"
+type = "integer"
+[[column]]
+name = "watched"
+type = "integer"
+[[column]]
+name = "collected_at"
+type = "timestamp"
