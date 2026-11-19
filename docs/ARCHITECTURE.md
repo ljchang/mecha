@@ -7776,7 +7776,7 @@ outcome is an event the tick turns into the owner's notice.
 (`followup::measure`, `mecha followups measure`, design §Step 4): replied,
 released or rejected a draft by `Actor::Owner`'s hand, or dismissed the
 reminder (`workflow ack` records `notice_acked` with its actor, which the tick
-reads past so a dismissal never re-raises the notice), within a day; a
+reads past so a dismissal does not re-raise the notice that day), within a day; a
 source that cannot be read or a hand not provably the owner's is `unknown`,
 never none, and "opened the chat" is not recorded, so it is not measured.
 

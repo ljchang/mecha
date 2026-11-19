@@ -712,11 +712,16 @@ pub fn measure(
                         // nothing recorded — unknown, never none (review of
                         // #903).
                         if item.status == "pending" {
+                            // As `forecast::observe` reads it: an error on a
+                            // pending draft is a release that did not land —
+                            // `release` records it before any attempt when
+                            // the tool is missing — and carries no time, so
+                            // it is unknown, never none (review of #903).
                             let attempted = item
                                 .delivery_attempts
                                 .iter()
-                                .any(|a| rfc3339(&a.started_at).is_some_and(|at| inside(at, from)));
-                            if attempted {
+                                .any(|a| rfc3339(&a.started_at).is_none_or(|at| inside(at, from)));
+                            if attempted || item.error.is_some() {
                                 unknown.push(format!(
                                     "outbox item {} was released and not delivered",
                                     item.id
@@ -1398,6 +1403,26 @@ mod tests {
                 evidence: None,
             });
         let m = response(std::slice::from_ref(&failed), &w);
+        assert_eq!(m.response, Response::Unknown, "{m:?}");
+        // Refused before any attempt (the tool was missing): an error and no
+        // attempt is still unknown.
+        let mut refused = stage("sess-a", staged);
+        refused.error = Some("the tool is not in the registry".into());
+        let m = response(std::slice::from_ref(&refused), &w);
+        assert_eq!(m.response, Response::Unknown, "{m:?}");
+        // An attempt whose time cannot be read is unknown too.
+        let mut unreadable = stage("sess-a", staged);
+        unreadable
+            .delivery_attempts
+            .push(crate::outbox::DeliveryAttempt {
+                prediction_id: None,
+                id: "attempt-2".into(),
+                started_at: "not a time".into(),
+                outcome: crate::outbox::DeliveryOutcome::NotDelivered,
+                resolved_at: None,
+                evidence: None,
+            });
+        let m = response(std::slice::from_ref(&unreadable), &w);
         assert_eq!(m.response, Response::Unknown, "{m:?}");
 
         let released = resolve(stage("sess-a", staged), "sent", n + h(3), Actor::Owner);
