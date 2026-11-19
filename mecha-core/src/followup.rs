@@ -703,7 +703,28 @@ pub fn measure(
                             unknown.push(format!("outbox item {} has no readable time", item.id));
                             continue;
                         };
-                        if staged < from || !matches!(item.status.as_str(), "sent" | "rejected") {
+                        if staged < from {
+                            continue;
+                        }
+                        // A release the owner pressed whose delivery did not
+                        // complete leaves the draft pending with no stamp:
+                        // an attempt inside the window is a release by a hand
+                        // nothing recorded — unknown, never none (review of
+                        // #903).
+                        if item.status == "pending" {
+                            let attempted = item
+                                .delivery_attempts
+                                .iter()
+                                .any(|a| rfc3339(&a.started_at).is_some_and(|at| inside(at, from)));
+                            if attempted {
+                                unknown.push(format!(
+                                    "outbox item {} was released and not delivered",
+                                    item.id
+                                ));
+                            }
+                            continue;
+                        }
+                        if !matches!(item.status.as_str(), "sent" | "rejected") {
                             continue;
                         }
                         let Some(resolved) = item.resolved_at.as_deref().and_then(rfc3339) else {
@@ -809,7 +830,10 @@ fn replied(
         unknown.push("the woken turn is not in the transcript".into());
         return;
     };
-    for j in wake + 1..t.messages.len() {
+    // From the wake itself: a steer typed before the woken run's first turn
+    // is folded onto the wake message (`agent::fold_steer`), which then holds
+    // the owner's words beside the harness's (review of #903).
+    for j in wake..t.messages.len() {
         let m = &t.messages[j];
         if m.role != Role::User || crate::agent::owner_text(m).trim().is_empty() {
             continue;
@@ -1196,6 +1220,25 @@ mod tests {
         assert_eq!(replied.response.acted_on(), Some(true));
     }
 
+    /// A steer the owner typed before the woken run's first turn is folded
+    /// onto the wake message, unmarking it: those are the owner's words, and
+    /// they are a reply.
+    #[test]
+    fn a_steer_folded_onto_the_wake_is_a_reply() {
+        let what = "check the nightly build";
+        let w = answered_workflow(what);
+        let n = now();
+        let empty: &[crate::outbox::OutboxItem] = &[];
+        let (mut messages, ends) = woken_chat(what);
+        messages[2].harness = false;
+        messages[2]
+            .content
+            .push(Block::text("and the docs build too"));
+        let t = Timeline::new(&messages, ends);
+        let m = measure(&w, Ok(&t), Ok(empty), n + h(30)).unwrap();
+        assert_eq!(m.response, Response::Replied);
+    }
+
     #[test]
     fn a_reply_is_counted_only_where_the_run_ends_place_it() {
         let what = "check the nightly build";
@@ -1340,6 +1383,22 @@ mod tests {
         let response = |items: &[crate::outbox::OutboxItem], w: &Workflow| {
             measure(w, Ok(&t), Ok(items), late).unwrap()
         };
+
+        // Released by the owner and not delivered: pending, no stamp, an
+        // attempt inside the window — unknown, never none.
+        let mut failed = stage("sess-a", staged);
+        failed
+            .delivery_attempts
+            .push(crate::outbox::DeliveryAttempt {
+                prediction_id: None,
+                id: "attempt-1".into(),
+                started_at: (n + h(2)).to_rfc3339(),
+                outcome: crate::outbox::DeliveryOutcome::NotDelivered,
+                resolved_at: None,
+                evidence: None,
+            });
+        let m = response(std::slice::from_ref(&failed), &w);
+        assert_eq!(m.response, Response::Unknown, "{m:?}");
 
         let released = resolve(stage("sess-a", staged), "sent", n + h(3), Actor::Owner);
         let m = response(std::slice::from_ref(&released), &w);
