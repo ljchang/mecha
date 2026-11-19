@@ -22,6 +22,23 @@ maps which document holds what.
 
 ## Where the work is
 
+**Always-on work (2026-11-19).** Follow-ups (#896, #897) and the GitHub
+collector (#898) are merged and deployed (`9f76e2461`, 2026-11-19 01:26Z);
+both are off until the owner switches them on in Settings → Features. Follow-ups also need `[outbox] tools` to name the
+send tools, or a due one records "no outbox route" and only reminds. The
+collector needs `~/.mecha/github/repos.toml`, and its timer
+(`scripts/mecha-github-collect.{service,timer}`, daily at 07:00 per G10) is
+not installed. Open work:
+- **Follow-ups step 3, auto-accept** (F2): untainted proposals in auto review
+  mode. The web chat has no auto mode yet.
+- **Step 4, the acted-on measure:** did the owner open, reply in or act on
+  the chat within a day of a woken answer.
+- **Unattended ask-and-resume** (item 4 of the always-on list): not started.
+- **GitHub board steps 2–6** (`GITHUB-DASHBOARD-DESIGN.md` §7): the board,
+  the typed link, summaries, usage, the picker.
+- **The vault** waits until this autonomous-work shape is built (owner's
+  ruling), so its use cases are known.
+
 **Recall (on in the owner's web chat since 2026-11-17).** `[features] recall`
 hands a web chat clean passages from earlier chats and runs.
 `mecha features` shows what the index holds and what it has kept from chats.

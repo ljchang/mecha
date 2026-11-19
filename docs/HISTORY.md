@@ -14,6 +14,48 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Always-on work: follow-ups, the trigger's carry, Slack dedup, the GitHub collector (2026-11-17 to 11-19)
+
+Started from a review of Anthropic's "Building always-on agents" against
+mecha. #892 and #893 deployed at `dccba7036` (2026-11-17); #896–#898 at
+`9f76e2461` (2026-11-19). The owner asked for the gaps one PR each, web first (the owner works
+through the web app, not Slack).
+
+- **Slack events survive a restart** (#892). `slack::seen` keeps the last
+  512 event ids on disk, so a redelivery after a restart is not run twice. A
+  dedupe, never a gate: an unwritable file warns and falls back to memory.
+- **A trigger can carry its last answer** (#893). `carry_last_answer = true`
+  in a trigger file folds the last run's answer into the next run's first
+  turn in the harness's voice, and the taint comes with it by stem: an answer
+  that read outside content arms the next run too. Opt-in per trigger; not
+  on for any trigger yet.
+- **Model-proposed follow-ups, step 1** (#896;
+  `ASSISTANT-FOLLOW-THROUGH-DESIGN.md` §Model-proposed follow-ups, rulings
+  F1–F6). A conversation calls `propose_follow_up` (web chat, its voice
+  calls, the TUI); the proposal waits in Review → Proposals → Follow-ups, and
+  only the owner's accept (`mecha followups accept`) writes the workflow
+  whose reminder comes due, with an Open chat link on the card. Behind
+  `[features] followups`, off until switched on. Ten review passes, mostly
+  on what the proposal records (the conversation's taint, not the batch's)
+  and what `forget` must take with a session.
+- **A due follow-up wakes its conversation, step 2** (#897). `mecha serve`
+  is the only waker, once a minute, at most three per pass. The woken turn
+  is harness-voiced (`followup::WAKE_STEM`, recorded `harness: true`),
+  unattended (approvals refused as non-interactive, the chat's mode only
+  narrowed), and staging-only per tool: every tool that can send and is not
+  routed through the outbox is withheld, and `ask_user` with it. Sixteen
+  review passes. The ones that mattered: a read-only `http_fetch` and a deep
+  `web_search` would have reached the network with nobody watching, and
+  every remembered web chat would have been retired as a memory chat.
+- **The GitHub board, step 1: the collector** (#898;
+  `GITHUB-DASHBOARD-DESIGN.md`, rulings G1–G10). `mecha github collect`
+  asks `gh` (which keeps the login) about the repositories in
+  `~/.mecha/github/repos.toml` and writes `~/.mecha/github/github.db`, with
+  refused (logged out, rate-limited, vanished, `gh` missing) logged apart
+  from failed and read by `mecha doctor`. Behind `[features] github`, off;
+  no model, no token in mecha's hands. Built by a subagent against a fake
+  `gh` and checked by the reviewing session.
+
 ### Recall over earlier sessions, and in the web chat (2026-11-16 to 11-18)
 
 Design §11 of `MEMORY-RETENTION-DESIGN.md` (#885) named three layers:
