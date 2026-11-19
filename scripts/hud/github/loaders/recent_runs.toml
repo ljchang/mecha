@@ -8,7 +8,9 @@ query = """
 WITH ci AS (SELECT * FROM ci_runs WHERE status = 'completed'
             AND event IN ('push', 'schedule', 'workflow_dispatch')),
 troubled AS (SELECT DISTINCT repo FROM ci WHERE conclusion <> 'success'
-             AND conclusion IS NOT NULL AND created_at >= datetime('now', '-30 days')),
+             AND conclusion IS NOT NULL
+             -- GitHub's RFC 3339 form, as headline's windows are computed.
+             AND created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-30 days')),
 ranked AS (SELECT ci.repo, ci.conclusion, ci.created_at,
            ROW_NUMBER() OVER (PARTITION BY ci.repo ORDER BY ci.created_at DESC) AS back
            FROM ci JOIN troubled USING (repo))

@@ -1124,4 +1124,43 @@ fn the_shipped_board_validates_and_its_loaders_read_the_collector() {
         !row[col("collected_at")].is_null(),
         "the collector's finish is on the board"
     );
+
+    // A later run that collected nothing (a revoked login) writes its own
+    // `finished` row; the board's freshness stays at the last run that read.
+    let fresh = row[col("collected_at")].clone();
+    let refused = fake(
+        &dir,
+        &with(vec![fails(
+            "*'api rate_limit'*",
+            "",
+            "To get started with GitHub CLI, please run:  gh auth login\n",
+            4,
+        )]),
+    );
+    collect_and_record(&dir, &refused, Utc::now() + Duration::minutes(5));
+    let fetched = run_sqlite(&path, headline.query(), 1, QUERY_TIMEOUT).unwrap();
+    assert_eq!(
+        fetched.rows[0][col("collected_at")],
+        fresh,
+        "a run that read nothing made the board look fresh"
+    );
+}
+
+/// GitHub's times are RFC 3339 (`2026-11-18T12:00:00Z`) and SQLite's
+/// `datetime('now', …)` writes `2026-11-18 12:00:00`: compared as strings the
+/// `T` sorts after the space, so every window built that way is a day wide
+/// at its edge. Both of #902's window findings were this one idiom.
+#[test]
+fn no_shipped_loader_compares_github_times_against_datetime() {
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/hud/github/loaders");
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("datetime('now'"),
+            "{}: compare against strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ...)",
+            path.display()
+        );
+    }
 }

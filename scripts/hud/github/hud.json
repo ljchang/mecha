@@ -16,7 +16,7 @@
     {"type": "chart", "title": "Last ten runs", "span": 4,
      "vegalite": {
        "data": {"name": "recent_runs"},
-       "mark": {"type": "rect", "stroke": "white", "strokeWidth": 1},
+       "mark": {"type": "rect"},
        "encoding": {
          "x": {"field": "slot", "type": "ordinal", "title": "older → newer", "axis": {"labels": false, "ticks": false}},
          "y": {"field": "repo", "type": "nominal", "title": null},

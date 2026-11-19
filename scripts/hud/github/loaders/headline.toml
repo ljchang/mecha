@@ -3,8 +3,10 @@ schedule = "15 * * * *"
 max_rows = 1
 # One row: how many repositories are red, how many issues and outside PRs
 # arrived in the last day and week, and when the collector last finished —
-# so a stale board says it is stale. GitHub's times are RFC 3339 (`T`, `Z`),
-# so the windows are computed in that form: `datetime('now', …)` writes a
+# so a stale board says it is stale: the last run that collected anything —
+# every run writes a `finished` row, a revoked login's too, and that one must
+# not make week-old counts look fresh (review of #902). GitHub's times are RFC 3339 (`T`, `Z`),
+# so the windows are computed in that form: SQLite's `datetime()` writes a
 # space instead of the `T`, and a string comparison against it is a day off.
 query = """
 WITH ci AS (SELECT * FROM ci_runs WHERE status = 'completed'
@@ -22,7 +24,7 @@ SELECT
      WHERE it.gone_at IS NULL
        AND it.created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-7 days')) AS new_week,
   (SELECT count(*) FROM inventory WHERE selected = 1) AS watched,
-  (SELECT max(at) FROM collect_log WHERE kind = 'finished') AS collected_at
+  (SELECT max(at) FROM collect_log WHERE kind = 'finished' AND collected > 0) AS collected_at
 """
 
 [[column]]
