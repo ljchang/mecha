@@ -33,4 +33,7 @@ rename stays one workflow) on the default branch failed, timed out or never
 started, counting real CI only — `push`, `schedule`, a manual dispatch.
 Dependabot's update runs (event `dynamic`) name a new workflow per update and
 are not the branch's CI, so they are left out; counting them made one
-repository look like forty failing workflows on the first real run.
+repository look like forty failing workflows on the first real run. The
+allowlist is also a blind spot: CI that runs only on `merge_group`, `release`
+or `repository_dispatch` is never red here, and a workflow deleted while
+failing stays red until its runs age out of the 90-day history.

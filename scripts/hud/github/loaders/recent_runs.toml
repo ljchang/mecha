@@ -12,7 +12,17 @@ troubled AS (SELECT DISTINCT repo FROM ci WHERE conclusion <> 'success'
 ranked AS (SELECT ci.repo, ci.conclusion, ci.created_at,
            ROW_NUMBER() OVER (PARTITION BY ci.repo ORDER BY ci.created_at DESC) AS back
            FROM ci JOIN troubled USING (repo))
-SELECT ranked.repo, i.owner, 11 - back AS slot, coalesce(conclusion, 'unknown') AS conclusion,
+SELECT ranked.repo, i.owner, 11 - back AS slot,
+       -- Folded onto the chart's closed set of colours: a conclusion GitHub
+       -- adds later is `other`, never a colour that already means something.
+       -- `startup_failure` is red here as it is in failing_now.
+       CASE
+         WHEN conclusion IS NULL THEN 'unknown'
+         WHEN conclusion = 'startup_failure' THEN 'failure'
+         WHEN conclusion IN ('success', 'failure', 'cancelled', 'timed_out', 'skipped')
+           THEN conclusion
+         ELSE 'other'
+       END AS conclusion,
        created_at
 FROM ranked JOIN inventory i ON i.repo = ranked.repo AND i.selected = 1
 WHERE back <= 10

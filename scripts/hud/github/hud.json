@@ -10,6 +10,7 @@
     {"type": "kpi", "title": "New in a day", "dataset": "headline", "value": {"op": "max", "field": "new_day"}, "span": 1},
     {"type": "kpi", "title": "New in a week", "dataset": "headline", "value": {"op": "max", "field": "new_week"}, "span": 1},
     {"type": "kpi", "title": "Watched", "dataset": "headline", "value": {"op": "max", "field": "watched"}, "span": 1},
+    {"type": "table", "title": "Collector last finished", "dataset": "headline", "columns": ["collected_at"], "span": 4},
     {"type": "table", "title": "Failing now", "dataset": "failing_now",
      "columns": ["repo", "workflow", "red_since", "days_red", "last_green"], "span": 4},
     {"type": "chart", "title": "Last ten runs", "span": 4,
@@ -20,8 +21,8 @@
          "x": {"field": "slot", "type": "ordinal", "title": "older → newer", "axis": {"labels": false, "ticks": false}},
          "y": {"field": "repo", "type": "nominal", "title": null},
          "color": {"field": "conclusion", "type": "nominal", "title": null,
-                   "scale": {"domain": ["success", "failure", "cancelled", "timed_out", "skipped", "unknown"],
-                             "range": ["#3fa66b", "#d6453d", "#9a9a9a", "#e0902f", "#c8c8c8", "#6f6f6f"]}},
+                   "scale": {"domain": ["success", "failure", "cancelled", "timed_out", "skipped", "unknown", "other"],
+                             "range": ["#3fa66b", "#d6453d", "#9a9a9a", "#e0902f", "#c8c8c8", "#6f6f6f", "#8a6fb3"]}},
          "tooltip": [
            {"field": "repo", "type": "nominal"},
            {"field": "conclusion", "type": "nominal"},
@@ -32,6 +33,6 @@
     {"type": "table", "title": "New: open issues and outside pull requests", "dataset": "new_items",
      "columns": ["repo", "kind", "number", "title", "author", "age_days", "comments"], "span": 4},
     {"type": "text", "span": 4,
-     "markdown": "Collected once a day (06:40 Eastern) through your own `gh` login; the headline's dataset carries when the collector last finished. Red means the latest completed run of a workflow on the default branch failed; Dependabot's update runs are not counted. New lists what is open now — an issue opened and closed within a day is never seen. Titles are the authors' own text."}
+     "markdown": "Collected once a day (06:40 Eastern) through your own `gh` login; the headline's dataset carries when the collector last finished. Red means the latest completed run of a workflow on the default branch failed; Dependabot's update runs are not counted. New lists what is open now, newest 500 — an issue opened and closed within a day is never seen. The Owner filter narrows the New table only. Titles are the authors' own text."}
   ]
 }

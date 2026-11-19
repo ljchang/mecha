@@ -1068,3 +1068,60 @@ fn an_empty_log_reads_as_no_run() {
         LogReport::default()
     );
 }
+
+// ---- the board shipped under scripts/hud/github ----
+
+/// The board shipped under `scripts/hud/github/` validates as written, and
+/// every one of its loaders runs — confined, as a refresh would — against a
+/// store this collector wrote, and passes its own declared shape. And the
+/// "new in a day / a week" windows read GitHub's RFC 3339 times as times: an
+/// issue opened thirty hours ago is in the week and not in the day (compared
+/// against `datetime('now', …)`'s space-separated form it was in both).
+#[test]
+fn the_shipped_board_validates_and_its_loaders_read_the_collector() {
+    use crate::hud::runner::{run_sqlite, QUERY_TIMEOUT};
+    use crate::hud::Installed;
+
+    let board = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/hud/github");
+    let installed = Installed::load_dir(&board, "github")
+        .unwrap()
+        .unwrap_or_else(|r| panic!("{r}"));
+    assert_eq!(installed.loaders().len(), 4);
+
+    let dir = scratch("shipped-board");
+    select(&dir, LAB_ALL);
+    collect_and_record(&dir, &fake(&dir, &healthy()), Utc::now());
+    let path = db_path(&dir.join("home"));
+    let thirty_hours_ago = (Utc::now() - Duration::hours(30))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    db(&dir)
+        .execute(
+            "INSERT INTO items (repo, number, kind, title, author, author_association,
+               created_at, updated_at, labels, comments, first_seen, last_seen, gone_at)
+             VALUES ('example-lab/tool-a', 99, 'issue', 'A new one', 'someone', 'NONE',
+               ?1, ?1, '[]', 0, ?1, ?1, NULL)",
+            [&thirty_hours_ago],
+        )
+        .unwrap();
+
+    for (name, loader) in installed.loaders() {
+        assert_eq!(loader.source(), "github", "{name}");
+        let fetched = run_sqlite(&path, loader.query(), loader.max_rows(), QUERY_TIMEOUT)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        loader
+            .shape(&fetched.columns, fetched.rows)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+
+    let headline = &installed.loaders()["headline"];
+    let fetched = run_sqlite(&path, headline.query(), 1, QUERY_TIMEOUT).unwrap();
+    let col = |name: &str| fetched.columns.iter().position(|c| c == name).unwrap();
+    let row = &fetched.rows[0];
+    assert_eq!(row[col("new_day")], serde_json::json!(0), "{row:?}");
+    assert_eq!(row[col("new_week")], serde_json::json!(1), "{row:?}");
+    assert!(
+        !row[col("collected_at")].is_null(),
+        "the collector's finish is on the board"
+    );
+}
