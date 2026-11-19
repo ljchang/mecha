@@ -436,26 +436,39 @@ fn mail_rules_timer() -> Vec<Finding> {
 
 fn mail_rules_timer_with(systemctl: &std::ffi::OsStr) -> Vec<Finding> {
     let read = |unit: &str| {
-        std::process::Command::new(systemctl)
-            .args([
-                "--user",
-                "show",
-                unit,
-                "--property=LoadState,ActiveState,Result",
-            ])
-            .output()
-            .ok()
-            .and_then(|output| {
-                let properties = String::from_utf8_lossy(&output.stdout).into_owned();
-                // A missing unit may return a nonzero status with LoadState.
-                // No binary/bus produces no properties: skip like failed_units,
-                // rather than treating an unavailable init system as broken.
-                (output.status.success()
-                    || properties
-                        .lines()
-                        .any(|line| line.starts_with("LoadState=")))
-                .then_some(properties)
-            })
+        // A file just written can be busy for the instant another thread's
+        // fork holds its descriptor; that clears on its own, and read as
+        // "no systemctl" it hid a missing unit (CI, 2026-11-19). Retried
+        // briefly, as `engine::run_within` does.
+        let mut tries = 0;
+        let output = loop {
+            match std::process::Command::new(systemctl)
+                .args([
+                    "--user",
+                    "show",
+                    unit,
+                    "--property=LoadState,ActiveState,Result",
+                ])
+                .output()
+            {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 20 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                other => break other,
+            }
+        };
+        output.ok().and_then(|output| {
+            let properties = String::from_utf8_lossy(&output.stdout).into_owned();
+            // A missing unit may return a nonzero status with LoadState.
+            // No binary/bus produces no properties: skip like failed_units,
+            // rather than treating an unavailable init system as broken.
+            (output.status.success()
+                || properties
+                    .lines()
+                    .any(|line| line.starts_with("LoadState=")))
+            .then_some(properties)
+        })
     };
     let timer = read("mecha-mail-rules.timer");
     let service = read("mecha-mail-rules.service");
@@ -500,6 +513,39 @@ mod tests {
         assert!(healthy.is_empty());
         assert_eq!(failed.len(), 1);
         assert!(failed[0].summary.contains("unit failed"));
+    }
+
+    /// A `systemctl` still open for writing somewhere is busy for that
+    /// instant; read as no systemctl at all, it hid a missing unit (CI,
+    /// 2026-11-19). Held open here on purpose, longer than the race is.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mail_rules_timer_waits_out_a_systemctl_that_is_briefly_busy() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "doctor-busy-{}",
+            mecha_core::session::Session::new_id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let executable = root.join("systemctl");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nprintf 'LoadState=not-found\\nActiveState=inactive\\n'\nexit 4\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let held = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&executable)
+            .unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(held);
+        });
+        let missing = mail_rules_timer_with(executable.as_os_str());
+        release.join().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(missing.len(), 2, "{missing:?}");
     }
 
     #[test]
