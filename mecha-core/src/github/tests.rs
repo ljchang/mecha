@@ -1105,6 +1105,31 @@ fn the_shipped_board_validates_and_its_loaders_read_the_collector() {
         )
         .unwrap();
 
+    // One workflow that went red after a success, its latest run cancelled:
+    // a cancelled run decides nothing, so it is still red, since the failure.
+    let at = |hours: i64| {
+        (Utc::now() - Duration::hours(hours))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string()
+    };
+    let conn = db(&dir);
+    for (id, conclusion, hours) in [
+        (9001, "success", 50),
+        (9002, "failure", 40),
+        (9003, "failure", 30),
+        (9004, "cancelled", 20),
+    ] {
+        conn.execute(
+            "INSERT INTO ci_runs (id, repo, workflow, workflow_id, run_number, attempt, event,
+               status, conclusion, head_sha, branch, created_at, seen_at)
+             VALUES (?1, 'example-lab/tool-a', 'Board test', 777, ?1, 1, 'push',
+               'completed', ?2, 'abc', 'main', ?3, ?3)",
+            rusqlite::params![id, conclusion, at(hours)],
+        )
+        .unwrap();
+    }
+    drop(conn);
+
     for (name, loader) in installed.loaders() {
         assert_eq!(loader.source(), "github", "{name}");
         let fetched = run_sqlite(&path, loader.query(), loader.max_rows(), QUERY_TIMEOUT)
@@ -1114,10 +1139,34 @@ fn the_shipped_board_validates_and_its_loaders_read_the_collector() {
             .unwrap_or_else(|e| panic!("{name}: {e}"));
     }
 
+    let failing = &installed.loaders()["failing_now"];
+    let fetched = run_sqlite(&path, failing.query(), 200, QUERY_TIMEOUT).unwrap();
+    let col = |name: &str| fetched.columns.iter().position(|c| c == name).unwrap();
+    let red: Vec<_> = fetched
+        .rows
+        .iter()
+        .filter(|r| r[col("workflow")] == serde_json::json!("Board test"))
+        .collect();
+    assert_eq!(
+        red.len(),
+        1,
+        "a latest cancelled run hid a red workflow: {:?}",
+        fetched.rows
+    );
+    assert_eq!(
+        red[0][col("red_since")],
+        serde_json::json!(at(40)),
+        "since the first failure"
+    );
+
     let headline = &installed.loaders()["headline"];
     let fetched = run_sqlite(&path, headline.query(), 1, QUERY_TIMEOUT).unwrap();
     let col = |name: &str| fetched.columns.iter().position(|c| c == name).unwrap();
     let row = &fetched.rows[0];
+    assert!(
+        row[col("failing")].as_i64().unwrap() >= 1,
+        "the headline counts the red repository: {row:?}"
+    );
     assert_eq!(row[col("new_day")], serde_json::json!(0), "{row:?}");
     assert_eq!(row[col("new_week")], serde_json::json!(1), "{row:?}");
     assert!(

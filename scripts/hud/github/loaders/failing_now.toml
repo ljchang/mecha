@@ -4,10 +4,15 @@ max_rows = 200
 # Repositories whose default branch is red: per workflow (by id, so a rename
 # stays one workflow), the latest completed run of real CI — push, schedule,
 # a manual dispatch; Dependabot's `dynamic` runs are not the branch's CI —
-# failed. Since when is the first run after the last success. Longest first.
+# failed — of the runs that decide (cancelled and skipped do not). Since when
+# is the first deciding run after the last success. Longest first.
 query = """
 WITH ci AS (SELECT * FROM ci_runs WHERE status = 'completed'
-            AND event IN ('push', 'schedule', 'workflow_dispatch')),
+            AND event IN ('push', 'schedule', 'workflow_dispatch')
+            -- Only runs that decide: a cancelled or skipped run says nothing
+            -- about whether the branch is broken, and ranking it first turned
+            -- a red workflow green (review of #902).
+            AND conclusion IN ('success', 'failure', 'timed_out', 'startup_failure')),
 ranked AS (SELECT repo, workflow_id, workflow, conclusion, created_at,
            ROW_NUMBER() OVER (PARTITION BY repo, workflow_id ORDER BY created_at DESC) AS rn
            FROM ci),

@@ -10,7 +10,11 @@ max_rows = 1
 # space instead of the `T`, and a string comparison against it is a day off.
 query = """
 WITH ci AS (SELECT * FROM ci_runs WHERE status = 'completed'
-            AND event IN ('push', 'schedule', 'workflow_dispatch')),
+            AND event IN ('push', 'schedule', 'workflow_dispatch')
+            -- Only runs that decide: a cancelled or skipped run says nothing
+            -- about whether the branch is broken, and ranking it first turned
+            -- a red workflow green (review of #902).
+            AND conclusion IN ('success', 'failure', 'timed_out', 'startup_failure')),
 ranked AS (SELECT repo, workflow_id, conclusion,
            ROW_NUMBER() OVER (PARTITION BY repo, workflow_id ORDER BY created_at DESC) AS rn
            FROM ci)
