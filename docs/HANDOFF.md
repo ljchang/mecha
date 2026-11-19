@@ -27,7 +27,7 @@ collector (#898) are merged and deployed (`9f76e2461`, 2026-11-19 01:26Z);
 both are off until the owner switches them on in Settings → Features. Follow-ups also need `[outbox] tools` to name the
 send tools, or a due one records "no outbox route" and only reminds. The
 collector needs `~/.mecha/github/repos.toml`, and its timer
-(`scripts/mecha-github-collect.{service,timer}`, daily at 07:00 per G10) is
+(`scripts/mecha-github-collect.{service,timer}`, daily at 06:45 Eastern per G10) is
 not installed. Open work:
 - **Follow-ups step 3, auto-accept** (F2): untainted proposals in auto review
   mode. The web chat has no auto mode yet.
