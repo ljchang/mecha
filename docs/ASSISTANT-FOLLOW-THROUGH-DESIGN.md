@@ -183,3 +183,54 @@ still only reminds.
   coalesced, quiet-hours-respecting path, so Home's workflow count and the
   card's Open chat button are the way back (F3).
 - **Not here.** Auto-accept (step 3), the acted-on measure (step 4), Slack.
+
+## Unattended runs ask, and resume as a chat
+
+2026-11-19. A delegated task run can already park a question and end
+(`questions.rs`, D13): the owner answers later and the run resumes. Two other
+kinds of unattended run could not ask at all, so they guessed or gave up: a
+scheduled trigger (no `ask_user` in its registry) and a woken follow-up
+(`ask_user` withheld, since its card would hold the turn's seat for ten
+minutes with nobody to answer). This extends the parking to both.
+
+**Rulings** (the owner, 2026-11-19):
+
+| # | Ruling |
+|---|---|
+| A1 | **Triggers and woken follow-ups may park a question.** Other background runs (mail sweeps, rumination) may not. |
+| A2 | **Answering opens the run as a web chat**, and the answer is the owner's own turn there: the result, any approval card and the rest of the conversation happen in the chat, not in the background. |
+| A3 | **An unanswered question never expires.** It waits until the owner answers or abandons it; `mecha doctor`'s existing staleness finding still names it. |
+
+**The shape.**
+
+- A question records how it resumes: `resume = "background"` (a delegated
+  task run's, as today: `mecha questions answer --unattended` in a detached
+  child) or `resume = "chat"` (A2). Absent on the wire is `background`, so
+  every question parked before this reads as it always did.
+- **A trigger run** registers `ask_user` over a `ParkingAsker` on its own
+  recorded session, `resume = "chat"`. Asking stores the question and ends
+  the run; the trigger's ledger records the run as waiting on the owner, with
+  the question's id, rather than as finished.
+- **A woken follow-up's turn** gets the same asker (the web chat's
+  `ask_user`, told this turn is unattended, parks at once instead of offering
+  a card) in place of the withholding. Its workflow records
+  `follow_up_asked`, and the tick turns that into the owner's notice.
+- **Answering a `chat` question from the web** goes through `mecha serve`,
+  never a detached child: the conversation is resumed into the session map
+  (`resume_locked`, by the owner, so an archived chat comes back to the
+  rail) and the answer starts an ordinary owner's turn through `begin_turn`
+  — the page's own approver, its own mode, steerable — and the page opens
+  that chat. The question is marked answered with the owner's words. A chat
+  question answered from the terminal says to answer it in the web app.
+- **Taint rides with the conversation.** The resumed chat carries its
+  recorded taint, and the question's own taint warning (the one shown before
+  any parked question is answered) still shows: an unattended run that read
+  outside content asks well-formed questions too.
+- Nothing about the trigger's or the follow-up's own reach changes: a woken
+  turn stays staging-only until it parks; the owner's answering turn is the
+  owner's, at the chat's mode.
+- The parked question reaches the owner where questions already do: Tasks →
+  Waiting and Home's Questions card.
+
+**Not here:** a Slack or TUI answer path for chat questions; parking from
+other unattended runs (A1).
