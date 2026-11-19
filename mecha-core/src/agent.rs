@@ -204,17 +204,21 @@ pub fn append_user_text(messages: &mut Vec<Message>, text: String) {
 /// user message. Existing harness blocks must all be recognized before
 /// unmarking the message.
 fn fold_steer(messages: &mut Vec<Message>, text: String) {
+    // The owner's words folded into a harness-marked user message make it no
+    // longer the harness's alone: a completion notice, or a follow-up's wake
+    // that a steer lands on before the run's first turn (review of #897).
+    // Only when every text block in it is a voice `is_harness_voice` knows,
+    // so the per-block readers can still tell them from the owner's: a
+    // harness sentence nobody registered keeps the message marked, and
+    // nothing in it is mined as the owner's (fail-closed). Tool results are
+    // not text, and pass.
     if let Some(last) = messages.last_mut() {
         if last.role == Role::User
             && last.harness
-            && last
-                .content
-                .iter()
-                .any(|block| matches!(block, Block::Text { text } if completion::is_notice(text)))
-            && last
-                .content
-                .iter()
-                .all(|block| matches!(block, Block::Text { text } if is_harness_voice(text)))
+            && last.content.iter().all(|block| match block {
+                Block::Text { text } => is_harness_voice(text),
+                _ => true,
+            })
         {
             last.harness = false;
         }
@@ -2210,6 +2214,9 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         // A trigger's last answer, carried into its next run: the harness's
         // block holding the model's earlier words, never the owner's.
         || crate::trigger::last_answer_stem_of(text).is_some()
+        // A due follow-up waking its conversation: the harness's turn, the
+        // model's own earlier words quoted inside it.
+        || text.starts_with(crate::followup::WAKE_STEM)
         || text.contains(crate::mailbox::DELIVERY_STEM)
         || text.starts_with(crate::step::STEP_ESCALATION_STEM)
         || text.starts_with(crate::step::CHECK_FEEDBACK_STEM)
@@ -15394,6 +15401,51 @@ justification = "echo is off on this box"
         assert!(!child.contains("request_access"), "{child}");
         let narrowed = refusal(true, true).await;
         assert!(!narrowed.contains("request_access"), "{narrowed}");
+    }
+
+    /// Fail-closed: a harness-marked message holding a sentence no stem
+    /// registers keeps its mark when a steer is folded in, so nothing in it
+    /// is read as the owner's correction.
+    #[test]
+    fn a_steer_on_an_unregistered_harness_voice_keeps_it_marked() {
+        let mut m = Message::user("(a harness line no stem knows)");
+        m.harness = true;
+        let mut messages = vec![m];
+        fold_steer(&mut messages, "and the docs".into());
+        assert!(messages[0].harness);
+    }
+
+    /// An owner's steer folded onto a harness-marked user turn — a
+    /// follow-up's wake, before the run's first iteration — makes that
+    /// message the owner's too: never `harness: true` over the owner's words,
+    /// while the wake's own block is still known by its stem.
+    #[test]
+    fn a_steer_folded_onto_a_wake_is_not_recorded_as_the_harness_s() {
+        let mut wake = Message::user(crate::followup::render_wake(
+            "check the build",
+            chrono::Utc::now(),
+            chrono_tz::UTC,
+        ));
+        wake.harness = true;
+        let mut messages = vec![wake];
+        fold_steer(&mut messages, "also check the docs".into());
+        assert_eq!(messages.len(), 1);
+        assert!(
+            !messages[0].harness,
+            "the owner's steer is under a harness mark"
+        );
+        let texts: Vec<&str> = messages[0]
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                Block::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| is_harness_voice(t)));
+        assert!(texts
+            .iter()
+            .any(|t| !is_harness_voice(t) && t.contains("docs")));
     }
 
     /// A proposed follow-up names the conversation it came from through the

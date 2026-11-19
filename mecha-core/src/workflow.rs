@@ -15,6 +15,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// The events the web host records when it wakes a follow-up's conversation
+/// (`crate::followup`), and that the tick turns into the owner's notice.
+pub const FOLLOW_UP_WOKEN: &str = "follow_up_woken";
+pub const FOLLOW_UP_NOT_WOKEN: &str = "follow_up_not_woken";
+/// Not woken yet, for a reason the owner can change; retried each minute.
+pub const FOLLOW_UP_WAITING: &str = "follow_up_waiting";
+pub const FOLLOW_UP_ANSWERED: &str = "follow_up_answered";
+pub const FOLLOW_UP_FAILED: &str = "follow_up_failed";
+
 /// Recent recovery context; transcripts retain the full conversation history.
 const EVENT_HISTORY_LIMIT: usize = 128;
 
@@ -156,6 +165,13 @@ pub struct Workflow {
     /// on an unsaved copy. Bounded; absent on a record from before it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub verify_history: Vec<VerifyRecord>,
+    /// When the web host woke this workflow's conversation for its
+    /// follow-up (`crate::followup`, design §Step 2), or decided it would
+    /// not. Written before the turn starts, so a crash mid-turn never wakes
+    /// it twice. Absent on every workflow that is not a follow-up's, and on
+    /// one not yet due.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub woken_at: Option<DateTime<Utc>>,
 }
 /// One owner verification, as [`Workflow::verify_history`] keeps it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -333,6 +349,7 @@ impl Workflow {
             notice: None,
             closed_at: None,
             verify_history: vec![],
+            woken_at: None,
         }
     }
     fn append_event(&mut self, kind: &str, detail: impl Into<String>, now: DateTime<Utc>) {
@@ -681,10 +698,11 @@ impl Workflow {
             .commitment
             .as_ref()
             .is_some_and(|c| c.follow_up_due(now));
-        let changed = self
-            .events
-            .last()
-            .is_some_and(|e| e.kind == "source_changed" || e.kind == "interrupted");
+        let last = self.events.last().map(|e| e.kind.as_str());
+        let changed = matches!(
+            last,
+            Some("source_changed" | "interrupted" | FOLLOW_UP_ANSWERED | FOLLOW_UP_FAILED)
+        );
         if !due && !changed && !urgent {
             return false;
         }
@@ -702,8 +720,27 @@ impl Workflow {
         if self.last_notice_key.as_deref() == Some(&key) {
             return false;
         }
+        // The latest follow-up outcome, not the last event: the woken run's
+        // staged draft is linked by `observe` as a `source_changed` after
+        // the answer, and the answer is still the news (review of #897).
+        let outcome = self
+            .events
+            .iter()
+            .rev()
+            // Bounded to the last day: notices come at most daily, so an
+            // outcome older than that has been said, and a later change is
+            // its own news (review of #897).
+            .take_while(|e| e.at > now - chrono::Duration::days(1))
+            .find_map(|e| match e.kind.as_str() {
+                FOLLOW_UP_ANSWERED | FOLLOW_UP_FAILED => Some(e.kind.as_str()),
+                _ => None,
+            });
         let reason = if urgent {
             "Needs attention: overdue, interrupted, or delivery uncertain"
+        } else if outcome == Some(FOLLOW_UP_ANSWERED) {
+            "Follow-up answered — open the chat"
+        } else if outcome == Some(FOLLOW_UP_FAILED) {
+            "Follow-up could not run — open the workflow"
         } else if due {
             "Follow-up due"
         } else {
@@ -1196,6 +1233,64 @@ mod tests {
         assert!(
             !w.verified(),
             "rejection cannot satisfy an explicit delivery check"
+        );
+    }
+
+    /// A woken follow-up's answer reaches the owner as its own notice,
+    /// through the coalesced path: held during quiet hours, said once after.
+    #[test]
+    fn a_woken_follow_up_s_answer_is_its_own_notice_and_waits_out_quiet_hours() {
+        let policy = AttentionPolicy {
+            timezone: chrono_tz::UTC,
+            ..Default::default()
+        };
+        let noon: DateTime<Utc> = "2026-11-18T12:00:00Z".parse().unwrap();
+        let night: DateTime<Utc> = "2026-11-18T23:00:00Z".parse().unwrap();
+        let mut w = Workflow::new(
+            "followup-x".into(),
+            "Follow-up: x".into(),
+            "/tmp".into(),
+            noon,
+        );
+        w.record(FOLLOW_UP_ANSWERED, "sess-a", night);
+        assert!(!w.tick(&policy, night), "quiet hours hold it");
+        assert!(w.tick(&policy, noon + chrono::Duration::days(1)));
+        assert_eq!(
+            w.notice.as_ref().map(|n| n.reason.as_str()),
+            Some("Follow-up answered — open the chat")
+        );
+        assert!(
+            !w.tick(&policy, noon + chrono::Duration::days(1)),
+            "said once, not every tick"
+        );
+        // The woken run's staged draft lands as a source change after the
+        // answer; the notice still says the follow-up was answered.
+        let later = noon + chrono::Duration::days(2);
+        w.record(FOLLOW_UP_ANSWERED, "sess-b", later);
+        w.record("source_changed", "a draft was staged", later);
+        assert!(w.tick(&policy, later));
+        assert_eq!(
+            w.notice.as_ref().map(|n| n.reason.as_str()),
+            Some("Follow-up answered — open the chat")
+        );
+        w.record(
+            FOLLOW_UP_FAILED,
+            "no seat",
+            noon + chrono::Duration::days(1),
+        );
+        assert!(w.tick(&policy, noon + chrono::Duration::days(1)));
+        assert_eq!(
+            w.notice.as_ref().map(|n| n.reason.as_str()),
+            Some("Follow-up could not run — open the workflow")
+        );
+        // A week on, the outcome has been said: a later change is its own
+        // news, not "Follow-up answered" again.
+        let week = noon + chrono::Duration::days(9);
+        w.record("source_changed", "the owner released the draft", week);
+        assert!(w.tick(&policy, week));
+        assert_eq!(
+            w.notice.as_ref().map(|n| n.reason.as_str()),
+            Some("A linked question or draft changed")
         );
     }
 

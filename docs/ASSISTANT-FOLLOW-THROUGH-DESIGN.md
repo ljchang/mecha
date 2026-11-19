@@ -111,7 +111,75 @@ only proposals, and acceptance crosses the owner.
 
 | Step | What | State |
 |---|---|---|
-| 1 | The store, the tool (web chat and TUI), `mecha followups`, the proposals pane, the Home card, Open chat on a workflow | this change |
-| 2 | F1: a due follow-up wakes a staging-only run in its conversation, run by the host that owns it; its answer lands in the chat and the workflow's reminder says it was answered | next |
+| 1 | The store, the tool (web chat and TUI), `mecha followups`, the proposals pane, the Home card, Open chat on a workflow | merged (#896) |
+| 2 | F1: a due follow-up wakes a staging-only run in its conversation, run by the host that owns it; its answer lands in the chat and the workflow's reminder says it was answered | this change (#897) |
 | 3 | F2's auto-accept, on the surfaces that have an auto mode | after 2 |
 | 4 | The acted-on measure: whether the owner opened, replied in or acted on the chat within a day of a woken answer | with 2 |
+
+### Step 2: a due follow-up wakes its conversation
+
+F1 amends the workflow rule that "nothing here automatically starts an agent".
+It is amended for one case and on these terms; every other workflow reminder
+still only reminds.
+
+- **`mecha serve` wakes, and nothing else does.** A web chat's conversation
+  lives in serve's memory, and a second writer on its transcript forks it —
+  the hazard `questions answer` documents as D11. So the waker is a task
+  inside serve, beside the late-delivery task, and the turn it starts goes
+  through `begin_turn`, as a voice call's does. The trigger tick keeps
+  raising the in-app reminder and never starts a run. A follow-up proposed
+  in the TUI is a recorded session too, and serve wakes it the way
+  `#chat/<id>` resumes one; the TUI never wakes anything.
+- **What it wakes.** An accepted follow-up's workflow whose `follow_up_at`
+  has come, that is open, not snoozed, not running, and has not been woken
+  before (`woken_at`, a new optional field, written before the turn starts so
+  a crash never runs it twice).
+- **A few at a time.** One pass wakes at most three (counting turns started,
+  not candidates looked at, so follow-ups that wait never starve the rest),
+  oldest first, so what
+  accumulated while the outbox was unset or serve was down comes over the
+  next minutes rather than as one burst of unattended turns.
+- **When it does not, and says so.** Three answers, and the reminder stands
+  in every one:
+  - *Never, recorded:* a memory chat (typed input only). The one refusal that
+    retires the follow-up.
+  - *Waiting, recorded once and retried each minute* (`follow_up_waiting`),
+    because the owner can change it: no outbox route (a woken run that could
+    send directly is not staging-only, so configuring `[outbox] tools` later
+    wakes what came due meanwhile); a transcript that cannot be found or
+    classified; a turn that could not start, whose claim is given back.
+  - *Later, silently, next minute:* the feature is switched off (a pause);
+    another writer holds the conversation (a task run, the TUI); a turn is in
+    flight; the transcript ends on the owner's own words (a tail of tool
+    results takes the wake, folded in and marked the harness's); no
+    background seat is free.
+
+  The woken mark is claimed under the workflow store's lock, re-checking the
+  whole rule there, so a second `serve` on one home never wakes the same
+  follow-up and a workflow closed or snoozed since the listing is not woken.
+- **The turn.** A harness-voiced user turn, with its own stem so the
+  correction miner and the taint reader know it is not the owner's:
+  `(From the harness: a follow-up you proposed is due — "<what>", proposed
+  <when>. Check it now and tell the owner what you found. Anything you would
+  send is staged for their review.)` The words in quotes are the model's
+  own, from this conversation, and carry its taint; the turn adds none and
+  launders none. Unattended: a call that needs an approval is refused in the
+  machine's voice, as `questions answer --unattended` does; routed sends
+  stage. Staging-only is enforced per tool, not by a route existing: every
+  tool that can send anything (`Egress` other than `None`) that `[outbox]
+  tools` does not route is withheld from the woken turn — `http_fetch` is
+  read-only, so no approver would ever be asked about it, and `web_search`
+  declares `Blind` while a deep search reaches a chosen backend. `shell`
+  goes too wherever its sandbox can reach the network, so the canonical
+  "check whether the build passed" needs a network-isolating sandbox or a
+  routed tool to answer it. `ask_user` is withheld as well: nobody is there
+  to answer, and a woken run says what it would have asked in its answer.
+  Its run posture is `unattended` too, so a shell it runs is never
+  read as the owner's approval (`closure::cause`). It takes a background
+  seat (`permit.rs`), like any unattended run.
+- **After.** The answer is in the chat. The workflow records
+  `follow_up_answered` (or `follow_up_failed` with the reason) and raises a
+  notice, "Follow-up answered — open the chat", through the ordinary
+  coalesced, quiet-hours-respecting path, so Home's workflow count and the
+  card's Open chat button are the way back (F3).
+- **Not here.** Auto-accept (step 3), the acted-on measure (step 4), Slack.
