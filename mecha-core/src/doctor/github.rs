@@ -335,11 +335,14 @@ mod tests {
             || ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
                 .iter()
                 .any(|d| calendar.to_ascii_lowercase().starts_with(d))
+            // Any day field but `*` — a literal day, a list, a repetition —
+            // is less often than daily.
             || calendar
                 .split_whitespace()
                 .next()
+                .filter(|date| date.contains('-'))
                 .and_then(|date| date.rsplit('-').next())
-                .is_some_and(|day| day != "*" && day.chars().all(|c| c.is_ascii_digit()));
+                .is_some_and(|day| day != "*");
         assert!(
             !longer_than_daily,
             "{calendar:?} runs less often than daily; GITHUB_STALE_AFTER is set for a day"
@@ -355,9 +358,10 @@ mod tests {
                 unit => panic!("a RandomizedDelaySec unit this test does not read: {unit}"),
             }
         });
+        // A named zone makes the fall-back day 25 hours long.
         assert!(
-            GITHUB_STALE_AFTER > Duration::days(1) + spread,
-            "a run late by the spread would read as stale"
+            GITHUB_STALE_AFTER > Duration::hours(25) + spread,
+            "a run late by the spread, on the 25-hour day, would read as stale"
         );
         assert!(
             GITHUB_STALE_AFTER < Duration::days(2),

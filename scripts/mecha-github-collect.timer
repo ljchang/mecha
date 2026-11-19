@@ -7,9 +7,11 @@ Description=Collect the GitHub board's tables
 # alone, and `mecha doctor`'s staleness window (`GITHUB_STALE_AFTER`) is set
 # for a daily run. Counts are a row per repository per day whatever this says.
 # In the owner's zone, named: the box runs UTC, and a bare time here would
-# fire at 02:00 Eastern. 06:45 so the board is fresh before the 07:00
-# `morning` briefing, and the spread below ends by 06:55, clear of it.
-OnCalendar=*-*-* 06:45 America/New_York
+# fire at 02:00 Eastern. 06:40 so the board is fresh before the 07:00
+# `morning` briefing: the latest start is 06:50 (the spread below), and a run
+# spends at most its 8-minute budget (github::RUN_BUDGET), so it has
+# finished by 06:58.
+OnCalendar=*-*-* 06:40 America/New_York
 # Up to ten minutes later, at random, so the API calls do not land on the
 # same second every day.
 RandomizedDelaySec=600
