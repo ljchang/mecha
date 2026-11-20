@@ -21,8 +21,10 @@
 //! read, one workflow-store listing, and exactly two `systemctl` calls (the
 //! timer list, then every service's state at once), each under a timeout —
 //! plus, per row, one question-store read for each `waiting` trigger row
-//! (at most `TRIGGER_ROWS`) and one transcript read for each woken follow-up
-//! in the seven-day window, as the board's run summaries read theirs.
+//! (at most `TRIGGER_ROWS`), one transcript read for each failed trigger row
+//! (its ledger row carries no reading of its taint), and one for each woken
+//! follow-up in the seven-day window, as the board's run summaries read
+//! theirs.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -191,19 +193,18 @@ pub async fn list(State(state): St) -> Response {
 /// it exists, so drawing the page never creates what it examines.
 fn default_stores(now: DateTime<Utc>) -> (Section<RunRow>, Section<RunRow>) {
     let questions = QuestionStore::open_existing_default();
+    let sessions = mecha_core::session::Session::default_dir().ok();
     let triggers = match TriggerStore::default_root() {
         Ok(root) => trigger_rows(
             TriggerStore::existing_at(&root).as_ref(),
+            sessions.as_deref(),
             questions.as_ref(),
             now,
         ),
         Err(e) => Section::error(format!("{e:#}")),
     };
     let follow_ups = match WorkflowStore::default_store() {
-        Ok(store) => {
-            let sessions = mecha_core::session::Session::default_dir().ok();
-            follow_up_rows(&store, sessions.as_deref(), questions.as_ref(), now)
-        }
+        Ok(store) => follow_up_rows(&store, sessions.as_deref(), questions.as_ref(), now),
         Err(e) => Section::error(format!("{e:#}")),
     };
     (triggers, follow_ups)
@@ -256,6 +257,7 @@ fn first_line(text: &str) -> Option<String> {
 /// runs, and are left out.
 pub(super) fn trigger_rows(
     store: Option<&TriggerStore>,
+    sessions: Option<&Path>,
     questions: Option<&QuestionStore>,
     now: DateTime<Utc>,
 ) -> Section<RunRow> {
@@ -296,7 +298,7 @@ pub(super) fn trigger_rows(
             truncated = true;
             return false;
         }
-        ledger.push(trigger_row(&r, questions));
+        ledger.push(trigger_row(&r, sessions, questions));
         true
     });
     let skipped = match skipped {
@@ -312,7 +314,11 @@ pub(super) fn trigger_rows(
 }
 
 /// One ledger row as the view shows it.
-pub(super) fn trigger_row(r: &RunRecord, questions: Option<&QuestionStore>) -> RunRow {
+pub(super) fn trigger_row(
+    r: &RunRecord,
+    sessions: Option<&Path>,
+    questions: Option<&QuestionStore>,
+) -> RunRow {
     let (mut state, mut detail) = match r.status {
         RunStatus::Ok => (
             RunState::Done,
@@ -352,7 +358,7 @@ pub(super) fn trigger_row(r: &RunRecord, questions: Option<&QuestionStore>) -> R
     row.finished_at = r.finished_at;
     row.session = r.session_id.clone();
     row.question = r.question_id.clone();
-    row.taint = Some(r.taint);
+    row.taint = trigger_taint(r, sessions);
     row.summary = first_line(&r.summary);
     row.detail = detail;
     row
@@ -455,6 +461,24 @@ pub(super) fn follow_up_row(
 /// The recorded taint of the transcript `id` in `dir`, resolved by name as
 /// the board resolves it — `None` when the id is not a bare file name, the
 /// transcript is gone, or it records no checkpoint.
+/// What a trigger run read. A finished or parked run's ledger row carries
+/// the run's taint, stamped on the way out; a run that failed (or whose
+/// status this build cannot name) appended its row with the field's
+/// default, which is not a reading — so its taint is its transcript's
+/// checkpoints, merged with the row, and `None` (drawn *taint unknown*)
+/// when the transcript has none. Unknown is never clean (review of #906;
+/// `carried_block` reads the same row the same way).
+fn trigger_taint(r: &RunRecord, sessions: Option<&Path>) -> Option<Taint> {
+    match r.status {
+        RunStatus::Ok | RunStatus::Waiting => Some(r.taint),
+        _ => {
+            let mut taint = transcript_taint(sessions?, r.session_id.as_deref()?)?;
+            taint.merge(r.taint);
+            Some(taint)
+        }
+    }
+}
+
 fn transcript_taint(dir: &Path, id: &str) -> Option<Taint> {
     if !super::board::is_bare_path_component(id) {
         return None;
@@ -809,6 +833,65 @@ mod tests {
         r
     }
 
+    /// A failed run's ledger row carries the taint field's default, not a
+    /// reading: its taint is its transcript's, and with no checkpoint there
+    /// it is unknown — never drawn clean. A finished run's row is its own.
+    #[test]
+    fn a_failed_trigger_run_s_taint_is_its_transcript_s_never_the_row_default() {
+        use mecha_core::session::{Record, Session, SessionMeta};
+        let dir = Scratch::new("trigger-taint");
+        let sessions = dir.0.join("sessions");
+        let transcript = |id: &str, taint: Option<Taint>| {
+            let s = Session::create(
+                &sessions,
+                SessionMeta {
+                    id: id.into(),
+                    created_at: Utc::now(),
+                    provider: "scripted".into(),
+                    model: "test".into(),
+                    workspace: "/tmp".into(),
+                    title: None,
+                    kind: Some(mecha_core::session::SessionKind::Trigger),
+                },
+            )
+            .unwrap();
+            if let Some(t) = taint {
+                s.append(&Record::Taint(t)).unwrap();
+            }
+        };
+        let read_outside = Taint {
+            private: false,
+            untrusted: true,
+        };
+        transcript("20261120T090000-failed", Some(read_outside));
+        transcript("20261120T090000-blank", None);
+        let now = Utc::now();
+        let failed = run("failed", RunStatus::Error, now);
+        let blank = run("blank", RunStatus::Error, now);
+        let mut good = run("good", RunStatus::Ok, now);
+        good.taint = Taint {
+            private: true,
+            untrusted: false,
+        };
+
+        let row = trigger_row(&failed, Some(&sessions), None);
+        assert_eq!(
+            row.taint.map(|t| t.untrusted),
+            Some(true),
+            "a failed run that read outside content drew clean"
+        );
+        assert_eq!(
+            trigger_row(&blank, Some(&sessions), None).taint,
+            None,
+            "no checkpoint is unknown, not clean"
+        );
+        assert_eq!(trigger_row(&failed, None, None).taint, None);
+        assert_eq!(
+            trigger_row(&good, Some(&sessions), None).taint,
+            Some(good.taint)
+        );
+    }
+
     /// Every ledger status lands on its own state, and a status this build
     /// cannot name is `unknown` — never done. Skipped slots are not runs.
     #[test]
@@ -892,7 +975,7 @@ mod tests {
             .unwrap();
         writeln!(ledger, "{future}").unwrap();
 
-        let section = trigger_rows(Some(&store), Some(&questions), now);
+        let section = trigger_rows(Some(&store), None, Some(&questions), now);
         let got = rows(&section);
         let state = |name: &str| {
             got.iter()
@@ -952,7 +1035,7 @@ mod tests {
         // This process is alive, so its marker is a run in flight.
         store.mark_running("nightly-build", None).unwrap();
 
-        let section = trigger_rows(Some(&store), None, now);
+        let section = trigger_rows(Some(&store), None, None, now);
         let got = rows(&section);
         let names: Vec<&str> = got.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, ["nightly-build", "recent"]);
@@ -969,10 +1052,13 @@ mod tests {
     #[test]
     fn an_unreadable_ledger_is_the_section_s_error_not_an_empty_list() {
         let dir = Scratch::new("trigger-unreadable");
-        assert_eq!(trigger_rows(None, None, Utc::now()), Section::rows(vec![]));
+        assert_eq!(
+            trigger_rows(None, None, None, Utc::now()),
+            Section::rows(vec![])
+        );
         let store = TriggerStore::open(dir.0.join("triggers")).unwrap();
         std::fs::create_dir(store.ledger_path()).unwrap();
-        let section = trigger_rows(Some(&store), None, Utc::now());
+        let section = trigger_rows(Some(&store), None, None, Utc::now());
         assert!(
             matches!(section, Section::Error { .. }),
             "{}",
