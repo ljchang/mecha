@@ -38,6 +38,189 @@ pub enum Cmd {
         #[arg(long)]
         reason: String,
     },
+    /// What you did within a day of each woken follow-up's answer: replied,
+    /// released or declined a draft, dismissed the reminder, or none. A
+    /// sensor — nothing reads it. Whether you opened the chat is not measured.
+    Measure {
+        #[arg(long)]
+        json: bool,
+        /// Only follow-ups answered at or after this time (RFC 3339).
+        #[arg(long)]
+        since: Option<chrono::DateTime<Utc>>,
+    },
+}
+
+/// What the readout says it cannot see, on every surface it prints to.
+const NOT_MEASURED: &str = "whether you opened the chat: nothing server-side records a page \
+                            being looked at, so it is not measured";
+
+/// A transcript read for measuring, refused when any line is not a
+/// record. `Session::read` skips a malformed line and returns the rest —
+/// right for resuming a chat, wrong here: a torn append of the owner's reply
+/// would read as a conversation with no reply in it, and the follow-up as
+/// `none`, where it is `unknown` (review of #903). A record from a newer
+/// build that this one cannot name is refused the same way.
+fn read_whole(path: &std::path::Path) -> Result<mecha_core::session::Transcript> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let torn = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter(|line| serde_json::from_str::<mecha_core::session::Record>(line).is_err())
+        .count();
+    if torn > 0 {
+        anyhow::bail!("{torn} line(s) of {} could not be read", path.display());
+    }
+    mecha_core::session::Session::parse(path, &text)
+}
+
+/// Every woken-and-answered follow-up under `workflows`, measured from the
+/// transcripts in `sessions_dir` and the outbox each workflow names (or
+/// `default_outbox`), oldest answer first. A store that cannot be read
+/// whole makes its follow-ups `unknown`, never `none`; an outbox directory
+/// that does not exist held nothing.
+pub fn gather(
+    workflows: &WorkflowStore,
+    sessions_dir: &std::path::Path,
+    default_outbox: &std::path::Path,
+    since: Option<chrono::DateTime<Utc>>,
+    now: chrono::DateTime<Utc>,
+) -> Result<Vec<followup::Measured>> {
+    use mecha_core::outbox::{OutboxItem, OutboxStore};
+    use mecha_core::session::Session;
+    use std::collections::BTreeMap;
+    let mut outboxes: BTreeMap<std::path::PathBuf, std::result::Result<Vec<OutboxItem>, String>> =
+        BTreeMap::new();
+    let mut rows = Vec::new();
+    for w in workflows.list()? {
+        let Some(answered) = followup::answered_at(&w) else {
+            continue;
+        };
+        if since.is_some_and(|s| answered < s) {
+            continue;
+        }
+        let root = w
+            .outbox_root
+            .clone()
+            .unwrap_or_else(|| default_outbox.to_path_buf());
+        let items = outboxes.entry(root.clone()).or_insert_with(|| {
+            match root.try_exists() {
+                Ok(false) => return Ok(vec![]),
+                Ok(true) => {}
+                Err(e) => return Err(format!("{}: {e}", root.display())),
+            }
+            let (items, skipped) = OutboxStore::open(&root)
+                .and_then(|s| s.items_counting())
+                .map_err(|e| format!("{e:#}"))?;
+            if skipped > 0 {
+                return Err(format!(
+                    "{skipped} record(s) under {} could not be read",
+                    root.display()
+                ));
+            }
+            Ok(items)
+        });
+        let transcript = w
+            .session_id
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .context("the workflow names no conversation")
+            .and_then(|id| Session::find(sessions_dir, id))
+            .and_then(|path| read_whole(&path))
+            .map_err(|e| format!("{e:#}"));
+        let timeline = transcript
+            .as_ref()
+            .map(followup::Timeline::of)
+            .map_err(String::as_str);
+        if let Some(row) = followup::measure(
+            &w,
+            timeline.as_ref().map_err(|e| *e),
+            items.as_deref().map_err(String::as_str),
+            now,
+        ) {
+            rows.push(row);
+        }
+    }
+    rows.sort_by_key(|r| r.answered_at);
+    Ok(rows)
+}
+
+fn measure_readout(
+    rows: &[followup::Measured],
+    since: Option<chrono::DateTime<Utc>>,
+) -> serde_json::Value {
+    let rows_json: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": followup::short(&r.proposal),
+                "proposal": r.proposal,
+                "workflow": r.workflow,
+                "session_id": r.session_id,
+                "woken_at": r.woken_at,
+                "answered_at": r.answered_at,
+                "window_closes": r.window_closes,
+                "outcome": r.response,
+                "signals": r.signals,
+                "unknown": r.unknown,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "window_hours": followup::ACTED_ON_WINDOW.num_hours(),
+        "since": since,
+        "rows": rows_json,
+        "totals": followup::Totals::of(rows),
+        "not_measured": [NOT_MEASURED],
+    })
+}
+
+fn measure_text(rows: &[followup::Measured], tz: chrono_tz::Tz) -> String {
+    let mut out = format!(
+        "What you did within {} hours of each woken follow-up's answer.\nNot measured: {NOT_MEASURED}.\n\n",
+        followup::ACTED_ON_WINDOW.num_hours()
+    );
+    if rows.is_empty() {
+        out.push_str("No follow-up has been woken and answered yet.\n");
+    }
+    for r in rows {
+        let mut line = format!(
+            "  {:<10} answered {}  {}",
+            followup::short(&r.proposal),
+            r.answered_at.with_timezone(&tz).format("%Y-%m-%d %H:%M %Z"),
+            r.response.as_str()
+        );
+        let said: Vec<String> = r
+            .signals
+            .iter()
+            .map(|s| match s {
+                followup::Signal::Replied => "replied".to_string(),
+                followup::Signal::Released { outbox_id } => format!("released {outbox_id}"),
+                followup::Signal::Rejected { outbox_id } => format!("declined {outbox_id}"),
+                followup::Signal::Dismissed { .. } => "dismissed".to_string(),
+            })
+            .chain(r.unknown.iter().cloned())
+            .collect();
+        if !said.is_empty() {
+            line.push_str(&format!(" ({})", said.join("; ")));
+        }
+        out.push_str(&line);
+        out.push('\n');
+    }
+    let t = followup::Totals::of(rows);
+    out.push_str(&format!(
+        "\nreplied {} · released {} · declined {} · dismissed {} · none {} · pending {} · unknown {}\n",
+        t.replied, t.released, t.rejected, t.dismissed, t.none, t.pending, t.unknown
+    ));
+    let rate = t
+        .acted_on_rate
+        .map(|r| format!("{:.0}%", r * 100.0))
+        .unwrap_or_else(|| "—".into());
+    out.push_str(&format!(
+        "acted on: {} of {} decided ({rate}); pending and unknown are on neither side\n",
+        t.acted_on, t.decided
+    ));
+    out
 }
 
 fn store() -> Result<FollowUpStore> {
@@ -230,6 +413,28 @@ pub fn run(args: Args) -> Result<()> {
             let f = reject(&store()?, &id, &reason)?;
             println!("Rejected {}.", followup::short(&f.id));
         }
+        // A read of three stores; it creates none of them.
+        Cmd::Measure { json, since } => {
+            let default_outbox = match mecha_core::config::Config::load_global()?.outbox.dir {
+                Some(root) => root,
+                None => mecha_core::outbox::OutboxStore::default_root()?,
+            };
+            let rows = gather(
+                &WorkflowStore::default_store()?,
+                &mecha_core::session::Session::default_dir()?,
+                &default_outbox,
+                since,
+                Utc::now(),
+            )?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&measure_readout(&rows, since))?
+                );
+            } else {
+                print!("{}", measure_text(&rows, tz));
+            }
+        }
     }
     Ok(())
 }
@@ -320,6 +525,178 @@ mod tests {
         let done = reject(&store, &f.id, "not needed").unwrap();
         assert_eq!(done.status, followup::REJECTED);
         assert_eq!(done.reason.as_deref(), Some("not needed"));
+    }
+
+    /// The measure over real stores on disk: a transcript read back with its
+    /// run ends, an outbox, and a conversation that is gone. Explicit roots
+    /// under the temp directory, never the mecha home.
+    #[test]
+    fn measure_reads_the_stores_and_says_what_it_could_not() {
+        use mecha_core::closure::Actor;
+        use mecha_core::message::{Block, Message};
+        use mecha_core::outbox::{OutboxKind, OutboxStore, Provenance};
+        use mecha_core::session::{Record, RunStats, Session, SessionMeta};
+        use mecha_core::workflow::FOLLOW_UP_ANSWERED;
+
+        let (dir, _f, workflows) = stores();
+        let sessions = dir.0.join("sessions");
+        let outbox_root = dir.0.join("outbox");
+        let now = Utc::now();
+        let woken = now - chrono::Duration::hours(2);
+        let answered = woken + chrono::Duration::minutes(10);
+        let what = "check the nightly build";
+
+        // A conversation woken, answered, and replied to by the owner.
+        let chat = |id: &str, reply: bool| {
+            let s = Session::create(
+                &sessions,
+                SessionMeta {
+                    id: id.into(),
+                    created_at: woken - chrono::Duration::hours(4),
+                    provider: "scripted".into(),
+                    model: "test-model".into(),
+                    workspace: "/tmp".into(),
+                    title: None,
+                    kind: None,
+                },
+            )
+            .unwrap();
+            let end = |at| {
+                Record::Outcome(RunStats {
+                    ended_at: Some(at),
+                    ..RunStats::default()
+                })
+            };
+            s.append_messages(&[
+                Message::user("can you watch the nightly build for me"),
+                Message::assistant(vec![Block::text("I will look in the morning.")]),
+            ])
+            .unwrap();
+            s.append(&end(woken - chrono::Duration::hours(3))).unwrap();
+            let mut wake = Message::user(followup::render_wake(
+                what,
+                woken - chrono::Duration::hours(4),
+                chrono_tz::UTC,
+            ));
+            wake.harness = true;
+            s.append_messages(&[wake, Message::assistant(vec![Block::text("It passed.")])])
+                .unwrap();
+            s.append(&end(answered)).unwrap();
+            if reply {
+                s.append_messages(&[
+                    Message::user("thanks, that is what I needed"),
+                    Message::assistant(vec![Block::text("Glad to help.")]),
+                ])
+                .unwrap();
+                s.append(&end(answered + chrono::Duration::minutes(30)))
+                    .unwrap();
+            }
+        };
+        let follow_up = |tail: &str, session: &str, outbox: Option<std::path::PathBuf>| {
+            let f = FollowUp {
+                id: format!("20261118T090000-{tail}"),
+                status: followup::ACCEPTED.into(),
+                what: what.into(),
+                due_at: woken,
+                session_id: session.into(),
+                workspace: None,
+                taint: Some(Taint::default()),
+                proposed_at: woken - chrono::Duration::hours(4),
+                decided_at: Some(woken - chrono::Duration::hours(4)),
+                workflow_id: None,
+                reason: None,
+            };
+            let mut w = followup::workflow_for(&f, "/tmp/w".into(), outbox, woken);
+            w.woken_at = Some(woken);
+            w.record(FOLLOW_UP_ANSWERED, session, answered);
+            workflows.create(w).unwrap();
+        };
+
+        chat("20261118T050000-replied1", true);
+        // Its outbox root does not exist: nothing was staged there, which is
+        // an empty outbox, not an unreadable one.
+        follow_up(
+            "repl1234",
+            "20261118T050000-replied1",
+            Some(dir.0.join("none")),
+        );
+        chat("20261118T050000-declined", false);
+        follow_up("decl5678", "20261118T050000-declined", None);
+        let store = OutboxStore::open(&outbox_root).unwrap();
+        let draft = store
+            .stage(
+                "mail_send",
+                OutboxKind::Message,
+                serde_json::json!({"to": "ines.okafor@example.org", "body": "It passed."}),
+                Taint::default(),
+                Provenance {
+                    session_id: Some("20261118T050000-declined".into()),
+                    ..Provenance::default()
+                },
+            )
+            .unwrap();
+        store
+            .resolve(&draft.id, "rejected", None, Actor::Owner)
+            .unwrap();
+        // A conversation that has gone.
+        follow_up("gone9012", "20261118T050000-vanished", None);
+        // One whose owner's reply was torn mid-append: the rest reads, and a
+        // skipping reader would call it a conversation with no reply.
+        chat("20261118T050000-tornrep1", true);
+        let torn = Session::find(&sessions, "20261118T050000-tornrep1").unwrap();
+        let text = std::fs::read_to_string(&torn).unwrap();
+        let cut: String = text
+            .lines()
+            .map(|line| {
+                if line.contains("thanks, that is what I needed") {
+                    line[..line.len() / 2].to_string()
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(&torn, cut).unwrap();
+        follow_up("torn3456", "20261118T050000-tornrep1", None);
+
+        let rows = gather(&workflows, &sessions, &outbox_root, None, now).unwrap();
+        let by_id = |tail: &str| {
+            rows.iter()
+                .find(|r| followup::short(&r.proposal) == tail)
+                .unwrap_or_else(|| panic!("{tail} not measured: {rows:?}"))
+        };
+        assert_eq!(by_id("repl1234").response, followup::Response::Replied);
+        assert_eq!(by_id("decl5678").response, followup::Response::Rejected);
+        let gone = by_id("gone9012");
+        assert_eq!(gone.response, followup::Response::Unknown);
+        assert!(gone.unknown[0].contains("transcript"), "{gone:?}");
+        let torn = by_id("torn3456");
+        assert_eq!(torn.response, followup::Response::Unknown, "{torn:?}");
+        assert!(torn.unknown[0].contains("could not be read"), "{torn:?}");
+
+        let readout = measure_readout(&rows, None);
+        let totals = &readout["totals"];
+        assert_eq!(
+            (&totals["acted_on"], &totals["decided"], &totals["unknown"]),
+            (
+                &serde_json::json!(2),
+                &serde_json::json!(2),
+                &serde_json::json!(2)
+            )
+        );
+        assert_eq!(totals["acted_on_rate"], serde_json::json!(1.0));
+        assert!(readout["not_measured"][0]
+            .as_str()
+            .unwrap()
+            .contains("opened the chat"));
+        assert!(measure_text(&rows, chrono_tz::UTC).contains("Not measured: whether you opened"));
+
+        // `--since` past every answer: nothing to measure, and a dash.
+        let none = gather(&workflows, &sessions, &outbox_root, Some(now), now).unwrap();
+        assert!(none.is_empty());
+        assert!(measure_readout(&none, Some(now))["totals"]["acted_on_rate"].is_null());
+        assert!(measure_text(&none, chrono_tz::UTC).contains("0 of 0 decided (—)"));
     }
 
     #[test]
