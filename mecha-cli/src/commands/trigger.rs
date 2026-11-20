@@ -953,35 +953,69 @@ async fn fire(
         None
     };
 
-    match run_agent(global, t, &mut record, carried, stop).await {
-        // The run asked and ended there (A1): waiting on the owner, not
-        // finished, and the delivery says so — a briefing that arrives as the
-        // run's last words would read as its answer.
-        Ok(text) if record.question_id.is_some() => {
-            record.status = RunStatus::Waiting;
-            let asked = record
-                .question_id
-                .as_deref()
-                .and_then(|id| QuestionStore::open_existing_default()?.get(id).ok());
-            let asked = asked.as_ref().map(|q| q.asked()).unwrap_or_default();
-            record.summary = first_line(&format!("waiting on you: {asked}"));
-            record.notify_error = notify(t, &workspace_of(t), &waiting_notice(t, asked, &text));
-        }
-        Ok(text) => {
-            record.status = RunStatus::Ok;
-            record.summary = first_line(&text);
-            record.notify_error = notify(t, &workspace_of(t), &text);
-        }
-        Err(e) => {
-            record.status = RunStatus::Error;
-            record.error = Some(format!("{e:#}"));
-            eprintln!("mecha: trigger `{}` failed — {e:#}", t.name);
-        }
+    let ran = run_agent(global, t, &mut record, carried, stop).await;
+    if let Some(notice) = settle(t, &mut record, ran, asked_question) {
+        record.notify_error = notify(t, &workspace_of(t), &notice);
     }
     record.finished_at = Some(Utc::now());
     store.clear_running(&t.name);
     store.append_run(&record)?;
     Ok(())
+}
+
+/// The question a parked run asked, from the store, for its notice.
+fn asked_question(id: &str) -> String {
+    QuestionStore::open_existing_default()
+        .and_then(|store| store.get(id).ok())
+        .map(|q| q.asked().to_string())
+        .unwrap_or_default()
+}
+
+/// Record how a run ended, and say what the owner is to be sent, if
+/// anything. A run that parked a question is `Waiting` however it ended: the
+/// question is open and answerable, so a bookkeeping failure after the park
+/// (a transcript write) keeps its error beside the waiting status rather
+/// than hiding the question behind `Error` with nothing sent (review of
+/// #904).
+fn settle(
+    t: &Trigger,
+    record: &mut RunRecord,
+    ran: Result<String>,
+    asked: impl Fn(&str) -> String,
+) -> Option<String> {
+    match (ran, record.question_id.clone()) {
+        // The run asked and ended there (A1): waiting on the owner, not
+        // finished, and the delivery says so — a briefing that arrives as the
+        // run's last words would read as its answer.
+        (ran, Some(id)) => {
+            record.status = RunStatus::Waiting;
+            let asked = asked(&id);
+            record.summary = first_line(&format!("waiting on you: {asked}"));
+            let text = match ran {
+                Ok(text) => text,
+                Err(e) => {
+                    record.error = Some(format!("{e:#}"));
+                    eprintln!(
+                        "mecha: trigger `{}` asked a question, then failed — {e:#}",
+                        t.name
+                    );
+                    String::new()
+                }
+            };
+            Some(waiting_notice(t, &asked, &text))
+        }
+        (Ok(text), None) => {
+            record.status = RunStatus::Ok;
+            record.summary = first_line(&text);
+            Some(text)
+        }
+        (Err(e), None) => {
+            record.status = RunStatus::Error;
+            record.error = Some(format!("{e:#}"));
+            eprintln!("mecha: trigger `{}` failed — {e:#}", t.name);
+            None
+        }
+    }
 }
 
 /// What `notify` is handed when the run ended on a question: that it is
@@ -1754,6 +1788,38 @@ mod tests {
             !taint.untrusted,
             "the run it came from recorded itself clean"
         );
+    }
+
+    /// A run that parked and then failed its bookkeeping is still waiting,
+    /// keeps its error, and still tells the owner a question is there.
+    #[test]
+    fn a_run_that_asked_then_failed_is_waiting_and_says_so() {
+        let t = morning();
+        let mut record = RunRecord::started("morning", None, false);
+        record.question_id = Some("q-1".into());
+        let notice = settle(
+            &t,
+            &mut record,
+            Err(anyhow::anyhow!("the transcript could not be written")),
+            |_| "Which room is the review in?".into(),
+        )
+        .expect("the owner is told");
+        assert_eq!(record.status, RunStatus::Waiting);
+        assert!(record
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("could not be written"));
+        assert!(notice.contains("has a question for you"), "{notice}");
+        assert!(notice.contains("Which room is the review in?"), "{notice}");
+
+        // Without a question, a failure is an error and nothing is sent.
+        let mut record = RunRecord::started("morning", None, false);
+        assert!(settle(&t, &mut record, Err(anyhow::anyhow!("boom")), |_| {
+            String::new()
+        })
+        .is_none());
+        assert_eq!(record.status, RunStatus::Error);
     }
 
     /// A run that parked a question is carried like a finished one: its

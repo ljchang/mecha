@@ -595,12 +595,17 @@ impl ParkingAsker {
     /// be able to leave a question recorded as cleaner than it was.
     pub fn stamp_taint(&self, taint: Taint) {
         for id in self.parked() {
+            // The lock before the read: `put` rewrites the whole record, so a
+            // copy read outside it and written inside would put back an
+            // answer's `open` — the owner's words lost after their turn began
+            // (review of #904; the follow-up waker stamps in the same process
+            // `answer_in_chat` answers in).
+            let _lock = self.store.lock();
             let updated = self.store.get(&id).map(|mut q| {
                 q.taint.merge(taint);
                 q
             });
             if let Ok(q) = updated {
-                let _lock = self.store.lock();
                 if let Err(e) = self.store.put(&q) {
                     tracing::warn!(error = %e, id, "could not record taint on a parked question");
                 }
@@ -1182,6 +1187,43 @@ mod tests {
         let task = ParkingAsker::new(std::sync::Arc::clone(&s), "sess-t", Some("t".into()));
         task.ask_in(&ctx, "Which room?", &[]).await.unwrap();
         assert_eq!(s.get(&task.parked()[0]).unwrap().resume, Resume::Background);
+    }
+
+    /// A taint stamp racing an answer never writes the question back to
+    /// open. Made deterministic with the store's own lock: the answer holds
+    /// it while the stamp starts, so a stamp that reads before locking has
+    /// read the open copy by the time the answer lands.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_taint_stamp_never_reopens_an_answered_question() {
+        let s = std::sync::Arc::new(store("stamp-race"));
+        let asker =
+            ParkingAsker::new(std::sync::Arc::clone(&s), "sess-r", None).resuming(Resume::Chat);
+        let ctx = ToolCtx {
+            cancel: Some(tokio_util::sync::CancellationToken::new()),
+            ..Default::default()
+        };
+        asker.ask_in(&ctx, "Which room?", &[]).await.unwrap();
+        let id = asker.parked()[0].clone();
+
+        let held = s.lock().unwrap();
+        let stamper = std::thread::spawn(move || {
+            asker.stamp_taint(Taint {
+                private: true,
+                untrusted: true,
+            })
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut answered = s.get(&id).unwrap();
+        answered.status = ANSWERED.into();
+        answered.answer = Some("the small one".into());
+        s.put(&answered).unwrap();
+        drop(held);
+        stamper.join().unwrap();
+
+        let q = s.get(&id).unwrap();
+        assert_eq!(q.status, ANSWERED, "the stamp put back the open copy");
+        assert_eq!(q.answer.as_deref(), Some("the small one"));
+        assert!(q.taint.untrusted, "and the stamp still landed");
     }
 
     /// `answer_with` begins the resume only for an open question, and a
