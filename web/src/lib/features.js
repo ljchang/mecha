@@ -108,7 +108,7 @@ export const QUEUE_FEATURE = {
  * sub-views that open (`opens`), or its own controls would bounce the same
  * way one level in.
  */
-export const OPENS_ANYWAY = ['tasks/waiting', 'tasks/workflows', 'library/voices'];
+export const OPENS_ANYWAY = ['tasks/waiting', 'tasks/workflows', 'tasks/background', 'library/voices'];
 
 /** Whether `view/sub` opens even with its view's feature hidden. */
 export function opensAnyway(view, sub) {

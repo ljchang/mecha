@@ -7799,6 +7799,20 @@ by itself. The resumed chat keeps its recorded taint and the card keeps its
 pre-answer taint warning; `mecha questions answer` refuses a `chat` question
 without consuming it. A question never expires (A3).
 
+**Every unattended run is listed in Tasks → Background** (`#tasks/background`,
+`Background.svelte`; design §Tasks → Background, B1). `GET /api/background`
+(`serve/background.rs`, core) is read-only: the trigger ledger's last seven
+days from its tail plus live markers (`live_names`/`peek`, never `running`,
+which clears), woken follow-ups' states from their workflow events, and the
+`mecha-*` systemd timers in two bounded `systemctl` calls. Each section is
+`{rows}`, `{error}` or (jobs) `{unavailable}`, so one unreadable store never
+blanks another and none renders its failure as empty; `RunStatus::Unknown`
+and an unnamed state are `unknown`, never done, and a waiting row whose
+question the store shows closed is done. Delegated runs come from the board's
+own `run` summary (now carrying `taint` and `ended_at`), so the view adds no
+graph read. It answers, stops and dismisses nothing — those stay with
+Waiting, the board card and the workflow card.
+
 **What the owner did about a woken answer is a sensor nothing reads**
 (`followup::measure`, `mecha followups measure`, design §Step 4): replied,
 released or rejected a draft by `Actor::Owner`'s hand, or dismissed the

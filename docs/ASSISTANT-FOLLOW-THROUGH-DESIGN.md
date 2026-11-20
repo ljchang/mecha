@@ -361,3 +361,33 @@ follow-up shows only as a line on its workflow card, and nothing says
 
 **Not here:** stopping a trigger run from the view; run history beyond seven
 days (`mecha trigger show <name>` lists a trigger's recent runs); Slack.
+
+**Built** (2026-11-20, `serve/background.rs`, `Background.svelte`,
+`background.js`), as above, with these settled in the building:
+
+- **A waiting row whose question has since closed reads `done`.** The ledger
+  is append-only and the workflow records nothing when the owner answers, so
+  both would say `waiting` forever; the endpoint asks the question store
+  (`answered` or `abandoned` → `done`, with which). A question store that
+  cannot be read leaves the run's own `waiting` standing.
+- **A follow-up the host chose never to wake (`follow_up_not_woken`) is not a
+  row** — it ran nothing, and its workflow card says why. A `woken_at` claim
+  with no wake event after it is `unknown`.
+- **Skipped slots are not runs**: `skipped-overlap` / `skipped-stale` ledger
+  rows are left out. The trigger list is the newest 200, and says
+  `truncated` when it stopped short. Running markers are read with
+  `live_names` and `peek`, never `running`, which clears a dead marker — a
+  view writes nothing.
+- **Delegated rows carry taint and an end time** because the board's run
+  summary now does (`taint`, `ended_at`, from the same transcript read
+  `Session::last_outcome_and_taint`); a delegated run has no start time on
+  the board, so it shows when it ended. A run with no taint checkpoint wears
+  *taint unknown*, never nothing.
+- **Jobs**: `list-timers -o json` (systemd 255 here; a systemd that prints
+  only its table is the section's error, never rows) and one `show` over
+  every service, each under five seconds. `running` is an active service,
+  `failed` is `ActiveState=failed` or a `Result` other than `success`, and a
+  timer that has never fired is `unknown` (*not run yet*), not `ok`. No
+  `systemctl` or no user bus is `unavailable`.
+- The view opens with the task board off (`OPENS_ANYWAY`); its delegated rows
+  then say the board is off rather than showing none.

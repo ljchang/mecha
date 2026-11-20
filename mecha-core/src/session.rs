@@ -2406,6 +2406,39 @@ impl Session {
             }))
     }
 
+    /// [`last_outcome`](Self::last_outcome) and the conversation's recorded
+    /// taint, from one read — for a listing that shows how a run ended and
+    /// whether outside content was in it (Tasks → Background, the board's
+    /// run summary). The taint is every `Record::Taint` checkpoint merged,
+    /// [`read`](Self::read)'s rule (taint only grows). `None` when the
+    /// transcript records no checkpoint at all, which a reader shows as
+    /// unknown, never as clean: a transcript without one is a run that never
+    /// got as far as writing it, or one from before the record existed.
+    pub fn last_outcome_and_taint(path: &Path) -> Result<(Option<RunStats>, Option<Taint>)> {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let outcome = text
+            .lines()
+            .rev()
+            .filter(|l| !l.trim().is_empty())
+            .find_map(|l| match serde_json::from_str(l) {
+                Ok(Record::Outcome(s)) => Some(s),
+                _ => None,
+            });
+        // A substring test before the parse: a transcript is mostly
+        // messages, and parsing each one to find the few checkpoints would
+        // cost a full deserialization per line on a route that is polled.
+        // A line that matches and is not a checkpoint fails the parse and is
+        // skipped.
+        let mut taint: Option<Taint> = None;
+        for line in text.lines().filter(|l| l.contains("\"record\":\"taint\"")) {
+            if let Ok(Record::Taint(t)) = serde_json::from_str::<Record>(line) {
+                taint.get_or_insert_with(Taint::default).merge(t);
+            }
+        }
+        Ok((outcome, taint))
+    }
+
     /// Read a transcript back, taint included.
     ///
     /// Legacy transcripts tolerate unparseable lines, including a truncated
@@ -5348,6 +5381,47 @@ mod tests {
         let session = Session::create(&dir, meta_with_id("20260101T000000-no-outcome")).unwrap();
         session.append_messages(&[Message::user("go")]).unwrap();
         assert!(Session::outcomes(&session.path).unwrap().is_empty());
+    }
+
+    /// The listing reader's taint is every checkpoint merged, and a
+    /// transcript with none is `None` — unknown, never clean. A message whose
+    /// text names the record tag is not a checkpoint.
+    #[test]
+    fn the_listing_reader_merges_every_taint_checkpoint_and_says_when_there_is_none() {
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-taint-list")).unwrap();
+        session
+            .append_messages(&[Message::user("say \"record\":\"taint\" twice")])
+            .unwrap();
+        let (outcome, taint) = Session::last_outcome_and_taint(&session.path).unwrap();
+        assert!(outcome.is_none());
+        assert_eq!(taint, None, "no checkpoint is unknown, not clean");
+
+        session
+            .append(&Record::Taint(Taint {
+                private: false,
+                untrusted: true,
+            }))
+            .unwrap();
+        session
+            .append(&Record::Taint(Taint {
+                private: true,
+                untrusted: false,
+            }))
+            .unwrap();
+        session
+            .append(&Record::Outcome(RunStats::default()))
+            .unwrap();
+        let (outcome, taint) = Session::last_outcome_and_taint(&session.path).unwrap();
+        assert!(outcome.is_some());
+        assert_eq!(
+            taint,
+            Some(Taint {
+                private: true,
+                untrusted: true
+            }),
+            "merged, so a later clean-looking checkpoint never clears an earlier leg"
+        );
     }
 
     #[test]
