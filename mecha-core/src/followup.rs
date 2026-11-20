@@ -401,6 +401,17 @@ pub fn render_wake(what: &str, proposed_at: DateTime<Utc>, tz: chrono_tz::Tz) ->
     )
 }
 
+/// The words a wake quotes for `w`: the commitment's expectation (the
+/// proposal's own words), or the workflow's title on a record without one.
+/// One definition, because the waker writes them and the acted-on measure
+/// finds the woken turn by them.
+pub fn wake_words(w: &crate::workflow::Workflow) -> &str {
+    w.commitment
+        .as_ref()
+        .and_then(|c| c.expectation.as_deref())
+        .unwrap_or(&w.title)
+}
+
 /// The proposal an accepted follow-up's workflow came from, by its
 /// `commitment.source`. `None` for every other workflow.
 pub fn proposal_of(w: &crate::workflow::Workflow) -> Option<&str> {
@@ -462,6 +473,438 @@ pub fn workflow_for(
     });
     w.record("created", format!("Owner accepted follow-up {}", f.id), now);
     w
+}
+
+// ---------------------------------------------------------------------------
+// The acted-on measure (design §Step 4)
+// ---------------------------------------------------------------------------
+//
+// **A sensor: it counts and never judges, and nothing reads it yet** (the
+// owner's ruling for proactive messages, 2026-11-17: sensor first). For each
+// follow-up whose woken turn was answered, it reads from records only what
+// the owner did in the day after: replied in the chat, released or declined
+// a draft staged there, or dismissed the reminder. **Whether the owner
+// opened the chat is not measured** — nothing server-side records a page
+// being looked at, and a measure that inferred it would be inventing the
+// one signal it cannot see. Unknown is never none: a source that cannot be
+// read, a reply that cannot be placed in time, or a draft resolved by a hand
+// that is not provably the owner's leaves the follow-up `unknown`, outside
+// both sides of the rate.
+
+/// How long after a woken answer the owner's response is looked for.
+pub const ACTED_ON_WINDOW: chrono::Duration = chrono::Duration::hours(24);
+
+/// What the owner did about one woken answer, as the records show it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Response {
+    /// Their own words in the chat after the woken turn began.
+    Replied,
+    /// A draft staged in the chat since the woken turn began, released by
+    /// the owner's own hand.
+    Released,
+    /// Such a draft, declined by the owner's own hand — an act, by declining.
+    Rejected,
+    /// The workflow's reminder dismissed by the owner.
+    Dismissed,
+    /// None of these, and the window has closed.
+    #[serde(rename = "none")]
+    NoResponse,
+    /// None yet, and the window is still open.
+    Pending,
+    /// A record that would decide it could not be read or attributed.
+    Unknown,
+}
+
+impl Response {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Response::Replied => "replied",
+            Response::Released => "released",
+            Response::Rejected => "rejected",
+            Response::Dismissed => "dismissed",
+            Response::NoResponse => "none",
+            Response::Pending => "pending",
+            Response::Unknown => "unknown",
+        }
+    }
+
+    /// `Some(true)` for an act, `Some(false)` for none, and `None` for the
+    /// two that are not decided — pending and unknown sit on neither side
+    /// of the rate.
+    pub fn acted_on(self) -> Option<bool> {
+        match self {
+            Response::Replied | Response::Released | Response::Rejected | Response::Dismissed => {
+                Some(true)
+            }
+            Response::NoResponse => Some(false),
+            Response::Pending | Response::Unknown => None,
+        }
+    }
+}
+
+/// One record of the owner acting, found inside the window. A follow-up
+/// may carry several; its [`Response`] is the first in this order.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Signal {
+    Replied,
+    Released { outbox_id: String },
+    Rejected { outbox_id: String },
+    Dismissed { at: DateTime<Utc> },
+}
+
+/// What the measure reads of a transcript: the messages as loaded, and each
+/// recorded run's end placed among them — the only clock a transcript keeps
+/// (`RunStats::ended_at`), since a message carries no time of its own.
+pub struct Timeline<'a> {
+    messages: &'a [crate::message::Message],
+    /// `(message count when the run's outcome was written, when)`, for every
+    /// outcome that has both.
+    run_ends: Vec<(usize, DateTime<Utc>)>,
+}
+
+impl<'a> Timeline<'a> {
+    pub fn new(
+        messages: &'a [crate::message::Message],
+        run_ends: Vec<(usize, DateTime<Utc>)>,
+    ) -> Self {
+        Timeline { messages, run_ends }
+    }
+
+    /// A transcript read whole. An outcome a summarising compaction
+    /// displaced (`outcome_positions` `None`), or one from before
+    /// `ended_at`, places nothing and is left out.
+    pub fn of(t: &'a crate::session::Transcript) -> Self {
+        let run_ends = t
+            .outcome_positions
+            .iter()
+            .zip(&t.outcomes)
+            .filter_map(|(pos, o)| Some(((*pos)?, o.ended_at?)))
+            .collect();
+        Timeline::new(&t.convo.messages, run_ends)
+    }
+
+    /// The latest time message `i` is known to come after: the end of the
+    /// last run recorded before it was appended.
+    fn after(&self, i: usize) -> Option<DateTime<Utc>> {
+        self.run_ends
+            .iter()
+            .filter(|(pos, _)| *pos <= i)
+            .map(|(_, at)| *at)
+            .max()
+    }
+
+    /// The earliest time message `i` is known to come before: the end of
+    /// the first run recorded with it in the file, or `read_at` — it was
+    /// there when the transcript was read.
+    fn before(&self, i: usize, read_at: DateTime<Utc>) -> DateTime<Utc> {
+        self.run_ends
+            .iter()
+            .filter(|(pos, _)| *pos > i)
+            .map(|(_, at)| *at)
+            .min()
+            .unwrap_or(read_at)
+            .min(read_at)
+    }
+}
+
+/// One woken-and-answered follow-up, measured.
+#[derive(Debug, Clone, Serialize)]
+pub struct Measured {
+    /// The proposal's id (`short` for display).
+    pub proposal: String,
+    pub workflow: String,
+    pub session_id: String,
+    /// When the woken turn was claimed — the window's start. `None` only on
+    /// a record that holds an answer and no wake, which is `unknown`.
+    pub woken_at: Option<DateTime<Utc>>,
+    pub answered_at: DateTime<Utc>,
+    /// `answered_at` + [`ACTED_ON_WINDOW`].
+    pub window_closes: DateTime<Utc>,
+    pub response: Response,
+    pub signals: Vec<Signal>,
+    /// Why it could not be decided, when that was so.
+    pub unknown: Vec<String>,
+}
+
+/// The latest `follow_up_answered` on a follow-up's workflow — the answer
+/// the measure is about. `None` for any other workflow.
+pub fn answered_at(w: &crate::workflow::Workflow) -> Option<DateTime<Utc>> {
+    proposal_of(w)?;
+    w.events
+        .iter()
+        .rev()
+        .find(|e| e.kind == crate::workflow::FOLLOW_UP_ANSWERED)
+        .map(|e| e.at)
+}
+
+/// Measure one workflow from records already read: its transcript (or why
+/// it could not be read) and the outbox items of its store (likewise).
+/// `None` for a workflow that is not a woken-and-answered follow-up's.
+///
+/// The window runs from the woken turn's claim to a day after its answer,
+/// for every signal alike. A reply is the owner's own words
+/// (`agent::owner_text`) in a user message after the wake — a steer typed
+/// into the woken run counts, a harness turn or a later wake does not —
+/// placed in time by the run ends around it, and counted only when it is
+/// provably inside: a reply that cannot be placed either side of the close
+/// is `unknown`, never a reply and never none. A draft counts when it was
+/// staged from the conversation since the wake and resolved inside the
+/// window by [`Actor::Owner`](crate::closure::Actor::Owner); resolved by any
+/// other hand, it is `unknown` (`forecast::observe`'s rule). A dismissal
+/// counts when [`NOTICE_ACKED`](crate::workflow::NOTICE_ACKED) names the
+/// owner.
+pub fn measure(
+    w: &crate::workflow::Workflow,
+    transcript: std::result::Result<&Timeline<'_>, &str>,
+    outbox: std::result::Result<&[crate::outbox::OutboxItem], &str>,
+    now: DateTime<Utc>,
+) -> Option<Measured> {
+    use crate::closure::Actor;
+    let proposal = proposal_of(w)?.to_string();
+    let answered_at = answered_at(w)?;
+    let closes = answered_at + ACTED_ON_WINDOW;
+    let session_id = w.session_id.clone().unwrap_or_default();
+    let woken_at = w.woken_at.or_else(|| {
+        w.events
+            .iter()
+            .rev()
+            .find(|e| e.kind == crate::workflow::FOLLOW_UP_WOKEN)
+            .map(|e| e.at)
+    });
+    let mut signals = Vec::new();
+    let mut unknown = Vec::new();
+    let inside = |t: DateTime<Utc>, from: DateTime<Utc>| t >= from && t <= closes;
+
+    match woken_at {
+        None => unknown.push("the workflow records an answer and no wake".to_string()),
+        Some(from) => {
+            match transcript {
+                Err(why) => unknown.push(format!("the transcript could not be read: {why}")),
+                Ok(t) => replied(
+                    t,
+                    wake_words(w),
+                    from,
+                    closes,
+                    now,
+                    &mut signals,
+                    &mut unknown,
+                ),
+            }
+            match outbox {
+                Err(why) => unknown.push(format!("the outbox could not be read: {why}")),
+                Ok(items) => {
+                    for item in items
+                        .iter()
+                        .filter(|i| i.session_id.as_deref() == Some(session_id.as_str()))
+                    {
+                        let Some(staged) = rfc3339(&item.created_at) else {
+                            unknown.push(format!("outbox item {} has no readable time", item.id));
+                            continue;
+                        };
+                        if staged < from {
+                            continue;
+                        }
+                        // A release the owner pressed whose delivery did not
+                        // complete leaves the draft pending with no stamp:
+                        // an attempt inside the window is a release by a hand
+                        // nothing recorded — unknown, never none (review of
+                        // #903).
+                        if item.status == "pending" {
+                            // As `forecast::observe` reads it: an error on a
+                            // pending draft is a release that did not land —
+                            // `release` records it before any attempt when
+                            // the tool is missing — and carries no time, so
+                            // it is unknown, never none (review of #903).
+                            let attempted = item
+                                .delivery_attempts
+                                .iter()
+                                .any(|a| rfc3339(&a.started_at).is_none_or(|at| inside(at, from)));
+                            if attempted || item.error.is_some() {
+                                unknown.push(format!(
+                                    "outbox item {} was released and not delivered",
+                                    item.id
+                                ));
+                            }
+                            continue;
+                        }
+                        if !matches!(item.status.as_str(), "sent" | "rejected") {
+                            continue;
+                        }
+                        let Some(resolved) = item.resolved_at.as_deref().and_then(rfc3339) else {
+                            unknown.push(format!(
+                                "outbox item {} was {} at no readable time",
+                                item.id, item.status
+                            ));
+                            continue;
+                        };
+                        if !inside(resolved, from) {
+                            continue;
+                        }
+                        let by = item.resolved_by();
+                        if by != Actor::Owner {
+                            unknown.push(format!(
+                                "outbox item {} was {} by {}, not provably the owner",
+                                item.id,
+                                item.status,
+                                by.as_str()
+                            ));
+                            continue;
+                        }
+                        let outbox_id = item.id.clone();
+                        signals.push(if item.status == "sent" {
+                            Signal::Released { outbox_id }
+                        } else {
+                            Signal::Rejected { outbox_id }
+                        });
+                    }
+                }
+            }
+            for e in w
+                .events
+                .iter()
+                .filter(|e| e.kind == crate::workflow::NOTICE_ACKED && inside(e.at, from))
+            {
+                if e.detail == Actor::Owner.as_str() {
+                    signals.push(Signal::Dismissed { at: e.at });
+                    break;
+                }
+                unknown.push(format!(
+                    "the reminder was dismissed by {}, not provably the owner",
+                    e.detail
+                ));
+            }
+        }
+    }
+
+    let has = |f: fn(&Signal) -> bool| signals.iter().any(f);
+    let response = if has(|s| matches!(s, Signal::Replied)) {
+        Response::Replied
+    } else if has(|s| matches!(s, Signal::Released { .. })) {
+        Response::Released
+    } else if has(|s| matches!(s, Signal::Rejected { .. })) {
+        Response::Rejected
+    } else if has(|s| matches!(s, Signal::Dismissed { .. })) {
+        Response::Dismissed
+    } else if !unknown.is_empty() {
+        Response::Unknown
+    } else if now <= closes {
+        Response::Pending
+    } else {
+        Response::NoResponse
+    };
+    Some(Measured {
+        proposal,
+        workflow: w.id.clone(),
+        session_id,
+        woken_at,
+        answered_at,
+        window_closes: closes,
+        response,
+        signals,
+        unknown,
+    })
+}
+
+/// The reply half of [`measure`]: find the woken turn — the last wake
+/// quoting `what` that no run is known to have ended after `from` before —
+/// then the first of the owner's own messages after it, and place it.
+fn replied(
+    t: &Timeline<'_>,
+    what: &str,
+    from: DateTime<Utc>,
+    closes: DateTime<Utc>,
+    now: DateTime<Utc>,
+    signals: &mut Vec<Signal>,
+    unknown: &mut Vec<String>,
+) {
+    use crate::message::{Block, Role};
+    let quoted = format!("\"{what}\"");
+    let is_wake = |m: &crate::message::Message| {
+        m.role == Role::User
+            && m.content.iter().any(|b| {
+                matches!(b, Block::Text { text }
+                    if text.trim_start().starts_with(WAKE_STEM) && text.contains(&quoted))
+            })
+    };
+    let Some(wake) = (0..t.messages.len())
+        .rev()
+        .find(|&i| is_wake(&t.messages[i]) && t.after(i).is_none_or(|at| at <= from))
+    else {
+        unknown.push("the woken turn is not in the transcript".into());
+        return;
+    };
+    // From the wake itself: a steer typed before the woken run's first turn
+    // is folded onto the wake message (`agent::fold_steer`), which then holds
+    // the owner's words beside the harness's (review of #903).
+    for j in wake..t.messages.len() {
+        let m = &t.messages[j];
+        if m.role != Role::User || crate::agent::owner_text(m).trim().is_empty() {
+            continue;
+        }
+        if t.before(j, now) <= closes {
+            signals.push(Signal::Replied);
+        } else if t.after(j).is_none_or(|at| at <= closes) {
+            // Somewhere around the close, and no run end says which side:
+            // a later message is later still, so nothing after it decides.
+            unknown.push("a reply could not be placed inside or outside the window".into());
+        }
+        // The owner's first words after the wake decide it: if they came
+        // after the close, every later message did too.
+        return;
+    }
+}
+
+fn rfc3339(s: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|t| t.with_timezone(&Utc))
+}
+
+/// The readout's totals. The rate is acted-on over decided — replied,
+/// released, rejected and dismissed over those and none — and `None` over
+/// an empty denominator, never 0; pending and unknown are counted beside it
+/// and sit on neither side.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Totals {
+    pub replied: usize,
+    pub released: usize,
+    pub rejected: usize,
+    pub dismissed: usize,
+    pub none: usize,
+    pub pending: usize,
+    pub unknown: usize,
+    pub acted_on: usize,
+    pub decided: usize,
+    pub acted_on_rate: Option<f64>,
+}
+
+impl Totals {
+    pub fn of(rows: &[Measured]) -> Self {
+        let mut t = Totals::default();
+        for r in rows {
+            *match r.response {
+                Response::Replied => &mut t.replied,
+                Response::Released => &mut t.released,
+                Response::Rejected => &mut t.rejected,
+                Response::Dismissed => &mut t.dismissed,
+                Response::NoResponse => &mut t.none,
+                Response::Pending => &mut t.pending,
+                Response::Unknown => &mut t.unknown,
+            } += 1;
+            match r.response.acted_on() {
+                Some(true) => {
+                    t.acted_on += 1;
+                    t.decided += 1;
+                }
+                Some(false) => t.decided += 1,
+                None => {}
+            }
+        }
+        t.acted_on_rate = (t.decided > 0).then(|| t.acted_on as f64 / t.decided as f64);
+        t
+    }
 }
 
 #[cfg(test)]
@@ -684,6 +1127,408 @@ mod tests {
         std::fs::write(s.root().join("broken.json"), "{").unwrap();
         let (items, skipped) = s.items_counting().unwrap();
         assert_eq!((items.len(), skipped), (1, 1));
+    }
+
+    // --- the acted-on measure ---
+
+    use crate::closure::Actor;
+    use crate::message::{Block, Message};
+    use crate::workflow::{Workflow, FOLLOW_UP_ANSWERED, NOTICE_ACKED};
+
+    fn h(n: i64) -> chrono::Duration {
+        chrono::Duration::hours(n)
+    }
+
+    /// A follow-up's workflow woken at `now()` and answered ten minutes on.
+    fn answered_workflow(what: &str) -> Workflow {
+        let n = now();
+        let f = FollowUp {
+            id: "20261118T090000-meas1234".into(),
+            status: ACCEPTED.into(),
+            what: what.into(),
+            due_at: n,
+            session_id: "sess-a".into(),
+            workspace: None,
+            taint: Some(Taint::default()),
+            proposed_at: n - h(3),
+            decided_at: Some(n - h(3)),
+            workflow_id: None,
+            reason: None,
+        };
+        let mut w = workflow_for(&f, "/tmp/w".into(), None, n - h(3));
+        w.woken_at = Some(n);
+        w.record(
+            FOLLOW_UP_ANSWERED,
+            "sess-a",
+            n + chrono::Duration::minutes(10),
+        );
+        w
+    }
+
+    fn harness(text: String) -> Message {
+        let mut m = Message::user(text);
+        m.harness = true;
+        m
+    }
+
+    fn said(text: &str) -> Message {
+        Message::assistant(vec![Block::text(text)])
+    }
+
+    /// The conversation before and through the woken turn: an earlier
+    /// exchange (its run ended before the wake), the wake, the answer.
+    fn woken_chat(what: &str) -> (Vec<Message>, Vec<(usize, DateTime<Utc>)>) {
+        let n = now();
+        let messages = vec![
+            Message::user("can you watch the nightly build for me"),
+            said("I will look again in the morning."),
+            harness(render_wake(what, n - h(3), chrono_tz::UTC)),
+            said("The build passed overnight."),
+        ];
+        let run_ends = vec![(2, n - h(3)), (4, n + chrono::Duration::minutes(10))];
+        (messages, run_ends)
+    }
+
+    #[test]
+    fn a_reply_inside_the_day_is_the_owner_acting_and_a_harness_turn_is_not() {
+        let what = "check the nightly build";
+        let w = answered_workflow(what);
+        let n = now();
+        let empty: &[crate::outbox::OutboxItem] = &[];
+        let measure_at = |messages: &[Message], ends: Vec<_>, at| {
+            let t = Timeline::new(messages, ends);
+            measure(&w, Ok(&t), Ok(empty), at).unwrap()
+        };
+
+        // Only the harness spoke after the answer — a nudge in the harness's
+        // voice and a harness-marked turn. Not the owner's words: pending
+        // while the day runs, none once it has closed.
+        let (mut messages, mut ends) = woken_chat(what);
+        messages.push(harness("(From the harness: a note for the run.)".into()));
+        messages.push(said("Noted."));
+        ends.push((6, n + h(2)));
+        assert_eq!(
+            measure_at(&messages, ends.clone(), n + h(1)).response,
+            Response::Pending
+        );
+        let closed = measure_at(&messages, ends.clone(), n + h(30));
+        assert_eq!(closed.response, Response::NoResponse);
+        assert!(closed.signals.is_empty() && closed.unknown.is_empty());
+
+        // The owner's own words, their run ended inside the day: replied.
+        messages.push(Message::user("thanks, that is what I needed"));
+        messages.push(said("Glad to help."));
+        ends.push((8, n + h(5)));
+        let replied = measure_at(&messages, ends.clone(), n + h(30));
+        assert_eq!(replied.response, Response::Replied);
+        assert_eq!(replied.signals, vec![Signal::Replied]);
+        assert_eq!(replied.response.acted_on(), Some(true));
+    }
+
+    /// A steer the owner typed before the woken run's first turn is folded
+    /// onto the wake message, unmarking it: those are the owner's words, and
+    /// they are a reply.
+    #[test]
+    fn a_steer_folded_onto_the_wake_is_a_reply() {
+        let what = "check the nightly build";
+        let w = answered_workflow(what);
+        let n = now();
+        let empty: &[crate::outbox::OutboxItem] = &[];
+        let (mut messages, ends) = woken_chat(what);
+        messages[2].harness = false;
+        messages[2]
+            .content
+            .push(Block::text("and the docs build too"));
+        let t = Timeline::new(&messages, ends);
+        let m = measure(&w, Ok(&t), Ok(empty), n + h(30)).unwrap();
+        assert_eq!(m.response, Response::Replied);
+    }
+
+    #[test]
+    fn a_reply_is_counted_only_where_the_run_ends_place_it() {
+        let what = "check the nightly build";
+        let w = answered_workflow(what);
+        let n = now();
+        let empty: &[crate::outbox::OutboxItem] = &[];
+        let (mut messages, mut ends) = woken_chat(what);
+        messages.push(Message::user("any news on the release?"));
+        messages.push(said("Not yet."));
+
+        // Its run ended two days later, and nothing places it earlier than
+        // the answer: it may be inside or past the close — unknown.
+        let mut around = ends.clone();
+        around.push((6, n + h(48)));
+        let t = Timeline::new(&messages, around);
+        let m = measure(&w, Ok(&t), Ok(empty), n + h(72)).unwrap();
+        assert_eq!(m.response, Response::Unknown, "{m:?}");
+        assert_eq!(m.response.acted_on(), None);
+
+        // A run between, ended after the close, places the reply past it:
+        // the window closed with nothing in it.
+        messages.insert(4, harness("(From the harness: a note.)".into()));
+        messages.insert(5, said("ok"));
+        ends.push((6, n + h(26)));
+        ends.push((8, n + h(48)));
+        let t = Timeline::new(&messages, ends);
+        let m = measure(&w, Ok(&t), Ok(empty), n + h(72)).unwrap();
+        assert_eq!(m.response, Response::NoResponse, "{m:?}");
+    }
+
+    #[test]
+    fn the_woken_turn_is_the_one_this_follow_up_woke() {
+        // The same words woke this conversation twice. The owner replied
+        // between the two: that is the first follow-up's reply, and not the
+        // second's.
+        let what = "check the nightly build";
+        let w = answered_workflow(what);
+        let n = now();
+        let empty: &[crate::outbox::OutboxItem] = &[];
+        let (mut messages, mut ends) = woken_chat(what);
+        messages.push(Message::user("thanks"));
+        messages.push(said("You are welcome."));
+        messages.push(harness(render_wake(what, n, chrono_tz::UTC)));
+        messages.push(said("Still green."));
+        ends.push((6, n + h(1)));
+        ends.push((8, n + h(5) + chrono::Duration::minutes(10)));
+        let t = Timeline::new(&messages, ends);
+        let first = measure(&w, Ok(&t), Ok(empty), n + h(72)).unwrap();
+        assert_eq!(first.response, Response::Replied, "{first:?}");
+        let mut second = w.clone();
+        second.woken_at = Some(n + h(5));
+        second.events.retain(|e| e.kind != FOLLOW_UP_ANSWERED);
+        second.record(
+            FOLLOW_UP_ANSWERED,
+            "sess-a",
+            n + h(5) + chrono::Duration::minutes(10),
+        );
+        let m = measure(&second, Ok(&t), Ok(empty), n + h(72)).unwrap();
+        assert_eq!(m.response, Response::NoResponse, "{m:?}");
+        // A transcript that holds no wake at all cannot say: unknown.
+        let bare = [Message::user("hello"), said("hi")];
+        let t = Timeline::new(&bare, vec![]);
+        assert_eq!(
+            measure(&w, Ok(&t), Ok(empty), n + h(72)).unwrap().response,
+            Response::Unknown
+        );
+    }
+
+    #[test]
+    fn unreadable_is_unknown_never_none_and_an_act_still_counts_beside_it() {
+        let what = "check the nightly build";
+        let w = answered_workflow(what);
+        let n = now();
+        let empty: &[crate::outbox::OutboxItem] = &[];
+        let (messages, ends) = woken_chat(what);
+        let t = Timeline::new(&messages, ends);
+        let late = n + h(30);
+        let m = measure(&w, Err("permission denied"), Ok(empty), late).unwrap();
+        assert_eq!(m.response, Response::Unknown);
+        assert!(m.unknown[0].contains("permission denied"), "{m:?}");
+        assert_eq!(
+            measure(&w, Ok(&t), Err("2 unreadable records"), late)
+                .unwrap()
+                .response,
+            Response::Unknown
+        );
+        // Unknown outranks pending: distress is said while the day runs.
+        assert_eq!(
+            measure(&w, Err("gone"), Ok(empty), n + h(1))
+                .unwrap()
+                .response,
+            Response::Unknown
+        );
+        // One thing the owner provably did decides it, whatever else could
+        // not be read: the dismissal is on the workflow itself.
+        let mut w = w;
+        w.notice = Some(crate::workflow::Notice {
+            at: n,
+            reason: "Follow-up answered — open the chat".into(),
+            urgent: false,
+        });
+        assert!(w.acknowledge(Actor::Owner, n + h(2)));
+        let m = measure(&w, Err("gone"), Err("gone"), late).unwrap();
+        assert_eq!(m.response, Response::Dismissed);
+        assert_eq!(m.signals, vec![Signal::Dismissed { at: n + h(2) }]);
+    }
+
+    #[test]
+    fn a_draft_or_a_dismissal_counts_only_by_the_owner_s_hand_inside_the_window() {
+        let what = "check the nightly build";
+        let n = now();
+        let dir = std::env::temp_dir().join(format!("followup-measure-{}", uuid::Uuid::new_v4()));
+        let _scratch = Scratch(dir.clone());
+        let store = crate::outbox::OutboxStore::open(&dir).unwrap();
+        let stage = |session: &str, staged: DateTime<Utc>| {
+            let mut item = store
+                .stage(
+                    "mail_send",
+                    crate::outbox::OutboxKind::Message,
+                    serde_json::json!({"to": "ines.okafor@example.org", "body": "It passed."}),
+                    Taint::default(),
+                    crate::outbox::Provenance {
+                        session_id: Some(session.into()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            item.created_at = staged.to_rfc3339();
+            item
+        };
+        let resolve = |mut item: crate::outbox::OutboxItem, status: &str, at, by| {
+            item.status = status.into();
+            item.resolved_at = Some(DateTime::<Utc>::to_rfc3339(&at));
+            item.resolved_by = Some(by);
+            item
+        };
+        let w = answered_workflow(what);
+        let (messages, ends) = woken_chat(what);
+        let t = Timeline::new(&messages, ends);
+        let late = n + h(30);
+        let staged = n + chrono::Duration::minutes(5);
+        let response = |items: &[crate::outbox::OutboxItem], w: &Workflow| {
+            measure(w, Ok(&t), Ok(items), late).unwrap()
+        };
+
+        // Released by the owner and not delivered: pending, no stamp, an
+        // attempt inside the window — unknown, never none.
+        let mut failed = stage("sess-a", staged);
+        failed
+            .delivery_attempts
+            .push(crate::outbox::DeliveryAttempt {
+                prediction_id: None,
+                id: "attempt-1".into(),
+                started_at: (n + h(2)).to_rfc3339(),
+                outcome: crate::outbox::DeliveryOutcome::NotDelivered,
+                resolved_at: None,
+                evidence: None,
+            });
+        let m = response(std::slice::from_ref(&failed), &w);
+        assert_eq!(m.response, Response::Unknown, "{m:?}");
+        // Refused before any attempt (the tool was missing): an error and no
+        // attempt is still unknown.
+        let mut refused = stage("sess-a", staged);
+        refused.error = Some("the tool is not in the registry".into());
+        let m = response(std::slice::from_ref(&refused), &w);
+        assert_eq!(m.response, Response::Unknown, "{m:?}");
+        // An attempt whose time cannot be read is unknown too.
+        let mut unreadable = stage("sess-a", staged);
+        unreadable
+            .delivery_attempts
+            .push(crate::outbox::DeliveryAttempt {
+                prediction_id: None,
+                id: "attempt-2".into(),
+                started_at: "not a time".into(),
+                outcome: crate::outbox::DeliveryOutcome::NotDelivered,
+                resolved_at: None,
+                evidence: None,
+            });
+        let m = response(std::slice::from_ref(&unreadable), &w);
+        assert_eq!(m.response, Response::Unknown, "{m:?}");
+
+        let released = resolve(stage("sess-a", staged), "sent", n + h(3), Actor::Owner);
+        let m = response(std::slice::from_ref(&released), &w);
+        assert_eq!(m.response, Response::Released);
+        assert_eq!(
+            m.signals,
+            vec![Signal::Released {
+                outbox_id: released.id.clone()
+            }]
+        );
+        let declined = resolve(stage("sess-a", staged), "rejected", n + h(3), Actor::Owner);
+        assert_eq!(response(&[declined], &w).response, Response::Rejected);
+
+        // Nothing the owner did: another chat's draft, one staged before the
+        // wake, one released after the close, one still pending.
+        let ignored = [
+            resolve(stage("sess-b", staged), "sent", n + h(3), Actor::Owner),
+            resolve(stage("sess-a", n - h(1)), "sent", n + h(3), Actor::Owner),
+            resolve(stage("sess-a", staged), "sent", n + h(25), Actor::Owner),
+            stage("sess-a", staged),
+        ];
+        let m = response(&ignored, &w);
+        assert_eq!(m.response, Response::NoResponse, "{m:?}");
+
+        // Resolved inside the window by a hand that is not provably the
+        // owner's: unknown, never the owner's act and never none.
+        for by in [Actor::OwnerApproved, Actor::Unknown] {
+            let item = resolve(stage("sess-a", staged), "sent", n + h(3), by);
+            let m = response(&[item], &w);
+            assert_eq!(m.response, Response::Unknown, "{by:?}");
+        }
+
+        // A dismissal is the owner's only when it says so.
+        let mut dismissed = w.clone();
+        dismissed.notice = Some(crate::workflow::Notice {
+            at: n,
+            reason: "Follow-up answered — open the chat".into(),
+            urgent: false,
+        });
+        let mut by_run = dismissed.clone();
+        assert!(by_run.acknowledge(Actor::Unknown, n + h(2)));
+        assert_eq!(response(&[], &by_run).response, Response::Unknown);
+        assert!(dismissed.acknowledge(Actor::Owner, n + h(2)));
+        assert_eq!(response(&[], &dismissed).response, Response::Dismissed);
+        // And only inside the window.
+        let mut too_late = w.clone();
+        too_late.events.push(crate::workflow::Event {
+            at: n + h(26),
+            kind: NOTICE_ACKED.into(),
+            detail: "owner".into(),
+        });
+        assert_eq!(response(&[], &too_late).response, Response::NoResponse);
+    }
+
+    #[test]
+    fn only_a_woken_and_answered_follow_up_is_measured() {
+        let n = now();
+        let empty: &[crate::outbox::OutboxItem] = &[];
+        let t = Timeline::new(&[], vec![]);
+        let mut w = answered_workflow("x");
+        w.events.retain(|e| e.kind != FOLLOW_UP_ANSWERED);
+        assert!(measure(&w, Ok(&t), Ok(empty), n).is_none(), "not answered");
+        let mut own = Workflow::new("w".into(), "t".into(), "/tmp".into(), n);
+        own.record(FOLLOW_UP_ANSWERED, "sess-a", n);
+        assert!(
+            measure(&own, Ok(&t), Ok(empty), n).is_none(),
+            "not a follow-up's"
+        );
+    }
+
+    #[test]
+    fn the_rate_is_acted_on_over_decided_and_none_over_nothing_decided() {
+        let w = answered_workflow("x");
+        let row = |response| Measured {
+            proposal: "p".into(),
+            workflow: w.id.clone(),
+            session_id: "sess-a".into(),
+            woken_at: Some(now()),
+            answered_at: now(),
+            window_closes: now() + ACTED_ON_WINDOW,
+            response,
+            signals: vec![],
+            unknown: vec![],
+        };
+        let undecided = Totals::of(&[row(Response::Pending), row(Response::Unknown)]);
+        assert_eq!(
+            (undecided.decided, undecided.acted_on_rate),
+            (0, None),
+            "a dash, never zero"
+        );
+        assert_eq!((undecided.pending, undecided.unknown), (1, 1));
+        assert_eq!(Totals::of(&[]).acted_on_rate, None);
+        let t = Totals::of(&[
+            row(Response::Replied),
+            row(Response::Rejected),
+            row(Response::NoResponse),
+            row(Response::Unknown),
+            row(Response::Pending),
+        ]);
+        assert_eq!((t.acted_on, t.decided), (2, 3));
+        assert!((t.acted_on_rate.unwrap() - 2.0 / 3.0).abs() < 1e-9);
+        assert_eq!(
+            serde_json::to_value(Response::NoResponse).unwrap(),
+            serde_json::json!("none")
+        );
     }
 
     #[test]

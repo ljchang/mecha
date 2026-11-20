@@ -1,0 +1,50 @@
+source = "github"
+schedule = "15 * * * *"
+max_rows = 1
+# One row: how many repositories are red, how many issues and outside PRs
+# arrived in the last day and week, and when the collector last finished —
+# so a stale board says it is stale: the last run that collected anything —
+# every run writes a `finished` row, a revoked login's too, and that one must
+# not make week-old counts look fresh (review of #902). GitHub's times are RFC 3339 (`T`, `Z`),
+# so the windows are computed in that form: SQLite's `datetime()` writes a
+# space instead of the `T`, and a string comparison against it is a day off.
+query = """
+WITH ci AS (SELECT * FROM ci_runs WHERE status = 'completed'
+            AND event IN ('push', 'schedule', 'workflow_dispatch')
+            -- Only runs that decide: a cancelled or skipped run says nothing
+            -- about whether the branch is broken, and ranking it first turned
+            -- a red workflow green (review of #902).
+            AND conclusion IN ('success', 'failure', 'timed_out', 'startup_failure')),
+ranked AS (SELECT repo, workflow_id, conclusion,
+           -- GitHub's times are to the second; run ids only grow, so the id
+           -- breaks a tie rather than the scan order (review of #902).
+           ROW_NUMBER() OVER (PARTITION BY repo, workflow_id ORDER BY created_at DESC, id DESC) AS rn
+           FROM ci)
+SELECT
+  (SELECT count(DISTINCT r.repo) FROM ranked r JOIN inventory i ON i.repo = r.repo AND i.selected = 1
+     WHERE r.rn = 1 AND r.conclusion IN ('failure', 'timed_out', 'startup_failure')) AS failing,
+  (SELECT count(*) FROM items it JOIN inventory i ON i.repo = it.repo AND i.selected = 1
+     WHERE it.gone_at IS NULL
+       AND it.created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 day')) AS new_day,
+  (SELECT count(*) FROM items it JOIN inventory i ON i.repo = it.repo AND i.selected = 1
+     WHERE it.gone_at IS NULL
+       AND it.created_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-7 days')) AS new_week,
+  (SELECT count(*) FROM inventory WHERE selected = 1) AS watched,
+  (SELECT max(at) FROM collect_log WHERE kind = 'finished' AND collected > 0) AS collected_at
+"""
+
+[[column]]
+name = "failing"
+type = "integer"
+[[column]]
+name = "new_day"
+type = "integer"
+[[column]]
+name = "new_week"
+type = "integer"
+[[column]]
+name = "watched"
+type = "integer"
+[[column]]
+name = "collected_at"
+type = "timestamp"

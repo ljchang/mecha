@@ -112,9 +112,9 @@ only proposals, and acceptance crosses the owner.
 | Step | What | State |
 |---|---|---|
 | 1 | The store, the tool (web chat and TUI), `mecha followups`, the proposals pane, the Home card, Open chat on a workflow | merged (#896) |
-| 2 | F1: a due follow-up wakes a staging-only run in its conversation, run by the host that owns it; its answer lands in the chat and the workflow's reminder says it was answered | this change (#897) |
+| 2 | F1: a due follow-up wakes a staging-only run in its conversation, run by the host that owns it; its answer lands in the chat and the workflow's reminder says it was answered | merged (#897) |
 | 3 | F2's auto-accept, on the surfaces that have an auto mode | after 2 |
-| 4 | The acted-on measure: whether the owner opened, replied in or acted on the chat within a day of a woken answer | with 2 |
+| 4 | The acted-on measure: whether the owner opened, replied in or acted on the chat within a day of a woken answer | this change: `mecha followups measure` (§Step 4); "opened" is not measured |
 
 ### Step 2: a due follow-up wakes its conversation
 
@@ -184,6 +184,35 @@ still only reminds.
   coalesced, quiet-hours-respecting path, so Home's workflow count and the
   card's Open chat button are the way back (F3).
 - **Not here.** Auto-accept (step 3), the acted-on measure (step 4), Slack.
+
+### Step 4: the acted-on measure
+
+A sensor, under the owner's sensor-first ruling for proactive messages
+(2026-11-17): `mecha followups measure [--json] [--since <RFC3339>]`
+(`followup::measure`) counts, and **nothing reads it yet** — no surface, no
+gate, no prompt. For each follow-up whose workflow records
+`follow_up_answered`, it classifies what the owner did from the woken turn's
+claim (`woken_at`) to 24 hours after the answer, from records only:
+**replied** (the owner's own words, `agent::owner_text`, in a user message
+after the wake — a steer into the woken run counts, a harness turn or a later
+wake does not), **released** or **rejected** (a draft staged from that
+conversation since the wake, resolved inside the window by
+`Actor::Owner`), **dismissed** (the reminder's Dismiss, `workflow ack`, which
+now records `notice_acked` with who ran it — bookkeeping, so it neither
+re-raises the notice nor clears a verification), **none** once the window
+has closed, **pending** before. Acted-on rate = (replied + released +
+rejected + dismissed) / (those + none), a dash over an empty denominator.
+
+- **Unknown is its own outcome, on neither side of the rate**: a transcript
+  or outbox that cannot be read whole, a woken turn the transcript no longer
+  holds, a draft or dismissal by a hand that is not provably the owner's
+  (`owner-approved`, `unknown` — `forecast::observe`'s rule), or a reply that
+  cannot be placed. A message has no time of its own; a reply is placed by
+  the run ends recorded around it (`RunStats::ended_at`), and counted only
+  when the run it belongs to ended inside the window. One provable act
+  decides the follow-up whatever else could not be read.
+- **"Opened the chat" is not measured.** Nothing server-side records a page
+  being looked at, and the readout says so rather than inferring it.
 
 ## Unattended runs ask, and resume as a chat
 

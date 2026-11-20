@@ -29,6 +29,16 @@ pub const FOLLOW_UP_FAILED: &str = "follow_up_failed";
 /// conversation as the owner's own turn.
 pub const FOLLOW_UP_ASKED: &str = "follow_up_asked";
 
+/// The workflow's in-app notice was dismissed — `mecha workflow ack`, which
+/// the web's "Dismiss reminder" drives. **The owner's act, recorded**: the
+/// verb is the owner's, on the owner's store, and the detail is who ran it
+/// as `closure::acting_actor` read it (`owner`, or the word for a run's
+/// shell or an unattributable caller), so a reader counts only an `owner`
+/// dismissal as the owner's. Bookkeeping, not a material event
+/// ([`Workflow::acknowledge`]): it neither re-keys the notice nor clears a
+/// verification. Read by the acted-on measure (`followup::measure`).
+pub const NOTICE_ACKED: &str = "notice_acked";
+
 /// Recent recovery context; transcripts retain the full conversation history.
 const EVENT_HISTORY_LIMIT: usize = 128;
 
@@ -379,6 +389,28 @@ impl Workflow {
         self.verified_at = None;
         self.verification.clear();
     }
+    /// Dismiss the current notice, recording [`NOTICE_ACKED`] with who did
+    /// it. `false`, and nothing recorded, when there was no notice to
+    /// dismiss. Not [`Self::record`]: a dismissal changes nothing the work
+    /// depends on, so verification stands, and it does not advance
+    /// `event_sequence` — the notice key is built from it, and a key moved
+    /// by the dismissal would raise the dismissed notice again on the next
+    /// tick ([`Self::tick`] skips these events for the same reason).
+    pub fn acknowledge(&mut self, by: crate::closure::Actor, now: DateTime<Utc>) -> bool {
+        if self.notice.take().is_none() {
+            return false;
+        }
+        self.updated_at = now;
+        self.events.push(Event {
+            at: now,
+            kind: NOTICE_ACKED.into(),
+            detail: by.as_str().into(),
+        });
+        if self.events.len() > EVENT_HISTORY_LIMIT {
+            self.events.drain(..self.events.len() - EVENT_HISTORY_LIMIT);
+        }
+        true
+    }
     /// Owner dispositions resolve decisions; delivery requirements are separate checks.
     pub fn actions_resolved(&self) -> bool {
         self.observed.values().all(|s| {
@@ -703,7 +735,10 @@ impl Workflow {
             .commitment
             .as_ref()
             .is_some_and(|c| c.follow_up_due(now));
-        let last = self.events.last().map(|e| e.kind.as_str());
+        // A dismissal is bookkeeping, never news: the last event and the
+        // count the key falls back to are read past it (`acknowledge`).
+        let material = || self.events.iter().filter(|e| e.kind != NOTICE_ACKED);
+        let last = material().next_back().map(|e| e.kind.as_str());
         let changed = matches!(
             last,
             Some(
@@ -724,7 +759,7 @@ impl Workflow {
         let key = format!(
             "{}:{}:{}:{:?}",
             now.with_timezone(&policy.timezone).date_naive(),
-            self.event_sequence.max(self.events.len() as u64),
+            self.event_sequence.max(material().count() as u64),
             urgent,
             self.snoozed_until
         );
@@ -1332,6 +1367,48 @@ mod tests {
             w.notice.as_ref().map(|n| n.reason.as_str()),
             Some("Follow-up has a question for you — answer it in Tasks → Waiting")
         );
+    }
+
+    /// A dismissal is recorded with who made it, and stays dismissed: it is
+    /// not news, so the next tick that day does not raise the same notice
+    /// again, and it leaves verification standing.
+    #[test]
+    fn a_dismissal_is_recorded_and_does_not_raise_the_notice_again() {
+        let policy = AttentionPolicy::default();
+        let noon = at("2026-11-18T12:00:00Z");
+        let mut w = Workflow::new(
+            "followup-x".into(),
+            "Follow-up: x".into(),
+            "/tmp".into(),
+            noon,
+        );
+        assert!(
+            !w.acknowledge(crate::closure::Actor::Owner, noon),
+            "nothing to dismiss, nothing recorded"
+        );
+        assert!(w.events.is_empty());
+        w.record(FOLLOW_UP_ANSWERED, "sess-a", noon);
+        assert!(w.tick(&policy, noon));
+        w.verified_at = Some(noon);
+        let sequence = w.event_sequence;
+        let later = noon + chrono::Duration::hours(1);
+        assert!(w.acknowledge(crate::closure::Actor::Owner, later));
+        assert!(w.notice.is_none());
+        let e = w.events.last().unwrap();
+        assert_eq!(
+            (e.kind.as_str(), e.detail.as_str(), e.at),
+            (NOTICE_ACKED, "owner", later)
+        );
+        assert!(
+            !w.tick(&policy, later + chrono::Duration::hours(1)),
+            "dismissed stays dismissed that day"
+        );
+        assert!(w.notice.is_none());
+        assert_eq!(w.event_sequence, sequence);
+        assert_eq!(w.verified_at, Some(noon), "a dismissal is not material");
+        // A real change after it is still news.
+        w.record("source_changed", "a draft was staged", later);
+        assert!(w.tick(&policy, later + chrono::Duration::hours(2)));
     }
 
     #[test]

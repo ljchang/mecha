@@ -1,0 +1,47 @@
+source = "github"
+schedule = "15 * * * *"
+max_rows = 500
+# Open issues, and pull requests from outside contributors (the collector keeps
+# only those, G5), newest first. Titles are a stranger's text: the source is
+# registered third-party, so a run that reads these rows is armed untrusted.
+query = """
+SELECT it.repo, i.owner, CASE it.kind WHEN 'pull_request' THEN 'PR' ELSE 'issue' END AS kind,
+       it.number, it.title, it.author, it.created_at,
+       CAST(julianday('now') - julianday(it.created_at) AS INTEGER) AS age_days,
+       coalesce(it.comments, 0) AS comments
+FROM items it JOIN inventory i ON i.repo = it.repo AND i.selected = 1
+WHERE it.gone_at IS NULL
+ORDER BY it.created_at DESC
+-- The newest 500: max_rows refuses a larger answer rather than trimming it,
+-- so without this the refresh would fail (and the table stop moving) at the
+-- 501st open item.
+LIMIT 500
+"""
+
+[[column]]
+name = "repo"
+type = "string"
+[[column]]
+name = "owner"
+type = "string"
+[[column]]
+name = "kind"
+type = "string"
+[[column]]
+name = "number"
+type = "integer"
+[[column]]
+name = "title"
+type = "string"
+[[column]]
+name = "author"
+type = "string"
+[[column]]
+name = "created_at"
+type = "timestamp"
+[[column]]
+name = "age_days"
+type = "integer"
+[[column]]
+name = "comments"
+type = "integer"

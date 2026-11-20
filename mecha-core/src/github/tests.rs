@@ -1068,3 +1068,181 @@ fn an_empty_log_reads_as_no_run() {
         LogReport::default()
     );
 }
+
+// ---- the board shipped under scripts/hud/github ----
+
+/// The board shipped under `scripts/hud/github/` validates as written, and
+/// every one of its loaders runs — confined, as a refresh would — against a
+/// store this collector wrote, and passes its own declared shape. And the
+/// "new in a day / a week" windows read GitHub's RFC 3339 times as times: an
+/// issue opened thirty hours ago is in the week and not in the day (compared
+/// against `datetime('now', …)`'s space-separated form it was in both).
+#[test]
+fn the_shipped_board_validates_and_its_loaders_read_the_collector() {
+    use crate::hud::runner::{run_sqlite, QUERY_TIMEOUT};
+    use crate::hud::Installed;
+
+    let board = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/hud/github");
+    let installed = Installed::load_dir(&board, "github")
+        .unwrap()
+        .unwrap_or_else(|r| panic!("{r}"));
+    assert_eq!(installed.loaders().len(), 4);
+
+    let dir = scratch("shipped-board");
+    select(&dir, LAB_ALL);
+    collect_and_record(&dir, &fake(&dir, &healthy()), Utc::now());
+    let path = db_path(&dir.join("home"));
+    let thirty_hours_ago = (Utc::now() - Duration::hours(30))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    db(&dir)
+        .execute(
+            "INSERT INTO items (repo, number, kind, title, author, author_association,
+               created_at, updated_at, labels, comments, first_seen, last_seen, gone_at)
+             VALUES ('example-lab/tool-a', 99, 'issue', 'A new one', 'someone', 'NONE',
+               ?1, ?1, '[]', 0, ?1, ?1, NULL)",
+            [&thirty_hours_ago],
+        )
+        .unwrap();
+
+    // One workflow that went red after a success, its latest run cancelled:
+    // a cancelled run decides nothing, so it is still red, since the failure.
+    // One reading of the clock: `at(40)` when a row is written and `at(40)`
+    // when it is expected must be the same second, which two `now()` calls a
+    // second boundary apart are not (seen once under the full suite).
+    let base = Utc::now();
+    let at = |hours: i64| {
+        (base - Duration::hours(hours))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string()
+    };
+    let conn = db(&dir);
+    for (id, conclusion, hours) in [
+        (9001, "success", 50),
+        (9002, "failure", 40),
+        (9003, "failure", 30),
+        (9004, "cancelled", 20),
+    ] {
+        conn.execute(
+            "INSERT INTO ci_runs (id, repo, workflow, workflow_id, run_number, attempt, event,
+               status, conclusion, head_sha, branch, created_at, seen_at)
+             VALUES (?1, 'example-lab/tool-a', 'Board test', 777, ?1, 1, 'push',
+               'completed', ?2, 'abc', 'main', ?3, ?3)",
+            rusqlite::params![id, conclusion, at(hours)],
+        )
+        .unwrap();
+    }
+    // And a workflow whose success and failure share a second, the failure
+    // the later run: red, since that failure, in either insert order.
+    let same = at(10);
+    for (id, conclusion) in [(9102, "failure"), (9101, "success")] {
+        conn.execute(
+            "INSERT INTO ci_runs (id, repo, workflow, workflow_id, run_number, attempt, event,
+               status, conclusion, head_sha, branch, created_at, seen_at)
+             VALUES (?1, 'example-lab/tool-a', 'Same second', 778, ?1, 1, 'push',
+               'completed', ?2, 'abc', 'main', ?3, ?3)",
+            rusqlite::params![id, conclusion, same],
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    for (name, loader) in installed.loaders() {
+        assert_eq!(loader.source(), "github", "{name}");
+        let fetched = run_sqlite(&path, loader.query(), loader.max_rows(), QUERY_TIMEOUT)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        loader
+            .shape(&fetched.columns, fetched.rows)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+
+    let failing = &installed.loaders()["failing_now"];
+    let fetched = run_sqlite(&path, failing.query(), 200, QUERY_TIMEOUT).unwrap();
+    let col = |name: &str| fetched.columns.iter().position(|c| c == name).unwrap();
+    let red: Vec<_> = fetched
+        .rows
+        .iter()
+        .filter(|r| r[col("workflow")] == serde_json::json!("Board test"))
+        .collect();
+    assert_eq!(
+        red.len(),
+        1,
+        "a latest cancelled run hid a red workflow: {:?}",
+        fetched.rows
+    );
+    assert_eq!(
+        red[0][col("red_since")],
+        serde_json::json!(at(40)),
+        "since the first failure"
+    );
+    let tied: Vec<_> = fetched
+        .rows
+        .iter()
+        .filter(|r| r[col("workflow")] == serde_json::json!("Same second"))
+        .collect();
+    assert_eq!(
+        tied.len(),
+        1,
+        "a same-second tie was decided by scan order: {:?}",
+        fetched.rows
+    );
+    assert_eq!(
+        tied[0][col("red_since")],
+        serde_json::json!(same),
+        "{tied:?}"
+    );
+
+    let headline = &installed.loaders()["headline"];
+    let fetched = run_sqlite(&path, headline.query(), 1, QUERY_TIMEOUT).unwrap();
+    let col = |name: &str| fetched.columns.iter().position(|c| c == name).unwrap();
+    let row = &fetched.rows[0];
+    assert!(
+        row[col("failing")].as_i64().unwrap() >= 1,
+        "the headline counts the red repository: {row:?}"
+    );
+    assert_eq!(row[col("new_day")], serde_json::json!(0), "{row:?}");
+    assert_eq!(row[col("new_week")], serde_json::json!(1), "{row:?}");
+    assert!(
+        !row[col("collected_at")].is_null(),
+        "the collector's finish is on the board"
+    );
+
+    // A later run that collected nothing (a revoked login) writes its own
+    // `finished` row; the board's freshness stays at the last run that read.
+    let fresh = row[col("collected_at")].clone();
+    let refused = fake(
+        &dir,
+        &with(vec![fails(
+            "*'api rate_limit'*",
+            "",
+            "To get started with GitHub CLI, please run:  gh auth login\n",
+            4,
+        )]),
+    );
+    collect_and_record(&dir, &refused, Utc::now() + Duration::minutes(5));
+    let fetched = run_sqlite(&path, headline.query(), 1, QUERY_TIMEOUT).unwrap();
+    assert_eq!(
+        fetched.rows[0][col("collected_at")],
+        fresh,
+        "a run that read nothing made the board look fresh"
+    );
+}
+
+/// GitHub's times are RFC 3339 (`2026-11-18T12:00:00Z`) and SQLite's
+/// `datetime('now', …)` writes `2026-11-18 12:00:00`: compared as strings the
+/// `T` sorts after the space, so every window built that way is a day wide
+/// at its edge. Both of #902's window findings were this one idiom.
+#[test]
+fn no_shipped_loader_compares_github_times_against_datetime() {
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/hud/github/loaders");
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("datetime('now'"),
+            "{}: compare against strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ...)",
+            path.display()
+        );
+    }
+}

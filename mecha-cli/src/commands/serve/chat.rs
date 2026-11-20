@@ -1116,12 +1116,8 @@ impl ChatState {
             })
             .map(|f| f.proposed_at)
             .unwrap_or(w.created_at);
-        let what = w
-            .commitment
-            .as_ref()
-            .and_then(|c| c.expectation.clone())
-            .unwrap_or_else(|| w.title.clone());
-        let text = mecha_core::followup::render_wake(&what, proposed_at, tz);
+        let what = mecha_core::followup::wake_words(w);
+        let text = mecha_core::followup::render_wake(what, proposed_at, tz);
         let store =
             mecha_core::workflow::WorkflowStore::default_store().map_err(|_| WakeSkip::Later)?;
         let started = {
