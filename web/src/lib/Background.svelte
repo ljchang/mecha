@@ -86,7 +86,9 @@
   {/if}
 
   {#if body && !runs.length}
-    <div class="empty">no assistant runs in the last seven days</div>
+    <!-- "Nothing ran" and "I could not look" are opposite findings: with a
+         section unreadable, say only what the readable ones show. -->
+    <div class="empty">{triggers?.error || followUps?.error ? 'no runs from the stores that could be read' : 'no assistant runs in the last seven days'}</div>
   {/if}
   {#each runs as r (`${r.kind}:${r.task ?? r.workflow ?? r.name}:${r.started_at ?? r.finished_at ?? ''}`)}
     {@const st = RUN_STATES[r.state]}

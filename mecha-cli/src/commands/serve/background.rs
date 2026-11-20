@@ -17,10 +17,12 @@
 //! dash-never-zero rule). A Mac runs these jobs under launchd, so there the
 //! jobs section says it cannot read them, never "no jobs".
 //!
-//! **Bounded work per request, never per row.** One ledger tail scan, one
-//! marker-directory read, one workflow-store listing, and exactly two
-//! `systemctl` calls (the timer list, then every service's state at once),
-//! each under a timeout.
+//! **Bounded work per request.** One ledger tail scan, one marker-directory
+//! read, one workflow-store listing, and exactly two `systemctl` calls (the
+//! timer list, then every service's state at once), each under a timeout —
+//! plus, per row, one question-store read for each `waiting` trigger row
+//! (at most `TRIGGER_ROWS`) and one transcript read for each woken follow-up
+//! in the seven-day window, as the board's run summaries read theirs.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
