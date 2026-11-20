@@ -243,7 +243,7 @@ Each step is useful alone and is its own pull request.
 | Step | What | Gate |
 |---|---|---|
 | 1 | `mecha github collect`, the selection file read, `inventory`, `ci_runs`, `items`, `counts`, `collect_log`; a systemd timer beside `mecha-triggers.service` | a run against the owner's login fills the tables; a revoked login is a `doctor` finding, not an empty table |
-| 2 | The board, installed: views 1 and 2 without summaries or links | the owner opens it and it is right about one known red repository |
+| 2 | The board, installed: views 1 and 2 without summaries or links — `scripts/hud/github/` | the owner opens it and it is right about one known red repository |
 | 3 | The typed reference (§4): spec gate, renderer and serve-side check | the spec gate refuses an unknown `ref` and an unknown key beside the three; a row naming a repository outside inventory ∩ selection, or `..` as a name, renders no anchor; `hud.mjs` fails on a second link sink |
 | 4 | Summaries (§5) | an issue whose body is an instruction to the reader produces a summary and nothing else; unchanged bodies are not re-summarised |
 | 5 | `traffic`, `releases`, view 3; then the package mapping and registry counts | totals carry their since-date; a repository without push access shows a dash |
