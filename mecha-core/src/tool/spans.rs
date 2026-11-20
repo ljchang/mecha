@@ -745,8 +745,9 @@ pub struct Standing {
     /// has no number for it, which is not a search count of zero (review
     /// of #891).
     pub searches: Option<u64>,
-    /// Passages those searches left out of a chat for being outside
-    /// content. Kept with `searches`, and `None` with it.
+    /// Outside passages those searches would have handed a chat, had they
+    /// not been outside content: the outside ones among each search's best
+    /// `HITS` candidates. Kept with `searches`, and `None` with it.
     pub withheld: Option<u64>,
     /// How long the last search took once it had the query's embedding:
     /// reading the index and choosing from it.
@@ -798,11 +799,15 @@ pub fn standing(home: &Path) -> Result<Option<Standing>> {
             ms: n("counted_ms").or_else(|| n("counted_secs").map(|s| s * 1000))?,
         })
     })();
+    // Search counts kept under another rule mean something else, and are
+    // not said until a search starts them again under this one.
+    let current = meta.get("count_rule").map(String::as_str) == Some(COUNT_RULE);
+    let kept = |key: &str| if current { n(key) } else { None };
     Ok(Some(Standing {
         counted,
-        searches: n("searches"),
-        withheld: n("withheld"),
-        search_ms: n("search_ms"),
+        searches: kept("searches"),
+        withheld: kept("withheld"),
+        search_ms: kept("search_ms"),
     }))
 }
 
@@ -874,6 +879,13 @@ fn note_pass(index: &Path, took: std::time::Duration) -> Result<()> {
     Ok(())
 }
 
+/// What the search counts in the index mean, as a number that changes when
+/// what is counted does. Counts kept under another are not said, and the
+/// next search starts them again: "2" counts as held back only what would
+/// have been handed over, where "1" (no key) counted every outside passage
+/// over the floor.
+const COUNT_RULE: &str = "2";
+
 /// Keep one search's part of [`standing`]: that it was made, what it left
 /// out, and how long reading and choosing took. Only in an index that
 /// exists: a search reads and never makes one.
@@ -888,6 +900,21 @@ fn note_search(index: &Path, withheld: usize, took: std::time::Duration) -> Resu
     // it counts (review of #891).
     conn.execute_batch("PRAGMA busy_timeout = 250;")?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let rule: Option<String> = tx
+        .query_row("SELECT value FROM meta WHERE key = 'count_rule'", [], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    if rule.as_deref() != Some(COUNT_RULE) {
+        tx.execute(
+            "DELETE FROM meta WHERE key IN ('searches', 'withheld', 'search_ms')",
+            [],
+        )?;
+        tx.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('count_rule', ?1)",
+            [COUNT_RULE],
+        )?;
+    }
     for (key, add) in [("searches", 1u64), ("withheld", withheld as u64)] {
         // `value` is a text column: the sum goes back in as text, which is
         // what `standing` parses.
@@ -974,7 +1001,6 @@ fn choose_for(
     } else {
         BTreeSet::new()
     };
-    let withheld = std::cell::Cell::new(0usize);
     let asked = squeezed(query);
     let asked_words: BTreeSet<String> = words(&asked).into_iter().collect();
     let restates = |text: &str| {
@@ -992,7 +1018,7 @@ fn choose_for(
     let mut seen: BTreeSet<String> = BTreeSet::new();
     // Only vectors made the query's way: one of another length is another
     // model's, and its cosine says nothing.
-    let near: Vec<(usize, f32)> = spans
+    let candidates: Vec<(usize, f32)> = spans
         .iter()
         .enumerate()
         .filter(|(_, (id, span, vec))| {
@@ -1012,22 +1038,53 @@ fn choose_for(
             let text = squeezed(&spans[*at].1.text);
             !handed_texts.contains(&text) && seen.insert(text)
         })
-        // Last, so that what is counted as withheld is what would have been
-        // a candidate: near enough, and not already said.
-        .filter(|(at, _)| {
-            let outside = outside_texts.contains(&squeezed(&spans[*at].1.text));
-            if outside {
-                withheld.set(withheld.get() + 1);
-            }
-            !outside
+        .collect();
+    let is_outside = |at: usize| outside_texts.contains(&squeezed(&spans[at].1.text));
+    // What is counted as withheld is what the chat would have been handed
+    // had outside passages been let through: the outside ones among the
+    // best `HITS` of every candidate. Counted over every candidate over the
+    // floor instead, one search said some two hundred held back of a
+    // hand-over that holds two at most (2,234 over the owner's first 11
+    // searches, 2026-11-19).
+    let withheld = if clean {
+        rank(spans, &asked, &candidates)
+            .into_iter()
+            .take(HITS)
+            .filter(|&i| is_outside(candidates[i].0))
+            .count()
+    } else {
+        0
+    };
+    let near: Vec<(usize, f32)> = candidates
+        .into_iter()
+        .filter(|(at, _)| !is_outside(*at))
+        .collect();
+    let hits = rank(spans, &asked, &near)
+        .into_iter()
+        .take(HITS)
+        .map(|i| {
+            let at = near[i].0;
+            let mut span = spans[at].1.clone();
+            // One passage standing for the same words in several sessions
+            // is outside content if it was in any of them.
+            let text = squeezed(&span.text);
+            span.outside = spans
+                .iter()
+                .any(|(_, other, _)| other.outside && squeezed(&other.text) == text);
+            (spans[at].0, span)
         })
         .collect();
+    (hits, withheld)
+}
+
+/// `near`'s passages best first, as indices into it: by the words of the
+/// query they hold, how rare each word is among these passages, then by
+/// meaning, then oldest first.
+fn rank(spans: &[(i64, Span, Vec<f32>)], asked: &str, near: &[(usize, f32)]) -> Vec<usize> {
     if near.is_empty() {
-        return (vec![], withheld.get());
+        return vec![];
     }
-    // By words, over the same passages: how rare each of the query's words
-    // is among them, and how many of them a passage has.
-    let terms: BTreeSet<String> = words(&asked).into_iter().collect();
+    let terms: BTreeSet<String> = words(asked).into_iter().collect();
     let texts: Vec<BTreeSet<String>> = near
         .iter()
         .map(|(at, _)| words(&spans[*at].1.text).into_iter().collect())
@@ -1060,22 +1117,7 @@ fn choose_for(
             .then(near[*b].1.total_cmp(&near[*a].1))
             .then(near[*a].0.cmp(&near[*b].0))
     });
-    let hits = best
-        .into_iter()
-        .take(HITS)
-        .map(|i| {
-            let at = near[i].0;
-            let mut span = spans[at].1.clone();
-            // One passage standing for the same words in several sessions
-            // is outside content if it was in any of them.
-            let text = squeezed(&span.text);
-            span.outside = spans
-                .iter()
-                .any(|(_, other, _)| other.outside && squeezed(&other.text) == text);
-            (spans[at].0, span)
-        })
-        .collect();
-    (hits, withheld.get())
+    best
 }
 
 pub struct Spans {
@@ -2497,6 +2539,120 @@ mod tests {
             standing(&home).unwrap().unwrap().counted.unwrap().ms,
             999_999_999
         );
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// A clean search counts as held back what the chat would have been
+    /// handed had outside passages been let through, and no more: the
+    /// outside ones among the best `HITS`, which is what the same search
+    /// without the limit hands over. Counted over every outside passage near
+    /// enough, the owner's first eleven searches said 2,234 held back.
+    /// Counts kept under the old rule are not said, and start again.
+    #[tokio::test]
+    async fn what_a_search_holds_back_is_what_it_would_have_handed_over() {
+        let home = home();
+        let sessions = home.join("sessions");
+        for (i, notice) in [
+            "reefer plugs dead",
+            "crane rail cracked",
+            "ladder rungs missing",
+            "lights out after dusk",
+            "silt over the sill",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let record = format!(r#"{{"berth": "{i}", "length": 80, "notice": "{notice}"}}"#);
+            closed(
+                &sessions,
+                looked_up(&format!("o{i}"), "yard_berth", &record).to_vec(),
+                true,
+            );
+        }
+        // And one clean passage, which a word of the query only it holds
+        // ("C") puts first: the count is then the outside passages that the
+        // best two would have held, one, and not the five over the floor nor
+        // the two a cap alone would say (review of #901).
+        let owner = session(
+            &sessions,
+            SessionKind::Web,
+            vec![Message::user(
+                "berth C has a notice, the fender line is condemned",
+            )],
+        );
+        {
+            use std::io::Write;
+            let line = serde_json::to_string(&Record::Taint(crate::agent::Taint {
+                private: true,
+                untrusted: false,
+            }))
+            .unwrap();
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&owner)
+                .unwrap();
+            writeln!(file, "{line}").unwrap();
+        }
+        let spans = Spans::shared(
+            dir_in(&home),
+            sessions.clone(),
+            Embedder::new(&embeddings().await).unwrap(),
+        );
+        spans.refresh().await.unwrap();
+        // As the old rule left the owner's index.
+        open(&dir_in(&home))
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO meta VALUES ('searches', '11');
+                 INSERT INTO meta VALUES ('withheld', '2234');",
+            )
+            .unwrap();
+        let stands = standing(&home).unwrap().unwrap();
+        assert_eq!(
+            (stands.searches, stands.withheld),
+            (None, None),
+            "{stands:?}"
+        );
+
+        let ctx = ToolCtx::default().with_workspace(std::env::temp_dir());
+        let query = r#"{"berth": "C", "length": 200, "notice": "?"}"#;
+        let clean = spans
+            .call(
+                json!({ "query": query, "conversation": "one", "clean": true }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            clean.content.contains("fender line is condemned") && !clean.external,
+            "{}",
+            clean.content
+        );
+        let stands = standing(&home).unwrap().unwrap();
+        // Started again under this rule: one search, and what it held back.
+        assert_eq!(stands.searches, Some(1), "{stands:?}");
+        let held = stands.withheld.unwrap();
+        // What the same search would have handed over without the limit.
+        let open_search = spans
+            .call(
+                json!({ "query": query, "conversation": "two", "clean": false }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        // The outside passages among what it hands over.
+        let would = open_search.content.matches(" · tool result]").count() as u64;
+        assert_eq!(held, would, "held back {held}, would have handed {would}");
+        // The clean passage ranks first, so one outside passage would have
+        // been handed: fewer than the cap, and fewer than the five near
+        // enough. A count that is either of those fails here.
+        assert!(
+            open_search.content.find("fender line is condemned")
+                < open_search.content.find(" · tool result]"),
+            "{}",
+            open_search.content
+        );
+        assert_eq!(held, 1, "{}", open_search.content);
         let _ = std::fs::remove_dir_all(home);
     }
 

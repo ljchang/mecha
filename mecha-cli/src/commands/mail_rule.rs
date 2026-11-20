@@ -842,7 +842,21 @@ async fn hook_with_budget(
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .process_group(0);
-        let mut process = command.spawn().context("launching mail rules hook")?;
+        // `ExecutableFileBusy` is a file just written whose descriptor
+        // another thread's fork still holds for the instant before its exec;
+        // it clears on its own, so it is retried briefly (as
+        // `engine::run_within` does) rather than counted as a failed hook.
+        // CI hit it on 2026-11-19 with the test's freshly written fixture.
+        let mut tries = 0;
+        let mut process = loop {
+            match command.spawn() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 20 => {
+                    tries += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                other => break other.context("launching mail rules hook")?,
+            }
+        };
         let group = process.id().context("hook process id unavailable")? as i32;
         let mut stdout = process.stdout.take().context("hook stdout unavailable")?;
         let mut stderr = process.stderr.take().context("hook stderr unavailable")?;
@@ -946,22 +960,21 @@ mod classify_hook_tests {
         for cooperative in [true, false] {
             std::fs::write(
                 &fixture,
+                // A shell, not Python: on a loaded macOS runner Python had
+                // not reached its handler before the deadline, so the TERM
+                // killed it unhandled and no `term` was written (CI,
+                // 2026-11-19). The trap is the script's first act, and the
+                // pid is written after it, so a `pid` file means a child that
+                // will see the signal. `sleep & wait` lets the trap run on
+                // TERM rather than after the sleep.
                 format!(
-                    r#"#!/usr/bin/env python3
-import os, pathlib, signal, time
-root = pathlib.Path(__file__).parent
-(root / 'pid').write_text(str(os.getpid()))
-def terminate(signum, frame):
-    (root / 'term').write_text('received')
-    if {cooperative}:
-        time.sleep(0.2)
-        (root / 'cleaned').write_text('finished')
-        raise SystemExit(0)
-signal.signal(signal.SIGTERM, terminate)
-while True:
-    time.sleep(1)
+                    r#"#!/bin/sh
+root=$(dirname "$0")
+trap 'echo received > "$root/term"; if {cooperative}; then sleep 0.2; echo finished > "$root/cleaned"; exit 0; fi' TERM
+printf '%s' $$ > "$root/pid"
+while :; do sleep 1 & wait $!; done
 "#,
-                    cooperative = if cooperative { "True" } else { "False" }
+                    cooperative = if cooperative { "true" } else { "false" }
                 ),
             )
             .unwrap();
@@ -1004,6 +1017,39 @@ while True:
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// A hook binary still open for writing somewhere is busy for that
+    /// instant, which in a parallel test run is another thread's fork; the
+    /// spawn waits it out and the hook runs, rather than counting a failed
+    /// pass. Held open here on purpose, for longer than the race ever is.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn mail_rules_hook_that_is_briefly_busy_is_run_once_it_is_free() {
+        let dir = std::env::temp_dir().join(format!(
+            "rule-hook-busy-{}",
+            mecha_core::session::Session::new_id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let fixture = dir.join("mecha-mail");
+        std::fs::write(&fixture, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let held = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&fixture)
+            .unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(held);
+        });
+        let mut config = mecha_core::config::Config::default();
+        feature::set_switch(&mut config, Feature::Mail, true);
+        feature::set_switch(&mut config, Feature::MailRules, true);
+        let report = hook(&config, &dir.join("mecha"), None).await;
+        release.join().unwrap();
+        assert_eq!(report.failed, 0, "{}", report.diagnostic);
+        assert_eq!(report.diagnostic, "rules\napply\n--after-classify\n");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[tokio::test]
     async fn mail_rules_classify_hook_uses_the_sibling_and_counts_failure_without_exiting() {
         let dir = std::env::temp_dir().join(format!(
@@ -1033,9 +1079,13 @@ while True:
         .await;
         assert_eq!(report.attempted, 1);
         assert_eq!(report.failed, 1);
-        assert!(report.diagnostic.starts_with(
-            "rules\napply\n--after-classify\n--account\nfictional account; echo unsafe\n"
-        ));
+        assert!(
+            report.diagnostic.starts_with(
+                "rules\napply\n--after-classify\n--account\nfictional account; echo unsafe\n"
+            ),
+            "{}",
+            report.diagnostic
+        );
         assert!(report.diagnostic.contains("fixture error"));
         std::fs::write(&fixture, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
         let all = hook(&config, &dir.join("mecha"), None).await;
