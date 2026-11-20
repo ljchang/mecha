@@ -1072,16 +1072,23 @@ fn last_answer(
     tz: chrono_tz::Tz,
 ) -> Result<Option<(String, String)>> {
     let mut candidates: Vec<RunRecord> = Vec::new();
+    let mut finished = 0;
     store.scan_runs_rev(|row| {
-        // A run that ended on a question carries too: once answered, its
-        // transcript's last words are the answer; unanswered, they are where
-        // it got to. Skipping it dropped the thread whenever a briefing
-        // asked (review of #904). An `Error` run still does not carry.
+        // A run that ended on a question carries too, once answered: its
+        // transcript's last words are the answer. Unanswered, a park usually
+        // ends on a lone `ask_user` call with nothing to carry, so a waiting
+        // row is looked at but never spends the lookback the finished runs
+        // are counted against — a trigger that asks most nights would
+        // otherwise fill it and drop the thread (review of #904). An `Error`
+        // run still does not carry.
         let carries = matches!(row.status, RunStatus::Ok | RunStatus::Waiting);
         if row.trigger == t.name && carries && row.session_id.is_some() {
+            if row.status == RunStatus::Ok {
+                finished += 1;
+            }
             candidates.push(row);
         }
-        candidates.len() < CARRY_LOOKBACK
+        finished < CARRY_LOOKBACK && candidates.len() < 2 * CARRY_LOOKBACK
     })?;
     if candidates.is_empty() {
         return Ok(None);
@@ -1095,6 +1102,9 @@ fn last_answer(
         let reason = match read {
             Ok(transcript) => match carried_block(run, &transcript, tz) {
                 Some(block) => return Ok(Some((id, block))),
+                // Still waiting on the owner, nothing said yet: not a fault,
+                // and not a reason to report — the run did as A1 designed.
+                None if run.status == RunStatus::Waiting => continue,
                 None => match &run.stop_cause {
                     Some(cause) => {
                         format!("run {id} was cut short ({cause:?}) with no answer to carry")
@@ -1106,9 +1116,12 @@ fn last_answer(
         };
         first_reason.get_or_insert(reason);
     }
+    // Only unanswered questions so far: nothing to carry, and no fault.
+    let Some(reason) = first_reason else {
+        return Ok(None);
+    };
     anyhow::bail!(
-        "{}; none of the last {} ok runs had an answer",
-        first_reason.unwrap_or_default(),
+        "{reason}; none of the last {} runs had an answer",
         candidates.len()
     )
 }
@@ -1820,6 +1833,75 @@ mod tests {
         })
         .is_none());
         assert_eq!(record.status, RunStatus::Error);
+    }
+
+    /// An unanswered park, as the run leaves it: the last assistant message
+    /// is the lone `ask_user` call.
+    fn parked(store: &TriggerStore, sessions: &std::path::Path, when: &str) {
+        let session = Session::create(
+            sessions,
+            SessionMeta {
+                id: Session::new_id(),
+                created_at: Utc::now(),
+                provider: "scripted".into(),
+                model: "scripted".into(),
+                workspace: sessions.to_path_buf(),
+                title: None,
+                kind: Some(mecha_core::session::SessionKind::Trigger),
+            },
+        )
+        .unwrap();
+        session
+            .append(&Record::Message(Message::user("brief me")))
+            .unwrap();
+        session
+            .append(&Record::Message(Message::assistant(vec![
+                mecha_core::Block::ToolUse {
+                    id: "a1".into(),
+                    name: "ask_user".into(),
+                    input: serde_json::json!({"question": "Which room?"}),
+                },
+            ])))
+            .unwrap();
+        session.append(&Record::Taint(CLEAN.unwrap())).unwrap();
+        let mut row = RunRecord::started("morning", None, false);
+        row.started_at = when.parse().unwrap();
+        row.session_id = Some(session.meta.id.clone());
+        row.status = RunStatus::Waiting;
+        row.question_id = Some("q-1".into());
+        store.append_run(&row).unwrap();
+    }
+
+    /// A week of unanswered parks spends none of the lookback: the last
+    /// finished answer behind them is still carried, and a trigger that has
+    /// only ever parked has nothing to carry and no fault.
+    #[test]
+    fn unanswered_parks_spend_no_lookback_and_are_no_fault() {
+        let (store, sessions) = carry_home("parks");
+        let id = ran(
+            &store,
+            &sessions,
+            "2026-03-01T12:00:00Z",
+            "The grant report is due Friday.",
+            CLEAN,
+        );
+        for day in 2..=(1 + 2 * CARRY_LOOKBACK as u32 - 1) {
+            parked(&store, &sessions, &format!("2026-03-{day:02}T12:00:00Z"));
+        }
+        let (from, block) = last_answer(&store, &sessions, &morning(), chrono_tz::UTC)
+            .unwrap()
+            .expect("the finished answer behind the parks");
+        assert_eq!(from, id);
+        assert!(block.contains("due Friday"));
+
+        let (store, sessions) = carry_home("parks-only");
+        parked(&store, &sessions, "2026-03-02T12:00:00Z");
+        assert!(
+            last_answer(&store, &sessions, &morning(), chrono_tz::UTC)
+                .unwrap()
+                .is_none(),
+            "only unanswered questions: nothing to carry, and no error"
+        );
     }
 
     /// A run that parked a question is carried like a finished one: its
