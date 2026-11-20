@@ -360,4 +360,4 @@ follow-up shows only as a line on its workflow card, and nothing says
 - Nothing here changes what any run does or may do; it is a read.
 
 **Not here:** stopping a trigger run from the view; run history beyond seven
-days (the CLI's `mecha trigger runs` has it); Slack.
+days (`mecha trigger show <name>` lists a trigger's recent runs); Slack.
