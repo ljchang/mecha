@@ -208,18 +208,24 @@ fn default_stores(now: DateTime<Utc>) -> (Section<RunRow>, Section<RunRow>) {
 }
 
 /// What became of a parked question, when the question store can say it
-/// was closed. `None` — open, or not readable — leaves the run's own
-/// record standing: the ledger's `waiting` is never overruled by a store
-/// that could not be read.
-fn closed_question(questions: Option<&QuestionStore>, id: &str) -> Option<String> {
+/// was closed: the run's state now, and why. `None` — open, or not
+/// readable — leaves the run's own record standing: the ledger's `waiting`
+/// is never overruled by a store that could not be read. Only `answered`
+/// and `abandoned` reach `done`; a status this build cannot name (the store
+/// is append-only, and a newer build may widen it) is `unknown`, never done
+/// (review of #906).
+fn closed_question(questions: Option<&QuestionStore>, id: &str) -> Option<(RunState, String)> {
     let q = questions?.get(id).ok()?;
     if q.is_open() {
         return None;
     }
     Some(match q.status.as_str() {
-        mecha_core::questions::ANSWERED => "answered — it went on as your turn in its chat".into(),
-        mecha_core::questions::ABANDONED => "you gave up on its question".into(),
-        other => format!("its question is {other}"),
+        mecha_core::questions::ANSWERED => (
+            RunState::Done,
+            "answered — it went on as your turn in its chat".into(),
+        ),
+        mecha_core::questions::ABANDONED => (RunState::Done, "you gave up on its question".into()),
+        other => (RunState::Unknown, format!("its question is {other}")),
     })
 }
 
@@ -331,8 +337,8 @@ pub(super) fn trigger_row(r: &RunRecord, questions: Option<&QuestionStore>) -> R
     if state == RunState::Waiting {
         match &r.question_id {
             Some(id) => {
-                if let Some(said) = closed_question(questions, id) {
-                    state = RunState::Done;
+                if let Some((now, said)) = closed_question(questions, id) {
+                    state = now;
                     detail = Some(said);
                 }
             }
@@ -425,8 +431,8 @@ pub(super) fn follow_up_row(
             FOLLOW_UP_ASKED => {
                 row.state = RunState::Waiting;
                 row.question = Some(e.detail.clone());
-                if let Some(said) = closed_question(questions, &e.detail) {
-                    row.state = RunState::Done;
+                if let Some((now, said)) = closed_question(questions, &e.detail) {
+                    row.state = now;
                     row.detail = Some(said);
                 }
             }
@@ -608,6 +614,13 @@ pub(super) async fn jobs(systemctl: &OsStr, timeout: std::time::Duration) -> Sec
         args.extend(services.iter().copied());
         match systemctl_run(systemctl, &args, timeout).await {
             Ok(out) if out.status.success() => {
+                Ok(parse_show(&String::from_utf8_lossy(&out.stdout)))
+            }
+            // A missing unit can make `show` exit nonzero while it still
+            // prints every other unit's block, as `doctor`'s timer reader
+            // found: keep the blocks it printed (a unit without one reads
+            // unknown), and fail only when it printed none (review of #906).
+            Ok(out) if !parse_show(&String::from_utf8_lossy(&out.stdout)).is_empty() => {
                 Ok(parse_show(&String::from_utf8_lossy(&out.stdout)))
             }
             Ok(out) => Err(format!(
@@ -825,6 +838,21 @@ mod tests {
             )
             .unwrap();
         questions.answer(&answered.id, "yes").unwrap();
+        // A status a newer build writes: closed, but not one this build can
+        // name, so the run it held is unknown — never done.
+        let mut widened = questions
+            .park(
+                "Which room is the review in?",
+                vec![],
+                "20261120T090000-widened",
+                None,
+                None,
+                Taint::default(),
+                None,
+            )
+            .unwrap();
+        widened.status = "superseded-by-a-later-build".into();
+        questions.put(&widened).unwrap();
 
         store
             .append_run(&run("good", RunStatus::Ok, now - Duration::hours(5)))
@@ -839,6 +867,9 @@ mod tests {
             untrusted: true,
         };
         store.append_run(&waiting).unwrap();
+        let mut widened_run = run("widened", RunStatus::Waiting, now - Duration::minutes(150));
+        widened_run.question_id = Some(widened.id.clone());
+        store.append_run(&widened_run).unwrap();
         let mut moved_on = run("asked", RunStatus::Waiting, now - Duration::hours(2));
         moved_on.question_id = Some(answered.id.clone());
         store.append_run(&moved_on).unwrap();
@@ -871,6 +902,11 @@ mod tests {
         assert_eq!(state("bad"), RunState::Failed);
         assert_eq!(state("asks"), RunState::Waiting);
         assert_eq!(state("future"), RunState::Unknown, "unknown is never done");
+        assert_eq!(
+            state("widened"),
+            RunState::Unknown,
+            "a question status this build cannot name is not done"
+        );
         assert_eq!(
             state("asked"),
             RunState::Done,
@@ -1234,6 +1270,15 @@ mod tests {
             jobs(bin.as_os_str(), QUICK).await,
             Section::Error { .. }
         ));
+        // `show` exiting nonzero while it still printed the blocks (a
+        // missing unit, on some systemd): the printed blocks are read.
+        let bin = fake_systemctl(&dir.0, TIMERS, SHOW, 1);
+        let got = rows(&jobs(bin.as_os_str(), QUICK).await);
+        assert!(
+            got.iter().any(|j| j.state == JobState::Ok)
+                && got.iter().any(|j| j.state == JobState::Failed),
+            "a nonzero show threw away what it printed: {got:?}"
+        );
         // `show` failing: every job unknown, with the reason.
         let bin = fake_systemctl(&dir.0, TIMERS, "", 1);
         let got = rows(&jobs(bin.as_os_str(), QUICK).await);

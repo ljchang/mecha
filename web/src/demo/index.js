@@ -202,6 +202,7 @@ export const ROUTES = [
 
   ['GET', /^\/api\/tasks$/, () => fx.tasks],
   ['GET', /^\/api\/questions$/, () => fx.questions],
+  ['GET', /^\/api\/background$/, () => fx.background()],
 
   ['GET', /^\/api\/settings\/charter$/, () => fx.charter],
   ['GET', /^\/api\/settings\/rules$/, () => fx.rules],
