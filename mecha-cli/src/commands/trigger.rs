@@ -20,6 +20,7 @@ use chrono_tz::Tz;
 use mecha_core::agent::{CancelHandle, Conversation, RunContext};
 use mecha_core::config::PermissionMode;
 use mecha_core::message::Message;
+use mecha_core::questions::{ParkingAsker, QuestionStore, Resume};
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
 use mecha_core::trigger::{CatchUp, Due, RunRecord, RunStatus, Trigger, TriggerStore};
 use std::io::Write;
@@ -524,6 +525,12 @@ fn print_run(r: &RunRecord) {
     } else if !r.summary.is_empty() {
         println!("    {}", r.summary);
     }
+    if let Some(q) = &r.question_id {
+        println!(
+            "    question {} — answer it in the web app (Tasks → Waiting)",
+            QuestionStore::short(q)
+        );
+    }
     // After the summary rather than instead of it: the run produced an answer,
     // and both facts matter — this one is the reason it did not arrive.
     if let Some(e) = &r.notify_error {
@@ -884,18 +891,25 @@ async fn run_one(global: &GlobalOpts, name: &str) -> Result<()> {
 /// What the model is told about the situation it is running in.
 ///
 /// Three facts, each of which changes what a good answer looks like: nobody is
-/// there, so a question is a dead end; anything outbound is a draft, so
-/// reporting it as sent would be a lie; and the answer goes to a person reading
-/// it later out of context, so it has to stand alone.
+/// there, so a question waits for hours and ends the run; anything outbound is
+/// a draft, so reporting it as sent would be a lie; and the answer goes to a
+/// person reading it later out of context, so it has to stand alone.
+///
+/// The first used to say a question was a dead end. Since A1
+/// (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` §Unattended runs ask) a trigger can
+/// park one, so the sentence keeps the assumption as the default and names
+/// asking as the way out only where the run cannot go on without the owner.
 const UNATTENDED: &str = "\
 You are running unattended, on a schedule, with nobody watching. Three things \
-follow. There is no one to answer a question, so make the reasonable \
-assumption and say plainly what you assumed rather than stopping to ask. \
-Anything that would leave this machine is staged as a draft for the user to \
-review later — report it as a draft awaiting their release, never as sent or \
-done. And your answer will be read later, out of context, by someone who has \
-not seen this conversation: lead with what they need to know, and keep it \
-short enough to read on a phone.";
+follow. There is no one to answer a question now, so make the reasonable \
+assumption and say plainly what you assumed rather than stopping to ask. Only \
+when you cannot go on without the user's own decision, ask it with `ask_user`: \
+the question waits for them and this run ends there, so say first where you \
+got to. Anything that would leave this machine is staged as a draft for the \
+user to review later — report it as a draft awaiting their release, never as \
+sent or done. And your answer will be read later, out of context, by someone \
+who has not seen this conversation: lead with what they need to know, and \
+keep it short enough to read on a phone.";
 
 /// Run one trigger to completion and record what happened.
 async fn fire(
@@ -939,22 +953,88 @@ async fn fire(
         None
     };
 
-    match run_agent(global, t, &mut record, carried, stop).await {
-        Ok(text) => {
-            record.status = RunStatus::Ok;
-            record.summary = first_line(&text);
-            record.notify_error = notify(t, &workspace_of(t), &text);
-        }
-        Err(e) => {
-            record.status = RunStatus::Error;
-            record.error = Some(format!("{e:#}"));
-            eprintln!("mecha: trigger `{}` failed — {e:#}", t.name);
-        }
+    let ran = run_agent(global, t, &mut record, carried, stop).await;
+    if let Some(notice) = settle(t, &mut record, ran, asked_question) {
+        record.notify_error = notify(t, &workspace_of(t), &notice);
     }
     record.finished_at = Some(Utc::now());
     store.clear_running(&t.name);
     store.append_run(&record)?;
     Ok(())
+}
+
+/// The question a parked run asked, from the store, for its notice.
+fn asked_question(id: &str) -> String {
+    QuestionStore::open_existing_default()
+        .and_then(|store| store.get(id).ok())
+        .map(|q| q.asked().to_string())
+        .unwrap_or_default()
+}
+
+/// Record how a run ended, and say what the owner is to be sent, if
+/// anything. A run that parked a question is `Waiting` however it ended: the
+/// question is open and answerable, so a bookkeeping failure after the park
+/// (a transcript write) keeps its error beside the waiting status rather
+/// than hiding the question behind `Error` with nothing sent (review of
+/// #904).
+fn settle(
+    t: &Trigger,
+    record: &mut RunRecord,
+    ran: Result<String>,
+    asked: impl Fn(&str) -> String,
+) -> Option<String> {
+    match (ran, record.question_id.clone()) {
+        // The run asked and ended there (A1): waiting on the owner, not
+        // finished, and the delivery says so — a briefing that arrives as the
+        // run's last words would read as its answer.
+        (ran, Some(id)) => {
+            record.status = RunStatus::Waiting;
+            let asked = asked(&id);
+            record.summary = first_line(&format!("waiting on you: {asked}"));
+            let text = match ran {
+                Ok(text) => text,
+                Err(e) => {
+                    record.error = Some(format!("{e:#}"));
+                    eprintln!(
+                        "mecha: trigger `{}` asked a question, then failed — {e:#}",
+                        t.name
+                    );
+                    String::new()
+                }
+            };
+            Some(waiting_notice(t, &asked, &text))
+        }
+        (Ok(text), None) => {
+            record.status = RunStatus::Ok;
+            record.summary = first_line(&text);
+            Some(text)
+        }
+        (Err(e), None) => {
+            record.status = RunStatus::Error;
+            record.error = Some(format!("{e:#}"));
+            eprintln!("mecha: trigger `{}` failed — {e:#}", t.name);
+            None
+        }
+    }
+}
+
+/// What `notify` is handed when the run ended on a question: that it is
+/// waiting, and where to answer, ahead of the question and the run's last
+/// words. The question is the model's prose, as the answer it would
+/// otherwise deliver is.
+fn waiting_notice(t: &Trigger, asked: &str, text: &str) -> String {
+    let mut out = format!(
+        "The `{}` run has a question for you and is waiting on your answer — answer it in \
+         the web app, Tasks → Waiting; the run carries on as your turn in its chat.\n",
+        t.name
+    );
+    if !asked.trim().is_empty() {
+        out.push_str(&format!("\n{}\n", asked.trim()));
+    }
+    if !text.trim().is_empty() {
+        out.push_str(&format!("\nWhere it got to:\n\n{}\n", text.trim()));
+    }
+    out
 }
 
 /// "Switch now" cancels `fire` — this fire's own handle — and nothing above it:
@@ -975,8 +1055,8 @@ const CARRY_LOOKBACK: usize = 7;
 /// The block a carrying trigger's next run starts with, and the session it
 /// was read from.
 ///
-/// `Ok(None)` only when this trigger has no earlier `ok` run with a
-/// transcript: a first run has nothing to carry and that is not a fault.
+/// `Ok(None)` only when this trigger has no earlier `ok` or `waiting` run
+/// with a transcript: a first run has nothing to carry and that is not a fault.
 /// Every other way of carrying nothing is an `Err` — the newest such runs
 /// all ended without an answer, or their transcripts are gone — because a
 /// briefing quietly back to repeating itself must be told apart, in the
@@ -992,12 +1072,28 @@ fn last_answer(
     tz: chrono_tz::Tz,
 ) -> Result<Option<(String, String)>> {
     let mut candidates: Vec<RunRecord> = Vec::new();
+    let mut finished = 0;
     store.scan_runs_rev(|row| {
-        if row.trigger == t.name && row.status == RunStatus::Ok && row.session_id.is_some() {
+        // A run that ended on a question carries too, once answered: its
+        // transcript's last words are the answer. Unanswered, a park usually
+        // ends on a lone `ask_user` call with nothing to carry, so a waiting
+        // row is looked at but never spends the lookback the finished runs
+        // are counted against — a trigger that asks most nights would
+        // otherwise fill it and drop the thread (review of #904). An `Error`
+        // run still does not carry.
+        let carries = matches!(row.status, RunStatus::Ok | RunStatus::Waiting);
+        if row.trigger == t.name && carries && row.session_id.is_some() {
+            if row.status == RunStatus::Ok {
+                finished += 1;
+            }
             candidates.push(row);
         }
-        candidates.len() < CARRY_LOOKBACK
+        finished < CARRY_LOOKBACK && candidates.len() < 2 * CARRY_LOOKBACK
     })?;
+    // The scan stopped on the cap rather than on the lookback or the
+    // ledger's start: every row read may be an unanswered park with a
+    // finished answer behind them, so "nothing to carry" would be a guess.
+    let capped = finished < CARRY_LOOKBACK && candidates.len() >= 2 * CARRY_LOOKBACK;
     if candidates.is_empty() {
         return Ok(None);
     }
@@ -1010,6 +1106,9 @@ fn last_answer(
         let reason = match read {
             Ok(transcript) => match carried_block(run, &transcript, tz) {
                 Some(block) => return Ok(Some((id, block))),
+                // Still waiting on the owner, nothing said yet: not a fault,
+                // and not a reason to report — the run did as A1 designed.
+                None if run.status == RunStatus::Waiting => continue,
                 None => match &run.stop_cause {
                     Some(cause) => {
                         format!("run {id} was cut short ({cause:?}) with no answer to carry")
@@ -1021,9 +1120,21 @@ fn last_answer(
         };
         first_reason.get_or_insert(reason);
     }
+    // Only unanswered questions so far: nothing to carry, and no fault —
+    // unless the scan was cut short, which is said, never read as a first
+    // run (review of #904).
+    let Some(reason) = first_reason else {
+        if capped {
+            anyhow::bail!(
+                "the last {} runs all ended on questions not yet answered, so no earlier \
+                 answer was looked for",
+                candidates.len()
+            );
+        }
+        return Ok(None);
+    };
     anyhow::bail!(
-        "{}; none of the last {} ok runs had an answer",
-        first_reason.unwrap_or_default(),
+        "{reason}; none of the last {} runs had an answer",
         candidates.len()
     )
 }
@@ -1169,9 +1280,9 @@ async fn run_agent(
         ..GlobalOpts::default()
     };
 
-    // Not interactive: no terminal approver, and no `ask_user` in the registry
-    // — that tool is only ever registered by a front-end that owns a human.
-    let prepared = setup::prepare(&opts, false).await?;
+    // Not interactive: no terminal approver. `ask_user` is registered below,
+    // over the question store rather than a person (A1).
+    let mut prepared = setup::prepare(&opts, false).await?;
 
     let session = Session::create(
         &Session::default_dir()?,
@@ -1186,6 +1297,36 @@ async fn run_agent(
         },
     )?;
     record.session_id = Some(session.meta.id.clone());
+    // **A trigger may ask** (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` §Unattended
+    // runs ask, A1). Nobody is there to answer, so asking parks the question
+    // on this run's own session and ends the run — no seat or prefix held
+    // while it waits — and answering it in the web app resumes the
+    // conversation there as the owner's own turn (A2: `resume = chat`).
+    // A store that cannot be opened leaves the tool out and the run as it
+    // was: asking would then be a question nobody could ever see.
+    let asker = match QuestionStore::default_root().and_then(QuestionStore::open) {
+        Ok(store) => {
+            let asker = std::sync::Arc::new(
+                ParkingAsker::new(std::sync::Arc::new(store), &session.meta.id, None)
+                    .resuming(Resume::Chat)
+                    .from_trigger(&t.name),
+            );
+            prepared.agent.registry_mut().insert(std::sync::Arc::new(
+                mecha_core::tool::ask::AskUserTool::new(std::sync::Arc::clone(&asker)
+                    as std::sync::Arc<dyn mecha_core::tool::ask::Asker>),
+            ));
+            Some(asker)
+        }
+        Err(e) => {
+            eprintln!(
+                "mecha: trigger `{}` cannot ask a question this run — the question store: {e:#}",
+                t.name
+            );
+            None
+        }
+    };
+    // After the insert, never before: `RunConfig::of` reads the registry at
+    // call time, and the record must hold the surface the run had.
     session.append(&Record::Config(RunConfig::of(
         &prepared.agent,
         &prepared.config,
@@ -1313,6 +1454,13 @@ async fn run_agent(
     let _ = timer.await;
     let _ = canceller.await;
 
+    // The question, before anything that can fail: a run that parked is
+    // waiting on the owner however the rest of the bookkeeping goes. The
+    // taint stamp only sharpens what the park already recorded.
+    if let Some(asker) = &asker {
+        record.question_id = asker.parked().first().cloned();
+        asker.stamp_taint(convo.taint);
+    }
     session.record_run(&recorded, &convo)?;
     session.append(&Record::Taint(convo.taint))?;
     if let Some(mb) = &prepared.mailbox {
@@ -1574,6 +1722,18 @@ mod tests {
         answer: &str,
         taint: Option<mecha_core::agent::Taint>,
     ) -> String {
+        ran_as(store, sessions, when, answer, taint, RunStatus::Ok)
+    }
+
+    /// [`ran`], with the row's status.
+    fn ran_as(
+        store: &TriggerStore,
+        sessions: &std::path::Path,
+        when: &str,
+        answer: &str,
+        taint: Option<mecha_core::agent::Taint>,
+        status: RunStatus,
+    ) -> String {
         let session = Session::create(
             sessions,
             SessionMeta {
@@ -1602,6 +1762,7 @@ mod tests {
         row.started_at = when.parse().unwrap();
         row.session_id = Some(session.meta.id.clone());
         row.taint = taint.unwrap_or_default();
+        row.status = status;
         store.append_run(&row).unwrap();
         session.meta.id.clone()
     }
@@ -1653,6 +1814,142 @@ mod tests {
             !taint.untrusted,
             "the run it came from recorded itself clean"
         );
+    }
+
+    /// A run that parked and then failed its bookkeeping is still waiting,
+    /// keeps its error, and still tells the owner a question is there.
+    #[test]
+    fn a_run_that_asked_then_failed_is_waiting_and_says_so() {
+        let t = morning();
+        let mut record = RunRecord::started("morning", None, false);
+        record.question_id = Some("q-1".into());
+        let notice = settle(
+            &t,
+            &mut record,
+            Err(anyhow::anyhow!("the transcript could not be written")),
+            |_| "Which room is the review in?".into(),
+        )
+        .expect("the owner is told");
+        assert_eq!(record.status, RunStatus::Waiting);
+        assert!(record
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("could not be written"));
+        assert!(notice.contains("has a question for you"), "{notice}");
+        assert!(notice.contains("Which room is the review in?"), "{notice}");
+
+        // Without a question, a failure is an error and nothing is sent.
+        let mut record = RunRecord::started("morning", None, false);
+        assert!(settle(&t, &mut record, Err(anyhow::anyhow!("boom")), |_| {
+            String::new()
+        })
+        .is_none());
+        assert_eq!(record.status, RunStatus::Error);
+    }
+
+    /// An unanswered park, as the run leaves it: the last assistant message
+    /// is the lone `ask_user` call.
+    fn parked(store: &TriggerStore, sessions: &std::path::Path, when: &str) {
+        let session = Session::create(
+            sessions,
+            SessionMeta {
+                id: Session::new_id(),
+                created_at: Utc::now(),
+                provider: "scripted".into(),
+                model: "scripted".into(),
+                workspace: sessions.to_path_buf(),
+                title: None,
+                kind: Some(mecha_core::session::SessionKind::Trigger),
+            },
+        )
+        .unwrap();
+        session
+            .append(&Record::Message(Message::user("brief me")))
+            .unwrap();
+        session
+            .append(&Record::Message(Message::assistant(vec![
+                mecha_core::Block::ToolUse {
+                    id: "a1".into(),
+                    name: "ask_user".into(),
+                    input: serde_json::json!({"question": "Which room?"}),
+                },
+            ])))
+            .unwrap();
+        session.append(&Record::Taint(CLEAN.unwrap())).unwrap();
+        let mut row = RunRecord::started("morning", None, false);
+        row.started_at = when.parse().unwrap();
+        row.session_id = Some(session.meta.id.clone());
+        row.status = RunStatus::Waiting;
+        row.question_id = Some("q-1".into());
+        store.append_run(&row).unwrap();
+    }
+
+    /// A week of unanswered parks spends none of the lookback: the last
+    /// finished answer behind them is still carried, and a trigger that has
+    /// only ever parked has nothing to carry and no fault.
+    #[test]
+    fn unanswered_parks_spend_no_lookback_and_are_no_fault() {
+        let (store, sessions) = carry_home("parks");
+        let id = ran(
+            &store,
+            &sessions,
+            "2026-03-01T12:00:00Z",
+            "The grant report is due Friday.",
+            CLEAN,
+        );
+        for day in 2..=(1 + 2 * CARRY_LOOKBACK as u32 - 1) {
+            parked(&store, &sessions, &format!("2026-03-{day:02}T12:00:00Z"));
+        }
+        let (from, block) = last_answer(&store, &sessions, &morning(), chrono_tz::UTC)
+            .unwrap()
+            .expect("the finished answer behind the parks");
+        assert_eq!(from, id);
+        assert!(block.contains("due Friday"));
+
+        // One more park and the scan stops on its cap before the finished
+        // run: said, never read as a first run.
+        parked(
+            &store,
+            &sessions,
+            &format!("2026-03-{:02}T12:00:00Z", 1 + 2 * CARRY_LOOKBACK as u32),
+        );
+        let err = last_answer(&store, &sessions, &morning(), chrono_tz::UTC).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("questions not yet answered"),
+            "{err:#}"
+        );
+
+        let (store, sessions) = carry_home("parks-only");
+        parked(&store, &sessions, "2026-03-02T12:00:00Z");
+        assert!(
+            last_answer(&store, &sessions, &morning(), chrono_tz::UTC)
+                .unwrap()
+                .is_none(),
+            "only unanswered questions: nothing to carry, and no error"
+        );
+    }
+
+    /// A run that parked a question is carried like a finished one: its
+    /// answered transcript's last words are what the next briefing needs.
+    #[test]
+    fn a_run_that_waited_on_a_question_is_carried() {
+        let (store, sessions) = carry_home("waited");
+        // Its only run parked a question: the old reader saw no `ok` run and
+        // called this a first run with nothing to carry.
+        let id = ran_as(
+            &store,
+            &sessions,
+            "2026-03-02T12:00:00Z",
+            "Moved the review to Thursday, as you said.",
+            CLEAN,
+            RunStatus::Waiting,
+        );
+        let (from, block) = last_answer(&store, &sessions, &morning(), chrono_tz::UTC)
+            .unwrap()
+            .expect("the waiting run is carried, not skipped as a first run");
+        assert_eq!(from, id);
+        assert!(block.contains("Moved the review to Thursday"));
     }
 
     #[test]
@@ -1859,6 +2156,10 @@ mod tests {
         // sent, or it writes an answer that only makes sense to someone who
         // watched it work.
         assert!(UNATTENDED.contains("no one to answer"));
+        // The assumption stays the default; asking is for a decision the run
+        // cannot make (A1), and the run is told it ends there.
+        assert!(UNATTENDED.contains("make the reasonable assumption"));
+        assert!(UNATTENDED.contains("`ask_user`") && UNATTENDED.contains("this run ends there"));
         assert!(UNATTENDED.contains("never as sent"));
         assert!(UNATTENDED.contains("out of context"));
         // And it must not tell the model to use its best judgment on missing

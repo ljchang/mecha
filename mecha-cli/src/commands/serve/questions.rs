@@ -31,6 +31,16 @@
 //! files it as `"Denied by the user: "` — the string the learning miner reads
 //! a *correction* out of. A run answered from a phone would have taught mecha
 //! rules from a person who was never asked.
+//!
+//! **One exception, and it is the opposite shape on purpose**: a question
+//! that resumes as a chat (`Resume::Chat` — a trigger's or a woken
+//! follow-up's, `ASSISTANT-FOLLOW-THROUGH-DESIGN.md` §Unattended runs ask)
+//! is answered in this process. The answer is the owner's own turn in the
+//! chat that asked, behind the page's approver (`chat::answer_in_chat`), so
+//! there is no detached child and no unattended posture to get wrong. The
+//! page stays on Tasks and gets the chat's key back for its *Open chat*.
+
+use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -81,6 +91,11 @@ pub struct Row {
     /// not null, when the run confirmed nothing.
     #[serde(skip_serializing_if = "Option::is_none")]
     goal: Option<mecha_core::goal::GoalHypothesis>,
+    /// `chat` when answering continues the conversation as the owner's own
+    /// turn in its chat (a trigger's or a woken follow-up's question, A2);
+    /// `background` for a delegated run's, resumed detached as before. The
+    /// card says which before the owner answers.
+    resume: mecha_core::questions::Resume,
 }
 
 impl From<&Question> for Row {
@@ -95,6 +110,7 @@ impl From<&Question> for Row {
             asked_at: q.asked_at.clone(),
             tainted: q.taint.untrusted,
             goal: q.goal.clone(),
+            resume: q.resume,
         }
     }
 }
@@ -161,7 +177,6 @@ pub struct AnswerBody {
 /// deliberately no second one, because a status this endpoint invented would
 /// be a claim about a process it cannot observe.
 pub async fn answer(State(state): St, Json(body): Json<AnswerBody>) -> Response {
-    let _ = state; // the store and the board are the meeting points, not this process
     let id = body.question.trim();
     // Not `is_empty` on the answer alone: a blank answer would resume the
     // conversation with a user turn saying nothing, which is worse than not
@@ -194,6 +209,28 @@ pub async fn answer(State(state): St, Json(body): Json<AnswerBody>) -> Response 
                     ),
                 )
                     .into_response()
+            }
+            // **A chat question is answered here, in this process, never by
+            // a detached child** (A2): the conversation comes back into the
+            // session map and the answer is the owner's own turn there,
+            // behind the page's approver. The page stays on Tasks and is
+            // handed the chat's key for its *Open chat* — it does not
+            // navigate (the owner's revision of A2: Tasks is the hub for
+            // background work).
+            Ok(q) if q.resume == mecha_core::questions::Resume::Chat => {
+                let chat = match super::chat::chat_state(&state) {
+                    Ok(chat) => Arc::clone(chat),
+                    Err(resp) => return resp,
+                };
+                return match super::chat::answer_in_chat(&chat, &store, &q.id, answer).await {
+                    Ok(key) => Json(serde_json::json!({
+                        "resumed": "chat",
+                        "key": key,
+                        "session": q.session_id,
+                    }))
+                    .into_response(),
+                    Err((status, why)) => (status, why).into_response(),
+                };
             }
             Ok(_) => {}
             Err(e) => return (StatusCode::NOT_FOUND, format!("{e:#}\n")).into_response(),
@@ -271,6 +308,8 @@ mod tests {
             answered_at: None,
             answer: None,
             goal: None,
+            resume: Default::default(),
+            trigger: None,
         }
     }
 
@@ -296,6 +335,20 @@ mod tests {
     fn a_question_asked_in_a_tainted_conversation_says_so() {
         assert!(Row::from(&question("a", true)).tainted);
         assert!(!Row::from(&question("b", false)).tainted);
+    }
+
+    /// The card says which questions will open as a chat, and a chat
+    /// question asked out of third-party content keeps its warning: an
+    /// unattended run that read outside text asks well-formed questions too.
+    #[test]
+    fn a_chat_question_says_so_and_keeps_its_taint_warning() {
+        let mut q = question("c", true);
+        q.resume = mecha_core::questions::Resume::Chat;
+        let row = serde_json::to_value(Row::from(&q)).unwrap();
+        assert_eq!(row["resume"], "chat");
+        assert_eq!(row["tainted"], true);
+        let plain = serde_json::to_value(Row::from(&question("b", false))).unwrap();
+        assert_eq!(plain["resume"], "background");
     }
 
     /// The question is shown whole. A phone is where people read least

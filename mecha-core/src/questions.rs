@@ -42,6 +42,44 @@ use std::path::{Path, PathBuf};
 use crate::agent::Taint;
 use crate::session::Session;
 
+/// How an answered question goes back into its conversation
+/// (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` §Unattended runs ask, A2).
+///
+/// **A closed set written to an append-only store is a wire format**, and
+/// the two directions an unknown value could degrade in are not equally
+/// safe. `Background` resumes the run in a detached child with nobody
+/// there; `Chat` resumes it as the owner's own turn in the web app, behind
+/// the page's approver. A value this build does not know is a newer build
+/// saying "not the old detached path", so it reads as `Chat`: the worst
+/// that does is ask the owner to answer in the web app, where the
+/// conversation is one tap away — never a run started in the background,
+/// with nobody there, that the newer build meant to put in front of a
+/// person. *Absent* is the old wire and reads as `Background`, so every
+/// question parked before the field existed reads as it always did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Resume {
+    /// A delegated task run's: `mecha questions answer --unattended` in a
+    /// detached child (D13), as before this field existed.
+    #[default]
+    Background,
+    /// A trigger's or a woken follow-up's: `mecha serve` resumes the
+    /// conversation into its session map and the answer is the owner's own
+    /// turn there (A2). Also every value this build cannot name — see the
+    /// type's comment for why that is the safe direction.
+    #[serde(other)]
+    Chat,
+}
+
+impl Resume {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Resume::Background => "background",
+            Resume::Chat => "chat",
+        }
+    }
+}
+
 /// One question, and everything needed to put its answer back where it came
 /// from.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +142,17 @@ pub struct Question {
     /// existed, and on one that confirmed nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<crate::goal::GoalHypothesis>,
+    /// How the answer goes back in ([`Resume`]). Absent on the wire is
+    /// `background`, the only way a question resumed before this existed.
+    #[serde(default)]
+    pub resume: Resume,
+    /// The trigger whose run parked this, when one did. That run writes its
+    /// transcript's taint checkpoint and ledger row *after* the park, and a
+    /// trigger session has no live-writer marker, so a chat answer waits for
+    /// the trigger's own running marker to clear (review of #904). Absent on
+    /// every other question and on records older than the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
 }
 
 /// The three states a question can be in. Named so a reader elsewhere
@@ -152,6 +201,7 @@ impl Question {
     }
 }
 
+#[derive(Debug)]
 pub struct QuestionStore {
     root: PathBuf,
 }
@@ -319,7 +369,9 @@ impl QuestionStore {
         Ok(())
     }
 
-    /// Record a question and hand back what was stored.
+    /// Record a question and hand back what was stored. It resumes in the
+    /// background, a delegated run's way; [`park_as`](Self::park_as) names
+    /// another.
     #[allow(clippy::too_many_arguments)]
     pub fn park(
         &self,
@@ -330,6 +382,33 @@ impl QuestionStore {
         workspace: Option<PathBuf>,
         taint: Taint,
         goal: Option<crate::goal::GoalHypothesis>,
+    ) -> Result<Question> {
+        self.park_as(
+            Resume::Background,
+            question,
+            options,
+            session_id,
+            task_id,
+            workspace,
+            taint,
+            goal,
+            None,
+        )
+    }
+
+    /// [`park`](Self::park), saying how the answer will resume.
+    #[allow(clippy::too_many_arguments)]
+    pub fn park_as(
+        &self,
+        resume: Resume,
+        question: &str,
+        options: Vec<String>,
+        session_id: &str,
+        task_id: Option<String>,
+        workspace: Option<PathBuf>,
+        taint: Taint,
+        goal: Option<crate::goal::GoalHypothesis>,
+        trigger: Option<String>,
     ) -> Result<Question> {
         let q = Question {
             id: Session::new_id(),
@@ -344,6 +423,8 @@ impl QuestionStore {
             answered_at: None,
             answer: None,
             goal,
+            resume,
+            trigger,
         };
         let _lock = self.lock()?;
         self.put(&q)?;
@@ -357,6 +438,27 @@ impl QuestionStore {
     /// store that can spend the model, and this one is meant to be safe for a
     /// listing to touch.
     pub fn answer(&self, id: &str, answer: &str) -> Result<Question> {
+        self.answer_with(id, answer, |_| Ok(()))
+    }
+
+    /// [`answer`](Self::answer), with `first` run under the writer lock,
+    /// between the check that the question is still open and the write that
+    /// closes it.
+    ///
+    /// For a caller whose resume must begin *before* the question is
+    /// consumed and must not begin for one somebody answered meanwhile —
+    /// `mecha serve` answering a `chat` question, where the owner's turn
+    /// starts in-process (A2). Two answers racing for one question meet
+    /// here: the second finds it closed and never calls `first`. A `first`
+    /// that fails leaves the question open, so a resume that could not
+    /// begin never costs the owner their question. `first` must not wait on
+    /// a person or a run: the store is locked while it runs.
+    pub fn answer_with(
+        &self,
+        id: &str,
+        answer: &str,
+        first: impl FnOnce(&Question) -> Result<()>,
+    ) -> Result<Question> {
         let _lock = self.lock()?;
         let mut q = self.find(id)?;
         anyhow::ensure!(
@@ -366,6 +468,7 @@ impl QuestionStore {
             q.id,
             q.status
         );
+        first(&q)?;
         q.status = ANSWERED.into();
         q.answered_at = Some(chrono::Utc::now().to_rfc3339());
         q.answer = Some(answer.to_string());
@@ -431,10 +534,13 @@ pub fn seed_anchor(
 /// harness already has for exactly this shape — it stops at the next safe
 /// point and **keeps the partial turn**, so the work done before the question
 /// survives into the transcript the resume reads back. It is not an abort.
+#[derive(Debug)]
 pub struct ParkingAsker {
     store: std::sync::Arc<QuestionStore>,
     session_id: String,
     task_id: Option<String>,
+    resume: Resume,
+    trigger: Option<String>,
     parked: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
@@ -448,8 +554,24 @@ impl ParkingAsker {
             store,
             session_id: session_id.into(),
             task_id,
+            resume: Resume::Background,
+            trigger: None,
             parked: Default::default(),
         }
+    }
+
+    /// Store every question this asker parks to resume as `resume`: a
+    /// trigger's run and a woken follow-up's turn park `Chat` (A2).
+    pub fn resuming(mut self, resume: Resume) -> Self {
+        self.resume = resume;
+        self
+    }
+
+    /// Record every question this asker parks as asked by trigger `name`'s
+    /// run, so an answer can wait for that run to finish writing.
+    pub fn from_trigger(mut self, name: impl Into<String>) -> Self {
+        self.trigger = Some(name.into());
+        self
     }
 
     /// Ids parked during this run, in the order they were asked.
@@ -473,12 +595,23 @@ impl ParkingAsker {
     /// be able to leave a question recorded as cleaner than it was.
     pub fn stamp_taint(&self, taint: Taint) {
         for id in self.parked() {
+            // The lock before the read: `put` rewrites the whole record, so a
+            // copy read outside it and written inside would put back an
+            // answer's `open` — the owner's words lost after their turn began
+            // (review of #904; the follow-up waker stamps in the same process
+            // `answer_in_chat` answers in).
+            // A lock that cannot be taken skips the stamp rather than
+            // racing: the park-time taint already fails closed, so skipping
+            // only loses a refinement (review of #904).
+            let Ok(_lock) = self.store.lock() else {
+                tracing::warn!(id, "could not lock the question store to record taint");
+                continue;
+            };
             let updated = self.store.get(&id).map(|mut q| {
                 q.taint.merge(taint);
                 q
             });
             if let Ok(q) = updated {
-                let _lock = self.store.lock();
                 if let Err(e) = self.store.put(&q) {
                     tracing::warn!(error = %e, id, "could not record taint on a parked question");
                 }
@@ -506,7 +639,8 @@ impl ParkingAsker {
             private: true,
             untrusted: true,
         });
-        match self.store.park(
+        match self.store.park_as(
+            self.resume,
             question,
             options.to_vec(),
             &self.session_id,
@@ -514,6 +648,7 @@ impl ParkingAsker {
             workspace,
             taint,
             goal.cloned(),
+            self.trigger.clone(),
         ) {
             Ok(q) => {
                 if let Ok(mut p) = self.parked.lock() {
@@ -1011,6 +1146,127 @@ mod tests {
             untrusted: true,
         });
         assert!(s2.get(&id2).unwrap().taint.untrusted, "growth still lands");
+    }
+
+    /// The wire: a question parked before `resume` existed reads as the
+    /// background resume it always was, and a value this build cannot name
+    /// reads as `chat` — never a detached run with nobody there.
+    #[test]
+    fn a_question_without_resume_reads_as_background_and_an_unknown_one_as_chat() {
+        let old = r#"{"id":"20260826T101804-476080dd","status":"open","question":"Which?",
+            "session_id":"sess-1","asked_at":"2026-08-26T10:18:04Z"}"#;
+        let q: Question = serde_json::from_str(old).unwrap();
+        assert_eq!(q.resume, Resume::Background, "absent is the old wire");
+        assert!(q.is_open());
+
+        let with = |v: &str| -> Question {
+            let mut raw: serde_json::Value = serde_json::from_str(old).unwrap();
+            raw["resume"] = serde_json::json!(v);
+            serde_json::from_value(raw).unwrap()
+        };
+        assert_eq!(with("background").resume, Resume::Background);
+        assert_eq!(with("chat").resume, Resume::Chat);
+        assert_eq!(
+            with("in-a-meeting-room").resume,
+            Resume::Chat,
+            "an unknown resume must not run in the background"
+        );
+        // And it is written, so a reader never has to infer it.
+        let raw = serde_json::to_string(&with("chat")).unwrap();
+        assert!(raw.contains(r#""resume":"chat""#), "{raw}");
+    }
+
+    /// A trigger's and a woken follow-up's asker parks `chat`; the default
+    /// asker, a delegation's, still parks `background`.
+    #[tokio::test]
+    async fn an_asker_built_to_resume_as_a_chat_parks_chat_questions() {
+        let s = std::sync::Arc::new(store("resume-chat"));
+        let chat =
+            ParkingAsker::new(std::sync::Arc::clone(&s), "sess-c", None).resuming(Resume::Chat);
+        let ctx = ToolCtx {
+            cancel: Some(tokio_util::sync::CancellationToken::new()),
+            ..Default::default()
+        };
+        chat.ask_in(&ctx, "Which room?", &[]).await.unwrap();
+        assert_eq!(s.get(&chat.parked()[0]).unwrap().resume, Resume::Chat);
+
+        let task = ParkingAsker::new(std::sync::Arc::clone(&s), "sess-t", Some("t".into()));
+        task.ask_in(&ctx, "Which room?", &[]).await.unwrap();
+        assert_eq!(s.get(&task.parked()[0]).unwrap().resume, Resume::Background);
+    }
+
+    /// A taint stamp racing an answer never writes the question back to
+    /// open. Made deterministic with the store's own lock: the answer holds
+    /// it while the stamp starts, so a stamp that reads before locking has
+    /// read the open copy by the time the answer lands.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_taint_stamp_never_reopens_an_answered_question() {
+        let s = std::sync::Arc::new(store("stamp-race"));
+        let asker =
+            ParkingAsker::new(std::sync::Arc::clone(&s), "sess-r", None).resuming(Resume::Chat);
+        let ctx = ToolCtx {
+            cancel: Some(tokio_util::sync::CancellationToken::new()),
+            ..Default::default()
+        };
+        asker.ask_in(&ctx, "Which room?", &[]).await.unwrap();
+        let id = asker.parked()[0].clone();
+
+        let held = s.lock().unwrap();
+        let stamper = std::thread::spawn(move || {
+            asker.stamp_taint(Taint {
+                private: true,
+                untrusted: true,
+            })
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut answered = s.get(&id).unwrap();
+        answered.status = ANSWERED.into();
+        answered.answer = Some("the small one".into());
+        s.put(&answered).unwrap();
+        drop(held);
+        stamper.join().unwrap();
+
+        let q = s.get(&id).unwrap();
+        assert_eq!(q.status, ANSWERED, "the stamp put back the open copy");
+        assert_eq!(q.answer.as_deref(), Some("the small one"));
+        assert!(q.taint.untrusted, "and the stamp still landed");
+    }
+
+    /// `answer_with` begins the resume only for an open question, and a
+    /// resume that could not begin leaves it open: the second of two racing
+    /// answers never starts a turn, and a failed start never costs the
+    /// owner their question.
+    #[test]
+    fn answer_with_runs_first_only_while_open_and_a_failure_keeps_it_open() {
+        let s = store("answer-with");
+        let q = s
+            .park("Which?", vec![], "sess", None, None, Taint::default(), None)
+            .unwrap();
+        let err = s
+            .answer_with(&q.id, "the blue one", |_| anyhow::bail!("could not begin"))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("could not begin"));
+        assert!(
+            s.get(&q.id).unwrap().is_open(),
+            "a failed start consumed it"
+        );
+        assert!(s.get(&q.id).unwrap().answer.is_none());
+
+        let mut began = 0;
+        let done = s
+            .answer_with(&q.id, "the blue one", |_| {
+                began += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(done.answer.as_deref(), Some("the blue one"));
+        assert!(s
+            .answer_with(&q.id, "no, the red one", |_| {
+                began += 1;
+                Ok(())
+            })
+            .is_err());
+        assert_eq!(began, 1, "a second answer began a second resume");
     }
 
     #[test]

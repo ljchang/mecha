@@ -1098,6 +1098,14 @@ pub struct ToolCtx {
     /// 200 KB windows, stopped partway and called it a thorough review.
     /// Stamped once per run by `Agent::stamped`; never the model's.
     pub code_offered: bool,
+    /// Nobody is present for this run, and a question asked in it is stored
+    /// here and ends the run at once — never put on a card for a person who
+    /// is not there (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` §Unattended runs
+    /// ask). The web chat stamps it on a woken follow-up's turn, the one
+    /// shared-asker run that has nobody to ask; an asker that would show a
+    /// card reads it first. Stamped by the front end per turn, never by a
+    /// model. `None` everywhere a person may be reading.
+    pub parks_questions: Option<Arc<crate::questions::ParkingAsker>>,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -1313,6 +1321,7 @@ impl Default for ToolCtx {
             host_calls: None,
             program_room: None,
             code_offered: false,
+            parks_questions: None,
         }
     }
 }

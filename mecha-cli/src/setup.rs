@@ -3419,16 +3419,19 @@ impl mecha_core::tool::ask::Asker for NoOneToAsk {
 /// *front-end* rather than on configuration.** An MCP server that is not
 /// connected, or a mail server since renamed, is a real difference between the
 /// recording and now, and the bail is right for it — the replay would be
-/// asking a different agent a different question. A tool that no CLI process
-/// can ever hold, however it is configured, is a different thing: its absence
+/// asking a different agent a different question. A tool that the replaying
+/// process does not build — one a front end, or a command's own run, installs
+/// beside the surface [`prepare`] returns — is a different thing: its absence
 /// says nothing about the run and everything about the process doing the
-/// reading.
+/// reading. (`ask_user` was once a front end's alone; since #904
+/// `mecha trigger run` installs it too, after `prepare`, so the replaying
+/// process still does not hold it.)
 ///
 /// Four qualify; the first three, measured, account for the store:
 ///
 /// | tool | registered by | sessions it blocked |
 /// |---|---|---|
-/// | `ask_user` | a front-end that owns a human | 246 of 408 |
+/// | `ask_user` | a front-end that owns a human; a trigger's run (#904) | 246 of 408 |
 /// | `recall` | the session-recording front-ends | 122 |
 /// | `show_file` | a front-end with a thread attached | 55 |
 /// | `propose_follow_up` | the web chat and the TUI, since 2026-11-18 | new |

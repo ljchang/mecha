@@ -7759,9 +7759,10 @@ reminds. Once a minute it resumes the conversation if it is not held, writes
 `woken_at` before the turn (a crash never wakes twice), and starts an
 unattended, harness-voiced turn through `begin_turn` (`TurnOpts::unattended`:
 `ModeApprover`, `Ask` or the chat's own `ReadOnly` and never wider, so approvals are `Blocked` in the machine's voice and
-routed sends still stage; every unrouted tool that can send is withheld, and
-`ask_user` too, since a read-only sender like `http_fetch` never reaches the
-approver and a deep `web_search` is `Chosen` under a `Blind` declaration; the turn is recorded `harness: true` under
+routed sends still stage; every unrouted tool that can send is withheld,
+since a read-only sender like `http_fetch` never reaches the
+approver and a deep `web_search` is `Chosen` under a `Blind` declaration; `ask_user`
+parks instead of offering a card — below; the turn is recorded `harness: true` under
 `followup::WAKE_STEM`, which the page shows as a note). Only a memory chat
 (typed input only) is refused for good, with the reason on the workflow; an
 ordinary chat the server remembers is resumed with its memory. No outbox route
@@ -7771,6 +7772,32 @@ a silent pause; a busy seat, writer or turn, or a transcript ending on a user
 message, waits a minute; a turn that cannot start gives its claim back. The
 claim is taken under the workflow store's lock, re-checking the whole rule. The
 outcome is an event the tick turns into the owner's notice.
+
+**Unattended runs ask, and the answer resumes as the owner's turn in a chat**
+(design §Unattended runs ask, A1–A3). A question records how it resumes
+(`questions::Resume`): `background` is a delegated run's detached `questions
+answer --unattended`, and absent on the wire; `chat` is a trigger's or a woken
+follow-up's, and every value a build cannot name reads as `chat`, never as a
+detached run with nobody there. A trigger run registers `ask_user` over a
+`ParkingAsker` on its own session (`resuming(Resume::Chat)`; a question store
+that will not open leaves the tool out); a park ends the run, the ledger row is
+`RunStatus::Waiting` with `question_id` (the ledger's statuses degrade to
+`Unknown`, never `ok`), and `notify` is told a question is waiting rather than
+handed the last words as an answer. A woken turn's context carries
+`ToolCtx::parks_questions`, which `WebAsker` reads before routing, so the
+question is stored at once with no card whoever has the page open; the
+workflow records `follow_up_asked` with the question's id and the tick says
+"Follow-up has a question for you". A turn with no store to park in still
+withholds `ask_user`. Answering a `chat` question goes through serve, never a
+child (`chat::answer_in_chat`): the conversation is resumed `by_owner`, and
+the owner's turn is begun through `begin_turn` — the page's approver at the
+chat's own mode, `owner_input`, never unattended — under the question store's
+lock (`QuestionStore::answer_with`), so two racing answers start one turn and a
+turn that cannot begin leaves the question open. The page stays on Tasks: the
+reply carries the chat's key for an *Open chat* there, and nothing navigates
+by itself. The resumed chat keeps its recorded taint and the card keeps its
+pre-answer taint warning; `mecha questions answer` refuses a `chat` question
+without consuming it. A question never expires (A3).
 
 **What the owner did about a woken answer is a sensor nothing reads**
 (`followup::measure`, `mecha followups measure`, design §Step 4): replied,

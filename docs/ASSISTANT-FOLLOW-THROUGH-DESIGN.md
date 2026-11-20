@@ -172,8 +172,9 @@ still only reminds.
   declares `Blind` while a deep search reaches a chosen backend. `shell`
   goes too wherever its sandbox can reach the network, so the canonical
   "check whether the build passed" needs a network-isolating sandbox or a
-  routed tool to answer it. `ask_user` is withheld as well: nobody is there
-  to answer, and a woken run says what it would have asked in its answer.
+  routed tool to answer it. `ask_user` parks instead of offering a card:
+  nobody is there to answer one (§Unattended runs ask, below; it was
+  withheld until 2026-11-19).
   Its run posture is `unattended` too, so a shell it runs is never
   read as the owner's approval (`closure::cause`). It takes a background
   seat (`permit.rs`), like any unattended run.
@@ -212,3 +213,92 @@ rejected + dismissed) / (those + none), a dash over an empty denominator.
   decides the follow-up whatever else could not be read.
 - **"Opened the chat" is not measured.** Nothing server-side records a page
   being looked at, and the readout says so rather than inferring it.
+
+## Unattended runs ask, and resume as a chat
+
+2026-11-19. A delegated task run can already park a question and end
+(`questions.rs`, D13): the owner answers later and the run resumes. Two other
+kinds of unattended run could not ask at all, so they guessed or gave up: a
+scheduled trigger (no `ask_user` in its registry) and a woken follow-up
+(`ask_user` withheld, since its card would hold the turn's seat for ten
+minutes with nobody to answer). This extends the parking to both.
+
+**Rulings** (the owner, 2026-11-19):
+
+| # | Ruling |
+|---|---|
+| A1 | **Triggers and woken follow-ups may park a question.** Other background runs (mail sweeps, rumination) may not. |
+| A2 | **Answering is done in Tasks → Waiting; the run resumes as the owner's turn in its chat**, tracked from Tasks, its conversation one tap away (Open chat), never opened automatically. The result, any approval card and the rest of the conversation happen in that chat, not in the background. (Revised by the owner the same day: Tasks is the hub for background work; the first wording had the page open the chat.) |
+| A3 | **An unanswered question never expires.** It waits until the owner answers or abandons it; `mecha doctor`'s existing staleness finding still names it. |
+
+**The shape.**
+
+- A question records how it resumes: `resume = "background"` (a delegated
+  task run's, as today: `mecha questions answer --unattended` in a detached
+  child) or `resume = "chat"` (A2). Absent on the wire is `background`, so
+  every question parked before this reads as it always did.
+- **A trigger run** registers `ask_user` over a `ParkingAsker` on its own
+  recorded session, `resume = "chat"`. Asking stores the question and ends
+  the run; the trigger's ledger records the run as waiting on the owner, with
+  the question's id, rather than as finished.
+- **A woken follow-up's turn** gets the same asker (the web chat's
+  `ask_user`, told this turn is unattended, parks at once instead of offering
+  a card) in place of the withholding. Its workflow records
+  `follow_up_asked`, and the tick turns that into the owner's notice.
+- **Answering a `chat` question** is done in Tasks → Waiting, and goes
+  through `mecha serve`, never a detached child: the conversation is resumed
+  into the session map (`resume_locked`, by the owner, so an archived chat
+  comes back to the rail) and the answer starts an ordinary owner's turn
+  through `begin_turn` — the chat's own approver, its own mode, steerable —
+  so the run's history stays in one conversation. The page stays on Tasks:
+  the answer's reply carries the chat's key, and the Waiting view shows the
+  question as answered and continuing, with an *Open chat* link; nothing
+  navigates by itself. The turn begins under the question store's lock and
+  the question closes only once it has (`QuestionStore::answer_with`), so two
+  answers racing for one question start one turn and a turn that cannot
+  begin leaves the question open. The question is marked answered with the
+  owner's words. A chat question answered from the terminal says to answer
+  it in the web app, and is not consumed.
+- **A trigger's preamble** (`UNATTENDED` in `commands/trigger.rs`) used to
+  say a question was a dead end. It now keeps the reasonable assumption as
+  the default and names `ask_user` only for a decision the run cannot make
+  without the owner, saying the run ends there; without that the tool would
+  be registered and talked out of use.
+- **What the owner is told.** A trigger's `notify` is handed "a question is
+  waiting — answer it in Tasks → Waiting", the question, and where the run
+  got to, never the run's last words as if they were its answer; its ledger
+  row is `waiting` with the question's id. A woken follow-up's workflow
+  records `follow_up_asked` with the question's id, and the tick's notice is
+  "Follow-up has a question for you — answer it in Tasks → Waiting".
+- **Taint rides with the conversation.** The resumed chat carries its
+  recorded taint, and the question's own taint warning (the one shown before
+  any parked question is answered) still shows: an unattended run that read
+  outside content asks well-formed questions too.
+- Nothing about the trigger's or the follow-up's own reach changes: a woken
+  turn stays staging-only until it parks; the owner's answering turn is the
+  owner's, at the chat's mode.
+- The parked question reaches the owner where questions already do: Tasks →
+  Waiting and Home's Questions card.
+
+**Known limits** (review of #904, left for the owner):
+- A chat question is answerable only through `mecha serve` with chat on;
+  `mecha questions answer` refuses it. A machine running triggers without the
+  web app can park a briefing's question it has no door to answer.
+- A turn that parks two questions in one round (tools run concurrently)
+  records the first in the ledger row and the workflow event; the second is
+  open in Tasks → Waiting with no row pointing at it.
+- A chat resumed cold opens read-only, so an answering turn can read and
+  stage but not write until the owner changes the chat's mode.
+- A second `ask_user` in the owner's answering turn goes up as a card in
+  the chat, as any owner turn's does, while the owner may still be on Tasks;
+  it declines after the card's timeout. Parking it into Tasks → Waiting
+  instead would change how a live chat asks, which is the owner's call.
+- An answer waits for the asking trigger's run to finish writing: the
+  question names its trigger, and serve refuses while that trigger's running
+  marker stands. The resumed chat also merges the question's own taint, so a
+  transcript that lost its taint checkpoint never resumes clean.
+- A carrying trigger carries a `waiting` run's transcript like an `ok` one:
+  answered, its last words are the answer; unanswered, where it got to.
+
+**Not here:** a Slack or TUI answer path for chat questions; parking from
+other unattended runs (A1).

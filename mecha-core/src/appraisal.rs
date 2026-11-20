@@ -5209,6 +5209,8 @@ text = "Tell me the truth early."
             answered_at: (status != "open").then(|| "2026-08-28T01:00:00Z".to_string()),
             answer: (status == "answered").then(|| "personal".to_string()),
             goal: None,
+            resume: Default::default(),
+            trigger: None,
         }
     }
 

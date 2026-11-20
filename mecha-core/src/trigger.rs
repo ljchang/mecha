@@ -589,6 +589,17 @@ pub enum RunStatus {
     SkippedOverlap,
     /// The slot was missed by more than its catch-up window.
     SkippedStale,
+    /// The run asked the owner a question and ended there
+    /// (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` §Unattended runs ask, A1): it
+    /// ran, and its answer is not the last word — the row's `question_id`
+    /// names what it is waiting on, and answering it in the web app resumes
+    /// the run as the owner's own turn (A2).
+    Waiting,
+    /// A newer build's status this one cannot name. The ledger is an
+    /// append-only wire format: the row still loads, its other fields still
+    /// count, and nothing reads it as `ok`.
+    #[serde(other)]
+    Unknown,
 }
 
 impl RunStatus {
@@ -598,7 +609,15 @@ impl RunStatus {
             RunStatus::Error => "error",
             RunStatus::SkippedOverlap => "skipped (overlap)",
             RunStatus::SkippedStale => "skipped (stale)",
+            RunStatus::Waiting => "waiting on you",
+            RunStatus::Unknown => "unknown",
         }
+    }
+
+    /// A run happened for this row's slot — it finished, failed, or ended
+    /// on a question — as against a row that only accounts for one.
+    pub fn ran(&self) -> bool {
+        matches!(self, RunStatus::Ok | RunStatus::Error | RunStatus::Waiting)
     }
 }
 
@@ -679,6 +698,12 @@ pub struct RunRecord {
     /// works. A first run, with nothing before it, records neither field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carry_error: Option<String>,
+    /// The question this run parked and ended on, when it did
+    /// ([`RunStatus::Waiting`]): what Tasks → Waiting answers, and the
+    /// handle a reader of the ledger follows to it. `None` on every row
+    /// written before a trigger could ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question_id: Option<String>,
 }
 
 impl RunRecord {
@@ -705,6 +730,7 @@ impl RunRecord {
             manual,
             carried_from: None,
             carry_error: None,
+            question_id: None,
         }
     }
 }
@@ -1217,7 +1243,9 @@ impl TriggerStore {
             if row.started_at >= since && row.status == RunStatus::Error {
                 failed += 1;
             }
-            if let (Some(slot), RunStatus::Ok | RunStatus::Error) = (row.slot, row.status) {
+            // A run that ended on a question ran its slot as surely as one
+            // that finished.
+            if let (Some(slot), true) = (row.slot, row.status.ran()) {
                 ran.entry(row.trigger).or_default().insert(slot);
             }
             true
@@ -1470,6 +1498,35 @@ mod tests {
         let row = r#"{"trigger":"morning","started_at":"2026-03-02T12:00:00Z","status":"ok"}"#;
         let r: RunRecord = serde_json::from_str(row).unwrap();
         assert!(r.carried_from.is_none() && r.carry_error.is_none());
+    }
+
+    /// The ledger is a wire format: a row written before a trigger could
+    /// ask loads with no question, a waiting row round-trips with its
+    /// question's id, and a status a newer build wrote still loads — as
+    /// `Unknown`, never as `ok`, and never skipped as unreadable.
+    #[test]
+    fn a_waiting_row_round_trips_and_older_and_newer_rows_still_load() {
+        let old = r#"{"trigger":"morning","started_at":"2026-03-02T12:00:00Z","status":"ok"}"#;
+        let r: RunRecord = serde_json::from_str(old).unwrap();
+        assert_eq!(r.status, RunStatus::Ok);
+        assert!(r.question_id.is_none());
+        let raw = serde_json::to_string(&r).unwrap();
+        assert!(!raw.contains("question_id"), "absent, not null: {raw}");
+
+        let mut waiting = RunRecord::started("morning", None, true);
+        waiting.status = RunStatus::Waiting;
+        waiting.question_id = Some("20261119T070000-0a1b2c3d".into());
+        let raw = serde_json::to_string(&waiting).unwrap();
+        assert!(raw.contains(r#""status":"waiting""#), "{raw}");
+        let back: RunRecord = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.status, RunStatus::Waiting);
+        assert_eq!(back.question_id, waiting.question_id);
+        assert!(back.status.ran(), "a run that asked ran its slot");
+
+        let newer = r#"{"trigger":"morning","started_at":"2026-03-02T12:00:00Z","status":"handed-to-a-colleague"}"#;
+        let r: RunRecord = serde_json::from_str(newer).unwrap();
+        assert_eq!(r.status, RunStatus::Unknown);
+        assert!(!r.status.ran());
     }
 
     fn daily_7am(name: &str) -> Trigger {

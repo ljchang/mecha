@@ -161,6 +161,9 @@ fn show(id: &str) -> Result<()> {
         }
     }
     println!("session  {}", q.session_id);
+    if q.resume == mecha_core::questions::Resume::Chat {
+        println!("resumes  in its chat — answer it in the web app (Tasks → Waiting)");
+    }
     if let Some(a) = &q.answer {
         println!(
             "\nanswered {}\n{a}",
@@ -204,6 +207,19 @@ async fn answer_and_resume(
     let q = store.find(id)?;
     if !q.is_open() {
         bail!("question {} is already {}", short(&q.id), q.status);
+    }
+    // **A chat question is answered in the web app, and nothing here
+    // consumes it** (A2). Its answer is the owner's own turn in the chat the
+    // run asked from — the page's approver, its mode, steerable — which only
+    // `mecha serve` holds; resumed from here it would be the detached,
+    // unattended run A2 replaced. Refused before the store is touched, so
+    // the question is still open where it can be answered.
+    if q.resume == mecha_core::questions::Resume::Chat {
+        bail!(
+            "question {} resumes as a chat — answer it in the web app (Tasks → Waiting), where \
+             your answer continues the conversation as your own turn. Nothing was answered here.",
+            short(&q.id)
+        );
     }
     warn_if_tainted(&q);
 
@@ -624,4 +640,44 @@ async fn answer_and_resume(
         println!("{task} is `waiting` — `mecha tasks set {task} --status done` when you agree");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mecha_core::agent::Taint;
+    use mecha_core::questions::Resume;
+
+    /// A chat question is answered in the web app (A2): the terminal says so
+    /// and consumes nothing — the question is still open, with no answer on
+    /// file, for the page to answer. Refused before the asking session is
+    /// even looked for, so no agent is built for a refusal.
+    #[tokio::test]
+    async fn the_terminal_refuses_a_chat_question_without_consuming_it() {
+        let _home = crate::testenv::HomeGuard::new("questions-chat-cli");
+        let store = store().unwrap();
+        let q = store
+            .park_as(
+                Resume::Chat,
+                "Which room should the review be in?",
+                vec![],
+                "20261119T070000-0a1b2c3d",
+                None,
+                None,
+                Taint::default(),
+                None,
+                None,
+            )
+            .unwrap();
+        for unattended in [false, true] {
+            let err = answer_and_resume(&GlobalOpts::default(), &q.id, "the small one", unattended)
+                .await
+                .unwrap_err();
+            let said = format!("{err:#}");
+            assert!(said.contains("answer it in the web app"), "{said}");
+            let after = store.get(&q.id).unwrap();
+            assert!(after.is_open(), "the refusal consumed the question");
+            assert!(after.answer.is_none());
+        }
+    }
 }

@@ -254,6 +254,9 @@ pub fn today() -> Result<serde_json::Value> {
             match e.kind.as_str() {
                 FOLLOW_UP_WOKEN => Some("Woken in its chat; the run is going".to_string()),
                 FOLLOW_UP_ANSWERED => Some("Answered in its chat".to_string()),
+                FOLLOW_UP_ASKED => {
+                    Some("Asked you a question — answer it in Tasks → Waiting".to_string())
+                }
                 FOLLOW_UP_FAILED => Some(format!("The woken run did not finish: {}", e.detail)),
                 FOLLOW_UP_NOT_WOKEN => Some(format!("Not woken: {}", e.detail)),
                 FOLLOW_UP_WAITING => Some(format!("Waiting to wake: {}", e.detail)),

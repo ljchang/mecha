@@ -1107,8 +1107,12 @@ fn the_shipped_board_validates_and_its_loaders_read_the_collector() {
 
     // One workflow that went red after a success, its latest run cancelled:
     // a cancelled run decides nothing, so it is still red, since the failure.
+    // One reading of the clock: `at(40)` when a row is written and `at(40)`
+    // when it is expected must be the same second, which two `now()` calls a
+    // second boundary apart are not (seen once under the full suite).
+    let base = Utc::now();
     let at = |hours: i64| {
-        (Utc::now() - Duration::hours(hours))
+        (base - Duration::hours(hours))
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string()
     };
