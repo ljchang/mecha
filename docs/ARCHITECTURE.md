@@ -11976,8 +11976,14 @@ for the whole door (`serve::chat::Recall`).
   index holds (sessions, passages, how many are embedded, how many were
   outside content), when a pass last changed that and how long that pass
   took, and what searches have done in all since the index began counting
-  them (how many, how many passages held back, how long the last took once
-  it had its embedding). `mecha serve` logs at `warn`, and the
+  them (how many; how many passages held back, which is the outside
+  passages among a search's best `HITS` candidates, the ones the chat would
+  have been handed had outside content been let through, and not every
+  outside passage over the floor, which read some two hundred a search on
+  the owner's index (2026-11-19); how long the last took once
+  it had its embedding). Search counts carry the rule they were kept
+  under (`COUNT_RULE`): counts kept under another are not said, and the
+  next search starts them again. `mecha serve` logs at `warn`, and the
   first version said its counts at `info`, where nobody saw them (review
   of #890). A count the index did not keep is said as not kept, never as
   zero, and `standing` opens the file read-only so that asking makes no
