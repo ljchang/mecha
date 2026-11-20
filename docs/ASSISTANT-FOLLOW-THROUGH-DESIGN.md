@@ -302,3 +302,62 @@ minutes with nobody to answer). This extends the parking to both.
 
 **Not here:** a Slack or TUI answer path for chat questions; parking from
 other unattended runs (A1).
+
+## Tasks → Background: every unattended run in one place
+
+2026-11-20. The owner's framing (2026-11-19): **the Tasks tab is the hub for
+background work** — where a background run's questions are answered, and
+where every background run is tracked and monitored. Questions already land
+in Tasks → Waiting (§Unattended runs ask). What was missing is the second
+half: a scheduled trigger's runs appear nowhere in the web app, a woken
+follow-up shows only as a line on its workflow card, and nothing says
+"running now / waiting on you / done / failed" across them.
+
+**Ruling** (the owner, 2026-11-20):
+
+| # | Ruling |
+|---|---|
+| B1 | **Both, jobs as status lines.** Assistant runs are full rows with *Open chat*; below them, each scheduled job (the machine's `mecha-*` timers — the mail sweep, rumination, the GitHub collector, dashboard refreshes) is one line: last run, ok or failed, next run. |
+
+**The shape.**
+
+- **A view, not a verb.** Tasks → Background lists and links; it answers,
+  stops and dismisses nothing. Answering stays in Tasks → Waiting, stopping a
+  delegated run stays on its board card, dismissing stays on the workflow
+  card — one door per act, so the view cannot drift from the surfaces that
+  own them.
+- **Assistant runs, newest first, from three stores:**
+  - *Scheduled triggers* — the trigger ledger (`TriggerStore::runs`) over
+    the last seven days, plus a run in flight from the trigger's running
+    marker. State: `running` (live marker), `waiting` (`RunStatus::Waiting`;
+    the row links its question in Waiting), `done` (`ok`), `failed`
+    (`error`), and `unknown` for a status this build cannot name — never
+    shown as done.
+  - *Woken follow-ups* — workflows whose source is `followup:` and which
+    have been woken (`woken_at`), read from their events: `follow_up_woken`
+    with no outcome yet is `running`, `follow_up_asked` is `waiting`,
+    `follow_up_answered` is `done`, `follow_up_failed` is `failed`.
+  - *Delegated task runs* — the board's own `run` summary per task (the page
+    already holds it from `/api/tasks`), so the view adds no second reader of
+    the graph store.
+  - Every row: what it is (trigger name, follow-up wording, task title),
+    when it started and ended, its state, and *Open chat* to
+    `#chat/<session>` — the session id, which the chat route resumes (the
+    door #904 settled). A row whose run read outside content carries the
+    same taint badge the question card does.
+- **Scheduled jobs**, one line each, from systemd: `systemctl --user
+  list-timers 'mecha-*'` for last and next, and the service's `Result` /
+  `ActiveState` for ok, failed or running. Read in one bounded call per
+  page load, never per row.
+- **Unknown is said, never zero.** A store that cannot be read is a line
+  saying so in its own section, not an empty list; on a machine without
+  systemd (a Mac runs these under launchd) the jobs section says it cannot
+  read them there, never "no jobs".
+- **One read-only endpoint** (`GET /api/background`) for triggers,
+  follow-ups and jobs; each section carries its own error so one unreadable
+  store does not blank the others. The page polls it only while the view is
+  open.
+- Nothing here changes what any run does or may do; it is a read.
+
+**Not here:** stopping a trigger run from the view; run history beyond seven
+days (the CLI's `mecha trigger runs` has it); Slack.
