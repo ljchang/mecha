@@ -39,6 +39,7 @@ use axum::{Json, Router};
 use mecha_core::config::Config;
 
 mod archive;
+mod background;
 mod board;
 mod chat;
 mod factory;
@@ -1182,6 +1183,9 @@ fn api() -> gate::Owned {
             axum::routing::post(board::task_parse),
         )
         .at("/api/questions", Owner::Core, get(questions::list))
+        // Tasks → Background: core, because triggers, follow-ups and the
+        // machine's jobs are — the view opens with the board off.
+        .at("/api/background", Owner::Core, get(background::list))
         .at(
             "/api/questions/answer",
             Owner::Core,
@@ -2319,7 +2323,7 @@ mod tests {
     use axum::body::Body;
     use tower::util::ServiceExt;
 
-    fn test_router() -> Router {
+    pub(super) fn test_router() -> Router {
         test_router_gated(gate::Gate::default())
     }
 
@@ -2452,6 +2456,7 @@ mod tests {
             ("/api/proposals/{store}", Owner::ProposalStore),
             ("/api/chat/{key}/send", Owner::ChatKey),
             ("/api/questions", Owner::Core),
+            ("/api/background", Owner::Core),
             ("/api/features", Owner::Core),
         ] {
             assert_eq!(owners.0.get(path), Some(&owner), "{path}");

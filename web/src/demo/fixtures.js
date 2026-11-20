@@ -885,6 +885,54 @@ export const questions = {
   ],
 };
 
+// Tasks → Background (`GET /api/background`). Times are relative to the
+// moment the demo answers, so the rows stay inside the view's seven days.
+export function background(now = Date.now()) {
+  const ago = (mins) => new Date(now - mins * 60000).toISOString();
+  const ahead = (mins) => new Date(now + mins * 60000).toISOString();
+  return {
+    triggers: {
+      rows: [
+        {
+          kind: 'trigger', name: 'morning', state: 'waiting',
+          started_at: ago(190), finished_at: ago(186),
+          session: '20260829T070000-b7e1', question: 'q-81',
+          taint: { private: true, untrusted: true },
+          summary: 'Asked which room the Thursday review is in.',
+          detail: null, workflow: null,
+        },
+        {
+          kind: 'trigger', name: 'morning', state: 'done',
+          started_at: ago(1630), finished_at: ago(1626),
+          session: '20260828T070000-a3c2', question: null,
+          taint: { private: true, untrusted: true },
+          summary: 'Two meetings today; the grant report is due Friday.',
+          detail: null, workflow: null,
+        },
+      ],
+    },
+    follow_ups: {
+      rows: [
+        {
+          kind: 'follow_up', name: 'check the nightly build', state: 'done',
+          started_at: ago(400), finished_at: ago(398),
+          session: '20260827T160000-c9d4', question: null,
+          taint: { private: true, untrusted: false },
+          summary: null, detail: null, workflow: 'followup-nightly',
+        },
+      ],
+    },
+    jobs: {
+      rows: [
+        { timer: 'mecha-mail-classify.timer', service: 'mecha-mail-classify.service', last_run: ago(610), next_run: ahead(830), state: 'ok', detail: null },
+        { timer: 'mecha-ruminate.timer', service: 'mecha-ruminate.service', last_run: ago(730), next_run: ahead(710), state: 'ok', detail: null },
+        { timer: 'mecha-github-collect.timer', service: 'mecha-github-collect.service', last_run: ago(226), next_run: ahead(1214), state: 'failed', detail: 'exit-code' },
+        { timer: 'mecha-hud.timer', service: 'mecha-hud.service', last_run: ago(1), next_run: ahead(1), state: 'ok', detail: null },
+      ],
+    },
+  };
+}
+
 // --- settings ------------------------------------------------------------
 
 export const charter = {

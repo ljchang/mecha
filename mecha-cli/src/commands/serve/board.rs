@@ -149,7 +149,7 @@ fn attach_runs(board: &mut serde_json::Value, dir: &std::path::Path) {
 /// component and nothing else — is correct on whatever platform this runs
 /// on rather than needing its own list of what that platform's separators
 /// and prefixes are.
-fn is_bare_path_component(id: &str) -> bool {
+pub(super) fn is_bare_path_component(id: &str) -> bool {
     let mut components = std::path::Path::new(id).components();
     matches!(components.next(), Some(std::path::Component::Normal(_)))
         && components.next().is_none()
@@ -212,12 +212,25 @@ fn run_summary(dir: &std::path::Path, session_id: &str) -> serde_json::Value {
     // now, and an outcome is appended last, so scanning backwards finds it in
     // one parse instead of one per line of a transcript that is mostly
     // messages.
-    let Ok(Some(stats)) = mecha_core::session::Session::last_outcome(&path) else {
-        return serde_json::json!({ "recorded": false, "transcript": true });
+    //
+    // The taint rides from the same read: Tasks → Background shows a
+    // delegated run with the badge the question card carries, and `null`
+    // (no checkpoint recorded) is unknown, which the page never draws as
+    // clean.
+    let (stats, taint) = match mecha_core::session::Session::last_outcome_and_taint(&path) {
+        Ok((Some(stats), taint)) => (stats, taint),
+        Ok((None, taint)) => {
+            return serde_json::json!({ "recorded": false, "transcript": true, "taint": taint })
+        }
+        Err(_) => return serde_json::json!({ "recorded": false, "transcript": true }),
     };
     serde_json::json!({
         "recorded": true,
         "transcript": true,
+        "taint": taint,
+        // When the run ended, for Tasks → Background's newest-first list.
+        // `null` on a record from before the field.
+        "ended_at": stats.ended_at,
         // `None` when the loop never named one; the page renders that as
         // unknown rather than as completion, for the reason above.
         "stop_cause": stats.stop_cause,
@@ -1293,6 +1306,34 @@ mod tests {
             "Interrupted is the system working — `is_early()` would say true here"
         );
         assert_eq!(v["stop_cause"], serde_json::json!("interrupted"));
+    }
+
+    /// Tasks → Background shows a delegated run's taint and end time from
+    /// this summary. A transcript with no taint checkpoint says `null` —
+    /// unknown, which the page never draws as clean.
+    #[test]
+    fn a_run_summary_carries_its_taint_and_when_it_ended() {
+        let dir = tmpdir("taint");
+        let s = session(&dir, "20260826T090000-aaaa0001");
+        let ended = chrono::DateTime::parse_from_rfc3339("2026-08-26T09:30:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        s.append(&Record::Outcome(RunStats {
+            stop_cause: Some(StopCause::Completed),
+            ended_at: Some(ended),
+            ..RunStats::default()
+        }))
+        .unwrap();
+        let v = run_summary(&dir, "20260826T090000-aaaa0001");
+        assert!(v["taint"].is_null(), "no checkpoint is unknown: {v}");
+        assert_eq!(v["ended_at"], serde_json::json!("2026-08-26T09:30:00Z"));
+        s.append(&Record::Taint(mecha_core::agent::Taint {
+            private: false,
+            untrusted: true,
+        }))
+        .unwrap();
+        let v = run_summary(&dir, "20260826T090000-aaaa0001");
+        assert_eq!(v["taint"]["untrusted"], serde_json::json!(true));
     }
 
     /// **The path comes from the id, not from a search.** `Session::find`

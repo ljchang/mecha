@@ -4,6 +4,7 @@
   import { features } from './features.svelte.js';
   import { opens } from './features.js';
   import Workflows from './Workflows.svelte';
+  import Background from './Background.svelte';
   import { isActionable } from './home-view.js';
   import { answeredChat, chatHref, resumesInChat } from './question-resume.js';
   // The GTD board, over `mecha tasks …` — which reaches the graph's own
@@ -242,9 +243,15 @@
   // Not a filter over tasks: the follow-through the assistant is carrying,
   // which home opens from its one line (Workflows.svelte).
   const WORKFLOWS = 'workflows';
-  const filter = $derived(initial === WORKFLOWS || filters.some(([n]) => n === initial) ? initial : 'actionable');
+  // Not a filter either: every unattended run in one place — triggers,
+  // woken follow-ups, delegated runs, and the machine's scheduled jobs
+  // (Background.svelte; the Tasks tab is the hub for background work).
+  const BACKGROUND = 'background';
+  // The two views that are not filters over the board's tasks.
+  const OWN_VIEWS = [WORKFLOWS, BACKGROUND];
+  const filter = $derived(OWN_VIEWS.includes(initial) || filters.some(([n]) => n === initial) ? initial : 'actionable');
   const tasks = $derived.by(() => {
-    if (filter === WORKFLOWS) return [];
+    if (OWN_VIEWS.includes(filter)) return [];
     const pred = filters.find(([name]) => name === filter)?.[1] ?? (() => true);
     return (data?.items ?? []).filter(pred);
   });
@@ -805,6 +812,11 @@
           <span class="dcount"></span>
           <span class="dblurb">follow-through the assistant is carrying</span>
         </button>
+        <button class="drow" class:dactive={filter === BACKGROUND} onclick={() => { navigate(`tasks/${BACKGROUND}`); drawer = false; closureNote = null; }}>
+          <span class="dname">{BACKGROUND}</span>
+          <span class="dcount"></span>
+          <span class="dblurb">every unattended run, and the scheduled jobs</span>
+        </button>
       </div>
     </aside>
   {/if}
@@ -812,7 +824,7 @@
   <div class="scroll">
     {#if error}<div class="warnline">{@render hazardGlyph()}<span>{error}</span></div>{/if}
     {#if closureNote}<div class="noteline">{closureNote}</div>{/if}
-    {#if data === null && !error && filter !== WORKFLOWS}
+    {#if data === null && !error && !OWN_VIEWS.includes(filter)}
       <div class="empty">reaching the graph…</div>
     {/if}
     <!-- Questions whose task is not on this board — asked without one, or
@@ -839,6 +851,10 @@
     {/if}
     {#if filter === WORKFLOWS}
       <Workflows {navigate} />
+    {:else if filter === BACKGROUND}
+      <!-- The board's own load, handed down: delegated runs are read off the
+           items this page already holds, never a second graph read. -->
+      <Background items={data?.items ?? null} boardError={data === null ? error : null} {questions} {navigate} />
     {:else}
     {#each tasks as t}
       <!-- The card and its question are siblings, never nested. The row is
@@ -1097,11 +1113,12 @@
     {/each}
     {/if}
     <!-- Said of the board's own verbs; the workflows view's are not one tap
-         from where they were (Finish and Reopen are separate acts). -->
-    {#if filter !== WORKFLOWS}<div class="footnote">Every change is one tap and reversible — nothing here confirms.</div>{/if}
+         from where they were (Finish and Reopen are separate acts), and the
+         background view has no verbs at all. -->
+    {#if !OWN_VIEWS.includes(filter)}<div class="footnote">Every change is one tap and reversible — nothing here confirms.</div>{/if}
   </div>
 
-  {#if filter !== WORKFLOWS}
+  {#if !OWN_VIEWS.includes(filter)}
   <button class="fab" onclick={() => (adding = true)} title="capture a task">
     <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="var(--void)" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
   </button>
