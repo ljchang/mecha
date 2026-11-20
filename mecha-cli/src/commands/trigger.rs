@@ -1090,6 +1090,10 @@ fn last_answer(
         }
         finished < CARRY_LOOKBACK && candidates.len() < 2 * CARRY_LOOKBACK
     })?;
+    // The scan stopped on the cap rather than on the lookback or the
+    // ledger's start: every row read may be an unanswered park with a
+    // finished answer behind them, so "nothing to carry" would be a guess.
+    let capped = finished < CARRY_LOOKBACK && candidates.len() >= 2 * CARRY_LOOKBACK;
     if candidates.is_empty() {
         return Ok(None);
     }
@@ -1116,8 +1120,17 @@ fn last_answer(
         };
         first_reason.get_or_insert(reason);
     }
-    // Only unanswered questions so far: nothing to carry, and no fault.
+    // Only unanswered questions so far: nothing to carry, and no fault —
+    // unless the scan was cut short, which is said, never read as a first
+    // run (review of #904).
     let Some(reason) = first_reason else {
+        if capped {
+            anyhow::bail!(
+                "the last {} runs all ended on questions not yet answered, so no earlier \
+                 answer was looked for",
+                candidates.len()
+            );
+        }
         return Ok(None);
     };
     anyhow::bail!(
@@ -1893,6 +1906,19 @@ mod tests {
             .expect("the finished answer behind the parks");
         assert_eq!(from, id);
         assert!(block.contains("due Friday"));
+
+        // One more park and the scan stops on its cap before the finished
+        // run: said, never read as a first run.
+        parked(
+            &store,
+            &sessions,
+            &format!("2026-03-{:02}T12:00:00Z", 1 + 2 * CARRY_LOOKBACK as u32),
+        );
+        let err = last_answer(&store, &sessions, &morning(), chrono_tz::UTC).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("questions not yet answered"),
+            "{err:#}"
+        );
 
         let (store, sessions) = carry_home("parks-only");
         parked(&store, &sessions, "2026-03-02T12:00:00Z");

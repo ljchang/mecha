@@ -600,7 +600,13 @@ impl ParkingAsker {
             // answer's `open` — the owner's words lost after their turn began
             // (review of #904; the follow-up waker stamps in the same process
             // `answer_in_chat` answers in).
-            let _lock = self.store.lock();
+            // A lock that cannot be taken skips the stamp rather than
+            // racing: the park-time taint already fails closed, so skipping
+            // only loses a refinement (review of #904).
+            let Ok(_lock) = self.store.lock() else {
+                tracing::warn!(id, "could not lock the question store to record taint");
+                continue;
+            };
             let updated = self.store.get(&id).map(|mut q| {
                 q.taint.merge(taint);
                 q
