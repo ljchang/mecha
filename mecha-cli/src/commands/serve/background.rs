@@ -461,8 +461,9 @@ pub(super) fn follow_up_row(
 /// The recorded taint of the transcript `id` in `dir`, resolved by name as
 /// the board resolves it — `None` when the id is not a bare file name, the
 /// transcript is gone, or it records no checkpoint.
-/// What a trigger run read. A finished or parked run's ledger row carries
-/// the run's taint, stamped on the way out; a run that failed (or whose
+/// What a trigger run read. A finished or cleanly parked run's ledger row
+/// carries the run's taint, stamped on the way out; a run that failed —
+/// before or after parking a question — (or whose
 /// status this build cannot name) appended its row with the field's
 /// default, which is not a reading — so its taint is its transcript's
 /// checkpoints, merged with the row, and `None` (drawn *taint unknown*)
@@ -470,7 +471,12 @@ pub(super) fn follow_up_row(
 /// `carried_block` reads the same row the same way).
 fn trigger_taint(r: &RunRecord, sessions: Option<&Path>) -> Option<Taint> {
     match r.status {
-        RunStatus::Ok | RunStatus::Waiting => Some(r.taint),
+        // A run that parked a question and then failed is `waiting` with its
+        // error beside it (`trigger::settle`), and its taint was never
+        // stamped either: only a waiting row with no error carries a
+        // reading (review of #906).
+        RunStatus::Ok => Some(r.taint),
+        RunStatus::Waiting if r.error.is_none() => Some(r.taint),
         _ => {
             let mut taint = transcript_taint(sessions?, r.session_id.as_deref()?)?;
             taint.merge(r.taint);
@@ -639,20 +645,21 @@ pub(super) async fn jobs(systemctl: &OsStr, timeout: std::time::Duration) -> Sec
         ]);
         args.extend(services.iter().copied());
         match systemctl_run(systemctl, &args, timeout).await {
-            Ok(out) if out.status.success() => {
-                Ok(parse_show(&String::from_utf8_lossy(&out.stdout)))
+            Ok(out) => {
+                let blocks = parse_show(&String::from_utf8_lossy(&out.stdout));
+                // A missing unit can make `show` exit nonzero while it still
+                // prints every other unit's block, as `doctor`'s timer reader
+                // found: keep the blocks it printed (a unit without one reads
+                // unknown), and fail only when it printed none.
+                if out.status.success() || !blocks.is_empty() {
+                    Ok(blocks)
+                } else {
+                    Err(format!(
+                        "systemctl show failed: {}",
+                        first_stderr_line(&out)
+                    ))
+                }
             }
-            // A missing unit can make `show` exit nonzero while it still
-            // prints every other unit's block, as `doctor`'s timer reader
-            // found: keep the blocks it printed (a unit without one reads
-            // unknown), and fail only when it printed none (review of #906).
-            Ok(out) if !parse_show(&String::from_utf8_lossy(&out.stdout)).is_empty() => {
-                Ok(parse_show(&String::from_utf8_lossy(&out.stdout)))
-            }
-            Ok(out) => Err(format!(
-                "systemctl show failed: {}",
-                first_stderr_line(&out)
-            )),
             Err(Probe::Missing) => Err("systemctl went missing between two calls".into()),
             Err(Probe::Failed(why)) => Err(why),
         }
@@ -886,6 +893,18 @@ mod tests {
             "no checkpoint is unknown, not clean"
         );
         assert_eq!(trigger_row(&failed, None, None).taint, None);
+        // Parked a question, then failed: waiting, with its error — and the
+        // taint never stamped. Its transcript's, not the row's default.
+        transcript("20261120T090000-parked", Some(read_outside));
+        let mut parked = run("parked", RunStatus::Waiting, now);
+        parked.error = Some("the transcript could not be written".into());
+        assert_eq!(
+            trigger_row(&parked, Some(&sessions), None)
+                .taint
+                .map(|t| t.untrusted),
+            Some(true),
+            "a run that parked and then failed drew clean"
+        );
         assert_eq!(
             trigger_row(&good, Some(&sessions), None).taint,
             Some(good.taint)
