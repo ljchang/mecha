@@ -187,6 +187,15 @@ pub struct Workflow {
     /// one not yet due.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub woken_at: Option<DateTime<Utc>>,
+    /// Who accepted the follow-up this workflow came from
+    /// (`crate::followup::Acceptance`): the owner's own hand, or the
+    /// owner's standing auto rule (design F7). Kept here as well as on the
+    /// proposal, so the acted-on measure and the workflow card read it from
+    /// the record they already hold. Absent on every workflow that is not a
+    /// follow-up's, and on one accepted before the field — when the owner's
+    /// own accept was the only way — which a reader leaves unrecorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_by: Option<crate::followup::Acceptance>,
 }
 /// One owner verification, as [`Workflow::verify_history`] keeps it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -365,6 +374,7 @@ impl Workflow {
             closed_at: None,
             verify_history: vec![],
             woken_at: None,
+            accepted_by: None,
         }
     }
     fn append_event(&mut self, kind: &str, detail: impl Into<String>, now: DateTime<Utc>) {

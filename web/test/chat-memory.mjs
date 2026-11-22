@@ -96,8 +96,9 @@ assert.ok(connectionStart >= 0, 'shipping connection effect exists');
 const connection = source.slice(connectionStart, source.indexOf('\n  });', connectionStart) + 6);
 const harness = `
 import { untrack } from 'svelte';
+import { autoFrom } from '${new URL('../src/lib/chat-auto.js', import.meta.url)}';
 export function racePage(fetch, EventSource, connectInitially) {
-  let key = $state('memory-test'), mode = 'read_only';
+  let key = $state('memory-test'), mode = 'read_only', auto = false;
   let running = $state(false), gone = $state(null), draft = 'preserved draft';
   let entries = [], partialRun = false, liveFrom = 0, doneSeq = 0;
   let task, incognito = false, todo, taint, model, usage, error = null, grants = [];

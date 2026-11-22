@@ -23,6 +23,12 @@
 //! - **The words are the model's**, bounded to one line and
 //!   [`WHAT_MAX_CHARS`], because they become a workflow's title on surfaces
 //!   that lay out one row per item.
+//! - **Who accepted is recorded** ([`Acceptance`]): the owner's own hand, or
+//!   the owner's standing rule — a web chat's **auto**, the TUI's `/review
+//!   auto` (design F7) — applied by the harness when the proposing run
+//!   ended, never by a model. The record and its workflow both say which, so
+//!   no later reader credits the owner's click with what a standing rule
+//!   took.
 
 use anyhow::{ensure, Context, Result};
 use chrono::{DateTime, Utc};
@@ -82,6 +88,43 @@ pub struct FollowUp {
     /// Why the owner rejected it, in their words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// How an accepted proposal was accepted. Absent on one still proposed
+    /// or rejected, and on one accepted before the field existed — when the
+    /// owner's own `accept` was the only way — which a reader shows as
+    /// unrecorded rather than guess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_by: Option<Acceptance>,
+}
+
+/// Who accepted a follow-up (design F7).
+///
+/// A closed enum on an append-only record, so a wire format: a word this
+/// build cannot name loads as [`Acceptance::Unknown`], never as either of
+/// the two it knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Acceptance {
+    /// The owner's own hand: `mecha followups accept`, which the proposals
+    /// pane's Accept drives.
+    Owner,
+    /// The owner's standing rule, applied by the harness when the proposing
+    /// run ended: a web chat's **auto** switched on, or the TUI's `/review
+    /// auto`, and the proposal's recorded taint clean
+    /// (`review_policy::auto_accepts`). The owner's word, given before the
+    /// proposal existed — not a decision on this one.
+    Auto,
+    #[serde(other)]
+    Unknown,
+}
+
+impl Acceptance {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Acceptance::Owner => "owner",
+            Acceptance::Auto => "auto",
+            Acceptance::Unknown => "unknown",
+        }
+    }
 }
 
 impl FollowUp {
@@ -328,6 +371,7 @@ impl FollowUpStore {
             decided_at: None,
             workflow_id: None,
             reason: None,
+            accepted_by: None,
         };
         let _lock = self.lock()?;
         // Counted under the lock, so two calls in one batch cannot both
@@ -448,11 +492,14 @@ pub fn short(id: &str) -> &str {
 /// to, the jail it ran in, and a commitment dated by the proposal. No
 /// deadline: a follow-up is a time to look again, not a promise to a party,
 /// so it is never overdue (`Commitment::overdue`) and only raises the
-/// "Follow-up due" reminder.
+/// "Follow-up due" reminder. `by` is who accepted it, kept on the workflow
+/// and said in its `created` event, so the acted-on measure and any later
+/// audit can tell a standing rule's acceptance from a click.
 pub fn workflow_for(
     f: &FollowUp,
     workspace: PathBuf,
     outbox_root: Option<PathBuf>,
+    by: Acceptance,
     now: DateTime<Utc>,
 ) -> crate::workflow::Workflow {
     let mut w = crate::workflow::Workflow::new(
@@ -471,7 +518,17 @@ pub fn workflow_for(
         expectation: Some(f.what.clone()),
         consequence: None,
     });
-    w.record("created", format!("Owner accepted follow-up {}", f.id), now);
+    w.accepted_by = Some(by);
+    let detail = match by {
+        Acceptance::Owner => format!("Owner accepted follow-up {}", f.id),
+        Acceptance::Auto => format!(
+            "Follow-up {} accepted automatically: auto was on in its conversation (the \
+             owner's standing rule) and it had read no outside content",
+            f.id
+        ),
+        Acceptance::Unknown => format!("Follow-up {} accepted by an unrecorded hand", f.id),
+    };
+    w.record("created", detail, now);
     w
 }
 
@@ -631,6 +688,10 @@ pub struct Measured {
     pub signals: Vec<Signal>,
     /// Why it could not be decided, when that was so.
     pub unknown: Vec<String>,
+    /// Who accepted it ([`Acceptance`]), as its workflow records it, so a
+    /// reader can keep the follow-ups the owner clicked apart from those a
+    /// standing auto rule took. `None` on a workflow from before the field.
+    pub accepted_by: Option<Acceptance>,
 }
 
 /// The latest `follow_up_answered` on a follow-up's workflow — the answer
@@ -809,6 +870,7 @@ pub fn measure(
         response,
         signals,
         unknown,
+        accepted_by: w.accepted_by,
     })
 }
 
@@ -1066,8 +1128,9 @@ mod tests {
             decided_at: Some(n),
             workflow_id: None,
             reason: None,
+            accepted_by: None,
         };
-        let mut w = workflow_for(&f, "/tmp/w".into(), None, n);
+        let mut w = workflow_for(&f, "/tmp/w".into(), None, Acceptance::Owner, n);
         let later = n + chrono::Duration::hours(2);
         assert_eq!(proposal_of(&w), Some(f.id.as_str()));
         assert!(!due_to_wake(&w, n), "not before its time");
@@ -1159,8 +1222,9 @@ mod tests {
             decided_at: Some(n - h(3)),
             workflow_id: None,
             reason: None,
+            accepted_by: None,
         };
-        let mut w = workflow_for(&f, "/tmp/w".into(), None, n - h(3));
+        let mut w = workflow_for(&f, "/tmp/w".into(), None, Acceptance::Owner, n - h(3));
         w.woken_at = Some(n);
         w.record(
             FOLLOW_UP_ANSWERED,
@@ -1512,6 +1576,7 @@ mod tests {
             response,
             signals: vec![],
             unknown: vec![],
+            accepted_by: None,
         };
         let undecided = Totals::of(&[row(Response::Pending), row(Response::Unknown)]);
         assert_eq!(
@@ -1551,8 +1616,9 @@ mod tests {
             decided_at: None,
             workflow_id: None,
             reason: None,
+            accepted_by: None,
         };
-        let w = workflow_for(&f, "/tmp/w".into(), None, n);
+        let w = workflow_for(&f, "/tmp/w".into(), None, Acceptance::Owner, n);
         assert_eq!(w.id, "followup-20261118T120000-abcd1234");
         assert_eq!(w.session_id.as_deref(), Some("sess-a"));
         let c = w.commitment.as_ref().unwrap();

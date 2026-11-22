@@ -7,7 +7,7 @@ contributors, each with a short summary and a way to open it), and how much
 each repository is **used** — fed by a collector that runs with no model
 holding a credential, and drawn by the HUD.
 
-**Not built.** It extends [`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md)
+**Partly built** — steps 1 (the collector, #894) and 2 (the board, #902) are merged, step 3 (the typed reference) is this change, and §7 tracks the rest. It extends [`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md)
 and does not restate it; where the two disagree about the HUD, that file wins
 until a ruling here amends it, and §0 says which do. It is the first
 integration with a service that is neither mail nor documents, and it is
@@ -244,13 +244,52 @@ Each step is useful alone and is its own pull request.
 |---|---|---|
 | 1 | `mecha github collect`, the selection file read, `inventory`, `ci_runs`, `items`, `counts`, `collect_log`; a systemd timer beside `mecha-triggers.service` | a run against the owner's login fills the tables; a revoked login is a `doctor` finding, not an empty table |
 | 2 | The board, installed: views 1 and 2 without summaries or links — `scripts/hud/github/` | the owner opens it and it is right about one known red repository |
-| 3 | The typed reference (§4): spec gate, renderer and serve-side check | the spec gate refuses an unknown `ref` and an unknown key beside the three; a row naming a repository outside inventory ∩ selection, or `..` as a name, renders no anchor; `hud.mjs` fails on a second link sink |
+| 3 ✓ | The typed reference (§4): spec gate, renderer and serve-side check — *built 2026-11-22, §7.1* | the spec gate refuses an unknown `ref` and an unknown key beside the three; a row naming a repository outside inventory ∩ selection, or `..` as a name, renders no anchor; `hud.mjs` fails on a second link sink |
 | 4 | Summaries (§5) | an issue whose body is an instruction to the reader produces a summary and nothing else; unchanged bodies are not re-summarised |
 | 5 | `traffic`, `releases`, view 3; then the package mapping and registry counts | totals carry their since-date; a repository without push access shows a dash |
 | 6 | The picker page (G3) | select-all on an owner writes the file the collector then obeys |
 
 It is an optional feature, so step 1 starts at `ARCHITECTURE.md` §Features →
 *Adding a feature*. Until step 6 the selection file is edited by hand.
+
+### 7.1 Step 3: what was built (2026-11-22)
+
+- **The gate** (`hud/spec.rs`): a table column is `TableColumn` — a field
+  name, or `GithubRef { ref: RefKind, owner, repo, number }` with
+  `deny_unknown_fields`, where `RefKind` holds `Github` alone. A refusal
+  states the whole rule, since its reader is a model that will retry. The
+  three fields are column names like any other. `cross_check` also requires
+  the loader to declare them, with `number` as an `integer` and `owner`/`repo`
+  as `string`s, because a string number would draw as text on every row.
+- **The served check** (`hud/link.rs`, `github::Watched`, `serve/hud.rs`):
+  the route reads which columns are references from the checked spec
+  (`Spec::github_refs`), never from the rows. When there are any, the dataset
+  goes out with `linkable`, the `[owner, repo, number]` of each row in
+  GitHub's grammar whose pair is in `inventory` and in the selection file *as
+  it reads now*. The comparison ignores case, as GitHub's names do. An absent
+  store, or an absent or unusable file, gives an empty set. The list's digest
+  goes into the `ETag`, so dropping a repository from the selection stops its
+  links on the next poll.
+- **The renderer** (`hud.js` `githubHref`, `IssueLink.svelte`): an anchor
+  needs three things. The dashboard's `links` must be on, which only the
+  app's installed-board route sets. The grammar must pass again. And
+  `linkable` must hold that exact triple. An anchor carries `target="_blank"`,
+  `rel="noopener noreferrer"` and `referrerpolicy="no-referrer"`. A reference
+  draws as `#<number>` under a `GitHub` header, and as the cell's text when
+  it fails any check.
+- **Tailnet only, twice over.** The standalone bundle a publish vendors
+  mounts the dashboard without `links`. Factory datasets are pushed from the
+  store and never pass the serve route, so they carry no `linkable`. A
+  proposal is drawn without `links` too.
+- **`hud.mjs`** scans the renderer for every link sink: an anchor or area,
+  `href` in any spelling, an element spread, `setAttribute('href')`,
+  `window.open`, a location write. It requires exactly the anchor and the one
+  `href={githubHref(…)}` in `IssueLink.svelte`. It also requires that
+  `https://github.com/` appears once, in `hud.js`. Separately, a Svelte
+  server render of `Table.svelte` reads the anchors off the markup.
+- **The shipped board's** New table has the reference in place of its
+  `number` column, and `new_items` selects `i.name` for it. A board
+  installed before this keeps its old files until the owner reinstalls it.
 
 ## 8. Deliberately not in scope
 

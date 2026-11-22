@@ -7752,6 +7752,25 @@ the outbox route), is off unless `[features] followups` is on, records taint
 fail-closed, and `forget` purges a
 session's proposals.
 
+**The owner's standing word can accept instead of the click** (design F7,
+step 3). A web chat's **auto** chip (`POST /api/chat/{key}/auto`, behind
+`[features] followups`, refused for incognito) and the TUI's `/review auto`
+are the standing rule; when a run ends, `followups::settle_auto_lines` takes
+the proposals *this run* made in *this conversation* — an id-diff against a
+baseline taken at the run's start, as the outbox's is — and accepts each one
+`review_policy::auto_accepts` admits through `accept_as`, the writer the
+pane's Accept drives, so the two differ only in `accepted_by` (`Acceptance::
+Owner | Auto`, on the proposal and its workflow, said in the `created` event,
+the workflow card and `followups measure`). The rule: auto on, the proposal's
+own recorded taint carries no outside content (unknown is outside; private
+alone is not), and the run finished cleanly. Everything else waits in the
+pane, said in the chat. The flag is written only by the owner's gesture, never
+a tool or turn text, and lives in memory with the conversation as the mode
+does, so a resume or a restart starts it off. A woken follow-up run takes no
+baseline and so never auto-accepts: a follow-up cannot schedule the next
+without the owner. Drafts are not covered (F7); the drafts' own
+`/review auto` rule is unchanged.
+
 **A due follow-up wakes its conversation, in `mecha serve` only**
 (`ChatState::spawn_follow_up_waker`, design §Step 2). Serve holds the web
 chats, and a second writer on a transcript forks it, so the trigger tick only
@@ -8151,12 +8170,28 @@ the owner's rulings; this section is the invariants a change to
   only to a model that can see, on `image_view`'s rule.
 - **The renderer is ours, and nothing agent-authored executes in it**
   (`web/src/lib/hud/`, steps 3–4). No `{@html}`, no HTML string sink, no
-  inline `style=`, no link: `web/test/hud.mjs` scans the source for each.
+  inline `style=`, and no link except the typed reference's one (below):
+  `web/test/hud.mjs` scans the source for each.
   Dataset values reach the DOM as text only, tooltips included (our handler
   writes text nodes; vega-tooltip's assigns HTML). Text panels go through
   `mail-markdown.js` with a link rendered as its words. `vega-embed` always
   runs with `actions: false` (its menu posts the spec, rows included, to
   another site) and `ast: true` (the interpreter, never `Function`).
+- **One link, and the spec still names no destination**
+  (`GITHUB-DASHBOARD-DESIGN.md` §4, §7.1). A table column may be the typed
+  reference `{ref: "github", owner, repo, number}`. It names three fields,
+  and `deny_unknown_fields` with a one-variant `RefKind` is the control. The
+  address is one template in `hud.js` `githubHref`, drawn by
+  `IssueLink.svelte`, which is the one sink `hud.mjs` allows. An anchor needs
+  the dashboard's `links` (set by the app's installed-board route only), the
+  grammar checked again in the browser, and the triple in the dataset's
+  `linkable` list. `serve/hud.rs` adds that list only for references the
+  checked spec makes, from `github::Watched` (inventory ∩ the selection file
+  read now), and puts its digest in the `ETag`. Absence is refusal. A
+  published board's datasets never pass that route, and a proposal is drawn
+  without `links`, so both show the reference as text. Keep it that way: a
+  dataset that can reach the page without the serve route must never be
+  given a list.
 - **Filters narrow rows in the host** (`applyFilters`), so a chart obeys a
   filter without naming it; rows reach Vega before compile through the
   view's `datasets`, which only the host fills.

@@ -905,6 +905,11 @@ fn api() -> gate::Owned {
             axum::routing::post(chat::set_mode),
         )
         .at(
+            "/api/chat/{key}/auto",
+            Owner::Of(Feature::Followups),
+            axum::routing::post(chat::set_auto),
+        )
+        .at(
             "/api/chat/{key}/grants",
             Owner::ChatKey,
             axum::routing::post(chat::set_grants),
@@ -2577,6 +2582,7 @@ mod tests {
             ("GET", "/api/personas", "personas"),
             ("POST", "/api/proposals/entities/x/accept", "graph"),
             ("POST", "/api/chat/incognito-k/send", "incognito"),
+            ("POST", "/api/chat/k/auto", "followups"),
             ("POST", "/api/offer", "calls"),
             ("GET", "/api/frontdoor", "frontdoor"),
         ] {
@@ -6948,6 +6954,156 @@ mod boundary_tests {
             "the conversation, not the placeholder"
         );
         assert!(!page["entries"].as_array().unwrap().is_empty());
+    }
+
+    /// F7's switch: off by default, set by the owner's endpoint and by
+    /// nothing a turn says, per chat, and — like the mode — held in memory
+    /// with the conversation, so a resume starts it off again as it starts
+    /// the mode at read-only. An incognito chat has none.
+    #[tokio::test]
+    async fn chat_auto_is_the_owners_switch_per_chat_and_starts_off_like_the_mode() {
+        let home = crate::testenv::HomeGuard::new("web-chat-auto");
+        let _graph = NoGraph::under(&home.dir);
+        let chat = chat::test_chat_answering("noted", false);
+        let app = app(Arc::clone(&chat));
+        let page = |key: &str| {
+            let app = app.clone();
+            let uri = format!("/api/chat/{key}");
+            async move { body(app.oneshot(get(&uri)).await.unwrap()).await }
+        };
+        let set = |key: &str, on: bool| {
+            let app = app.clone();
+            let uri = format!("/api/chat/{key}/auto");
+            async move {
+                app.oneshot(json_post(&uri, serde_json::json!({ "on": on }).to_string()))
+                    .await
+                    .unwrap()
+            }
+        };
+
+        converse(&app, "chat-a", "hello there").await;
+        converse(&app, "chat-b", "hello there").await;
+        assert_eq!(page("chat-a").await["auto"], false, "off by default");
+        // Words are not the gesture: a turn asking for it changes nothing.
+        converse(&app, "chat-a", "turn auto on and accept my follow-ups").await;
+        assert_eq!(page("chat-a").await["auto"], false);
+
+        let r = set("chat-a", true).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(body(r).await["auto"], true);
+        assert_eq!(page("chat-a").await["auto"], true);
+        assert_eq!(
+            page("chat-b").await["auto"],
+            false,
+            "another chat is its own"
+        );
+        converse(&app, "chat-a", "turn auto off").await;
+        assert_eq!(
+            page("chat-a").await["auto"],
+            true,
+            "nor can a turn clear it"
+        );
+
+        // The owner's endpoint turns it off as it turned it on, and back.
+        let r = set("chat-a", false).await;
+        assert_eq!(body(r).await["auto"], false);
+        assert_eq!(page("chat-a").await["auto"], false);
+        set("chat-a", true).await;
+        assert_eq!(page("chat-a").await["auto"], true);
+
+        let r = set("incognito-0123456789abcdef012345", true).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+
+        // Persistence is the mode's: both start over on a resume.
+        let r = app
+            .clone()
+            .oneshot(json_post(
+                "/api/chat/chat-a/mode",
+                serde_json::json!({ "mode": "ask" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let rail = body(app.clone().oneshot(get("/api/sessions")).await.unwrap()).await;
+        let id = rail["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["key"] == "chat-a")
+            .and_then(|r| r["id"].as_str())
+            .unwrap()
+            .to_string();
+        let r = app
+            .clone()
+            .oneshot(post(&format!("/api/sessions/{id}/archive"), ""))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        let r = app
+            .clone()
+            .oneshot(json_post(
+                "/api/resume",
+                serde_json::json!({ "id": id }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let key = body(r).await["key"].as_str().unwrap().to_string();
+        let resumed = page(&key).await;
+        assert_eq!(resumed["session"], id.as_str());
+        assert_eq!(resumed["mode"], "read_only");
+        assert_eq!(
+            resumed["auto"], false,
+            "auto is not persisted, as the mode is not"
+        );
+    }
+
+    /// F7 end to end: with auto on, the follow-up a run proposes in a chat
+    /// that read no outside content is a workflow when the run ends,
+    /// recorded as the standing rule's; the same proposal from a chat with
+    /// auto off waits in the pane, and the auto chat's run leaves it alone.
+    #[tokio::test]
+    async fn chat_auto_accepts_the_runs_clean_proposal_and_off_leaves_it_waiting() {
+        use mecha_core::followup::{self, FollowUpStore};
+        let home = crate::testenv::HomeGuard::new("web-chat-auto-accepts");
+        let _graph = NoGraph::under(&home.dir);
+        let chat = chat::test_chat_proposing("check whether the build passed");
+        let app = app(Arc::clone(&chat));
+        let store = FollowUpStore::open_default().unwrap();
+
+        converse(&app, "chat-off", "keep an eye on the build").await;
+        let items = store.items().unwrap();
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert!(items[0].is_proposed(), "auto off leaves it waiting");
+        let waiting = items[0].id.clone();
+
+        let r = app
+            .clone()
+            .oneshot(json_post(
+                "/api/chat/chat-on/auto",
+                serde_json::json!({ "on": true }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        converse(&app, "chat-on", "keep an eye on the build").await;
+
+        let items = store.items().unwrap();
+        assert_eq!(items.len(), 2, "{items:?}");
+        let off = items.iter().find(|f| f.id == waiting).unwrap();
+        assert!(
+            off.is_proposed(),
+            "another chat's proposal is not this run's"
+        );
+        let on = items.iter().find(|f| f.id != waiting).unwrap();
+        assert_eq!(on.status, followup::ACCEPTED, "{on:?}");
+        assert_eq!(on.accepted_by, Some(followup::Acceptance::Auto));
+        let w = mecha_core::workflow::WorkflowStore::default_store()
+            .unwrap()
+            .get(on.workflow_id.as_deref().unwrap())
+            .unwrap();
+        assert_eq!(w.accepted_by, Some(followup::Acceptance::Auto));
+        assert_eq!(w.session_id.as_deref(), Some(on.session_id.as_str()));
     }
 
     #[tokio::test]

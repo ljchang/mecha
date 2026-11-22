@@ -1110,8 +1110,15 @@ mod tests {
             decided_at: Some(Utc::now() - Duration::days(2)),
             workflow_id: None,
             reason: None,
+            accepted_by: Some(followup::Acceptance::Owner),
         };
-        let mut w = followup::workflow_for(&f, "/tmp/w".into(), None, Utc::now());
+        let mut w = followup::workflow_for(
+            &f,
+            "/tmp/w".into(),
+            None,
+            followup::Acceptance::Owner,
+            Utc::now(),
+        );
         w.woken_at = woken;
         w
     }

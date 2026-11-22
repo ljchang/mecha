@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { autoFrom } from '../src/lib/chat-auto.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const src = fs.readFileSync(path.join(here, '..', 'src', 'lib', 'Chat.svelte'), 'utf8');
@@ -37,8 +38,9 @@ function page() {
     new Promise((resolve, reject) => wire.push({ url, opts, resolve, reject }));
   const p = new Function(
     'fetch',
+    'autoFrom',
     `let entries = [], running = false, partialRun = false, liveFrom = 0, doneSeq = 0;
-     let task, incognito, todo, taint, model, mode, usage, error = null;
+     let task, incognito, todo, taint, model, mode, auto, usage, error = null;
      let gone = false, key = 'k', viewSignal = null, loadGen = 0, todoGen = 0;
      let queue = [], queueSeq = 0;
      let memoryNeedsResume = false, memoryIntent = false, memorySession = null, memory = null, memoryRevision = 0, memoryConnected = false;
@@ -55,7 +57,7 @@ function page() {
        get gone() { return gone; },
        done() { doneSeq += 1; },
      };`
-  )(fetch);
+  )(fetch, autoFrom);
   p.wire = wire;
   return p;
 }

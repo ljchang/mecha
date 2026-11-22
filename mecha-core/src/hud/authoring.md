@@ -59,6 +59,11 @@ the loaders to the tools.
     has no `dataset` key — the view names its data itself.
   - `table`: `"dataset"` and `"columns": ["a", "b"]`. Prefer a chart where the
     point is a comparison; a table of long text is hard to read on a phone.
+    A column may instead be `{"ref": "github", "owner": "<col>", "repo":
+    "<col>", "number": "<col>"}`, which names three columns of the dataset
+    (owner and repo strings, number an integer). Those four keys are the
+    only ones allowed, and `github` is the only `ref`. The board builds the
+    issue link itself; never put a URL in a column.
   - `text`: `"markdown"`, plain prose — no links, no HTML.
 - No colours or fonts in the spec: the theme supplies them.
 

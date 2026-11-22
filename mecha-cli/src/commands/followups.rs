@@ -163,6 +163,7 @@ fn measure_readout(
                 "outcome": r.response,
                 "signals": r.signals,
                 "unknown": r.unknown,
+                "accepted_by": r.accepted_by,
             })
         })
         .collect();
@@ -190,6 +191,9 @@ fn measure_text(rows: &[followup::Measured], tz: chrono_tz::Tz) -> String {
             r.answered_at.with_timezone(&tz).format("%Y-%m-%d %H:%M %Z"),
             r.response.as_str()
         );
+        if r.accepted_by == Some(followup::Acceptance::Auto) {
+            line.push_str(" · auto-accepted");
+        }
         let said: Vec<String> = r
             .signals
             .iter()
@@ -243,7 +247,23 @@ fn detail(f: &FollowUp, tz: chrono_tz::Tz) -> String {
     if !f.is_proposed() {
         d.push_str(&format!(" · {}", f.status));
     }
+    if f.accepted_by == Some(followup::Acceptance::Auto) {
+        d.push_str(" automatically, by its chat's auto setting");
+    }
     d
+}
+
+/// Who accepted it, as `show` says it.
+fn accepted_by(f: &FollowUp) -> Option<&'static str> {
+    use followup::Acceptance;
+    match (f.status.as_str(), f.accepted_by) {
+        (followup::ACCEPTED, Some(Acceptance::Owner)) => Some("you"),
+        (followup::ACCEPTED, Some(Acceptance::Auto)) => {
+            Some("automatically — auto was on in its chat, and it had read no outside content")
+        }
+        (followup::ACCEPTED, _) => Some("not recorded"),
+        _ => None,
+    }
 }
 
 /// Where the owner picks the conversation back up: the web app's link, and
@@ -272,6 +292,9 @@ fn show(f: &FollowUp, tz: chrono_tz::Tz) -> String {
     ));
     out.push_str(&format!("from chat   {}\n", f.session_id));
     out.push_str(&format!("back to it  {}\n", way_back(f)));
+    if let Some(by) = accepted_by(f) {
+        out.push_str(&format!("accepted by {by}\n"));
+    }
     if let Some(w) = &f.workflow_id {
         out.push_str(&format!("workflow    {w}\n"));
     }
@@ -299,6 +322,25 @@ pub fn accept(
     id: &str,
     outbox_root: Option<std::path::PathBuf>,
 ) -> Result<FollowUp> {
+    accept_as(
+        store,
+        workflows,
+        id,
+        outbox_root,
+        followup::Acceptance::Owner,
+    )
+}
+
+/// [`accept`], saying who accepted: the one writer that turns a proposal
+/// into a workflow, for the owner's click and the standing auto rule alike
+/// ([`settle_auto`]), so the two can differ only in the record they leave.
+pub fn accept_as(
+    store: &FollowUpStore,
+    workflows: &WorkflowStore,
+    id: &str,
+    outbox_root: Option<std::path::PathBuf>,
+    by: followup::Acceptance,
+) -> Result<FollowUp> {
     let now = Utc::now();
     let found = store.find(id)?;
     store.decide(&found.id, followup::ACCEPTED, now, |f| {
@@ -306,7 +348,7 @@ pub fn accept(
             .workspace
             .clone()
             .context("this follow-up recorded no workspace, so its workflow has no jail")?;
-        let w = followup::workflow_for(f, workspace, outbox_root, now);
+        let w = followup::workflow_for(f, workspace, outbox_root, by, now);
         match workflows.get(&w.id) {
             Ok(existing) => ensure!(
                 existing.session_id.as_deref() == Some(f.session_id.as_str()),
@@ -318,8 +360,181 @@ pub fn accept(
             }
         }
         f.workflow_id = Some(w.id);
+        f.accepted_by = Some(by);
         Ok(())
     })
+}
+
+/// Every follow-up id in the default store now — the before half of "what
+/// did this run propose", taken when a run starts, as the outbox's
+/// baseline is (`review_policy::staged_since`). A store that does not exist
+/// yet holds nothing, and is not created here; one that cannot be read
+/// whole is `None`, and no baseline means nothing is accepted on the
+/// owner's behalf: acting on a guess about what a run proposed is worse
+/// than a missed convenience.
+pub fn baseline() -> Option<std::collections::HashSet<String>> {
+    let root = FollowUpStore::default_root().ok()?;
+    baseline_at(&root)
+}
+
+fn baseline_at(root: &std::path::Path) -> Option<std::collections::HashSet<String>> {
+    if !root.try_exists().ok()? {
+        return Some(Default::default());
+    }
+    let (items, skipped) = FollowUpStore::open_unchecked(root.to_path_buf())
+        .items_counting()
+        .ok()?;
+    (skipped == 0).then(|| items.into_iter().map(|f| f.id).collect())
+}
+
+/// What the standing auto rule did with one run's proposals.
+#[derive(Debug, Default)]
+pub struct Settled {
+    /// Accepted on the owner's standing word, each now a workflow.
+    pub accepted: Vec<FollowUp>,
+    /// Left for the owner's decision in the proposals pane, and why.
+    pub held: Vec<(FollowUp, Held)>,
+}
+
+/// Why a proposal the rule looked at still waits for the owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Held {
+    /// Its conversation had read outside content, or its taint is unknown.
+    ReadOutside,
+    /// The run that proposed it stopped early or failed.
+    StoppedEarly,
+    /// The accept itself failed; the proposal is still proposed.
+    Failed(String),
+}
+
+impl Held {
+    /// The line a surface prints beside the proposal's words.
+    pub fn says(&self) -> String {
+        match self {
+            Held::ReadOutside => "this conversation had read outside content, so it waits for you \
+                                  in Review → Follow-ups"
+                .into(),
+            Held::StoppedEarly => {
+                "the run stopped early, so it waits for you in Review → Follow-ups".into()
+            }
+            Held::Failed(why) => {
+                format!("it could not be accepted ({why}); it waits in Review → Follow-ups")
+            }
+        }
+    }
+}
+
+/// The standing auto rule at a run's end (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md`
+/// F7): the proposals `session_id` made since `baseline`, each accepted
+/// through [`accept_as`] — as [`Acceptance::Auto`](followup::Acceptance::Auto)
+/// — when `review_policy::auto_accepts` says so, and the rest left proposed,
+/// exactly as a click-only conversation leaves them.
+///
+/// The scope is an id-diff against the run's start, scoped to its
+/// conversation: what was already waiting when the run began — another
+/// run's, an earlier turn's — is none of this run's business, whatever the
+/// rule says. With `auto` off nothing is read at all.
+pub fn settle_auto(
+    store: &FollowUpStore,
+    workflows: &WorkflowStore,
+    session_id: &str,
+    baseline: &std::collections::HashSet<String>,
+    auto: bool,
+    finished_clean: bool,
+    outbox_root: Option<std::path::PathBuf>,
+) -> Result<Settled> {
+    let mut settled = Settled::default();
+    if !auto {
+        return Ok(settled);
+    }
+    let mine: Vec<FollowUp> = store
+        .items()?
+        .into_iter()
+        .filter(|f| f.session_id == session_id && f.is_proposed() && !baseline.contains(&f.id))
+        .collect();
+    for f in mine {
+        if !crate::review_policy::auto_accepts(auto, &f, finished_clean) {
+            let why = if f.armed() {
+                Held::ReadOutside
+            } else {
+                Held::StoppedEarly
+            };
+            settled.held.push((f, why));
+            continue;
+        }
+        match accept_as(
+            store,
+            workflows,
+            &f.id,
+            outbox_root.clone(),
+            followup::Acceptance::Auto,
+        ) {
+            Ok(done) => settled.accepted.push(done),
+            Err(e) => settled.held.push((f, Held::Failed(format!("{e:#}")))),
+        }
+    }
+    Ok(settled)
+}
+
+/// The chat line for one proposal the auto rule accepted.
+pub fn accepted_line(f: &FollowUp, tz: chrono_tz::Tz) -> String {
+    format!(
+        "Follow-up accepted automatically (auto is on): \"{}\" — {}. Tasks → Workflows has it.",
+        f.what,
+        f.due_at
+            .with_timezone(&tz)
+            .format("due %a %b %-d, %H:%M %Z")
+    )
+}
+
+/// The chat line for one it left for the owner.
+pub fn held_line(f: &FollowUp, why: &Held) -> String {
+    format!(
+        "Follow-up not accepted automatically: \"{}\" — {}.",
+        f.what,
+        why.says()
+    )
+}
+
+/// [`settle_auto`] with auto on, over the default stores, as the lines a
+/// surface prints — the one call the web chat's run end and the TUI's
+/// `/review auto` share, so neither can hold half the rule. A follow-up
+/// store that does not exist yet holds no proposal and is not created; a
+/// failure is said, never read as "nothing proposed", and whatever the run
+/// proposed stays proposed.
+pub fn settle_auto_lines(
+    session_id: &str,
+    baseline: &std::collections::HashSet<String>,
+    finished_clean: bool,
+    outbox_root: Option<std::path::PathBuf>,
+    tz: chrono_tz::Tz,
+) -> Vec<String> {
+    let Some(store) = FollowUpStore::open_existing_default() else {
+        return Vec::new();
+    };
+    let settled = WorkflowStore::default_store().and_then(|workflows| {
+        settle_auto(
+            &store,
+            &workflows,
+            session_id,
+            baseline,
+            true,
+            finished_clean,
+            outbox_root,
+        )
+    });
+    match settled {
+        Ok(s) => s
+            .accepted
+            .iter()
+            .map(|f| accepted_line(f, tz))
+            .chain(s.held.iter().map(|(f, why)| held_line(f, why)))
+            .collect(),
+        Err(e) => vec![format!(
+            "Follow-ups were not accepted automatically ({e:#}); anything this run \
+             proposed waits in Review → Follow-ups."
+        )],
+    }
 }
 
 pub fn reject(store: &FollowUpStore, id: &str, reason: &str) -> Result<FollowUp> {
@@ -364,6 +579,7 @@ pub fn run(args: Args) -> Result<()> {
                             "due_at": f.due_at,
                             "session_id": f.session_id,
                             "taint": f.taint,
+                            "accepted_by": f.accepted_by,
                             "proposed_at": f.proposed_at,
                         })
                     })
@@ -487,6 +703,10 @@ mod tests {
             Some(f.due_at),
             "the reminder comes due at the proposal's time"
         );
+        // The owner's click, said so on both records.
+        assert_eq!(done.accepted_by, Some(followup::Acceptance::Owner));
+        assert_eq!(w.accepted_by, Some(followup::Acceptance::Owner));
+        assert!(show(&done, chrono_tz::UTC).contains("accepted by you"));
         // Decided once.
         assert!(accept(&store, &workflows, &f.id, None).is_err());
         assert!(reject(&store, &f.id, "changed my mind").is_err());
@@ -502,12 +722,131 @@ mod tests {
                 &f,
                 "/tmp/w".into(),
                 None,
+                followup::Acceptance::Owner,
                 Utc::now(),
             ))
             .unwrap();
         let done = accept(&store, &workflows, &f.id, None).unwrap();
         assert_eq!(done.status, followup::ACCEPTED);
         assert_eq!(workflows.list().unwrap().len(), 1);
+    }
+
+    /// A proposal from `session` with the given recorded taint, written as
+    /// the tool writes one — or, `None`, as a record with no taint field.
+    fn proposed_with(
+        store: &FollowUpStore,
+        session: &str,
+        what: &str,
+        taint: Option<Taint>,
+    ) -> FollowUp {
+        let now = Utc::now();
+        let mut f = store
+            .propose(
+                what.into(),
+                now + chrono::Duration::hours(2),
+                session,
+                Some("/tmp/w".into()),
+                Taint::default(),
+                now,
+            )
+            .unwrap();
+        f.taint = taint;
+        store.put(&f).unwrap();
+        f
+    }
+
+    /// F7 at a run's end, over real stores: with auto on, the clean
+    /// proposal this run made becomes a workflow through the owner's own
+    /// accept path, recorded as the standing rule's; a tainted one and one
+    /// of unknown taint stay proposed; the one waiting from before the run
+    /// and another conversation's are untouched.
+    #[test]
+    fn auto_accepts_this_runs_clean_proposals_and_leaves_the_rest() {
+        let (_d, store, workflows) = stores();
+        let earlier = proposed_with(
+            &store,
+            "sess-a",
+            "from an earlier turn",
+            Some(Taint::default()),
+        );
+        let base = baseline_at(store.root()).expect("a readable store has a baseline");
+        assert!(base.contains(&earlier.id));
+        let clean = proposed_with(&store, "sess-a", "check the build", Some(Taint::default()));
+        let tainted = proposed_with(
+            &store,
+            "sess-a",
+            "the link the page asked for",
+            Some(Taint {
+                private: false,
+                untrusted: true,
+            }),
+        );
+        let unknown = proposed_with(&store, "sess-a", "no taint recorded", None);
+        let other = proposed_with(&store, "sess-b", "another chat", Some(Taint::default()));
+
+        let settled = settle_auto(&store, &workflows, "sess-a", &base, true, true, None).unwrap();
+        assert_eq!(settled.accepted.len(), 1, "{settled:?}");
+        assert_eq!(settled.accepted[0].id, clean.id);
+        let held: Vec<(&str, &Held)> = settled
+            .held
+            .iter()
+            .map(|(f, why)| (f.id.as_str(), why))
+            .collect();
+        assert!(held.contains(&(tainted.id.as_str(), &Held::ReadOutside)));
+        assert!(held.contains(&(unknown.id.as_str(), &Held::ReadOutside)));
+        assert_eq!(held.len(), 2);
+
+        let done = store.get(&clean.id).unwrap();
+        assert_eq!(done.status, followup::ACCEPTED);
+        assert_eq!(done.accepted_by, Some(followup::Acceptance::Auto));
+        let w = workflows.get(done.workflow_id.as_deref().unwrap()).unwrap();
+        assert_eq!(w.accepted_by, Some(followup::Acceptance::Auto));
+        assert!(
+            w.events
+                .iter()
+                .any(|e| e.kind == "created" && e.detail.contains("accepted automatically")),
+            "{:?}",
+            w.events
+        );
+        assert!(show(&done, chrono_tz::UTC).contains("accepted by automatically"));
+        for f in [&tainted, &unknown, &earlier, &other] {
+            assert!(
+                store.get(&f.id).unwrap().is_proposed(),
+                "{} was decided",
+                f.what
+            );
+        }
+        assert_eq!(workflows.list().unwrap().len(), 1);
+    }
+
+    /// Auto off reads nothing and accepts nothing; an early-stopped run's
+    /// clean proposal waits, saying why.
+    #[test]
+    fn auto_off_or_an_early_stop_accepts_nothing() {
+        let (_d, store, workflows) = stores();
+        let base = baseline_at(store.root()).unwrap();
+        let clean = proposed_with(&store, "sess-a", "check the build", Some(Taint::default()));
+        let off = settle_auto(&store, &workflows, "sess-a", &base, false, true, None).unwrap();
+        assert!(off.accepted.is_empty() && off.held.is_empty());
+        let stopped = settle_auto(&store, &workflows, "sess-a", &base, true, false, None).unwrap();
+        assert!(stopped.accepted.is_empty());
+        assert_eq!(stopped.held.len(), 1);
+        assert_eq!(stopped.held[0].1, Held::StoppedEarly);
+        assert!(store.get(&clean.id).unwrap().is_proposed());
+        assert!(workflows.list().unwrap().is_empty());
+    }
+
+    /// No baseline, no acceptance: a store that cannot be read whole at the
+    /// run's start yields none, and one that does not exist yet is empty
+    /// and is not created by asking.
+    #[test]
+    fn a_baseline_is_none_for_a_store_not_read_whole() {
+        let (d, store, _w) = stores();
+        let missing = d.0.join("not-yet");
+        assert_eq!(baseline_at(&missing), Some(Default::default()));
+        assert!(!missing.exists());
+        std::fs::write(store.root().join("torn.json"), "{").unwrap();
+        assert_eq!(baseline_at(store.root()), None);
     }
 
     #[test]
@@ -607,8 +946,15 @@ mod tests {
                 decided_at: Some(woken - chrono::Duration::hours(4)),
                 workflow_id: None,
                 reason: None,
+                accepted_by: Some(followup::Acceptance::Owner),
             };
-            let mut w = followup::workflow_for(&f, "/tmp/w".into(), outbox, woken);
+            let mut w = followup::workflow_for(
+                &f,
+                "/tmp/w".into(),
+                outbox,
+                followup::Acceptance::Owner,
+                woken,
+            );
             w.woken_at = Some(woken);
             w.record(FOLLOW_UP_ANSWERED, session, answered);
             workflows.create(w).unwrap();
