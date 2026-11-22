@@ -88,4 +88,8 @@ fn exp_refuses_a_model_flag_it_would_ignore_and_only_then() {
     let out = mecha(&home, &work, &["exp", "status", "no-such-exp"]);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!err.contains(REFUSAL), "no flag, no refusal: {err}");
+    assert!(
+        err.contains("no-such-exp"),
+        "the control must fail on the experiment it named, not earlier: {err}"
+    );
 }

@@ -3341,6 +3341,41 @@ mod tests {
     /// fix; a line with none of them, or with a flag that is not one of the
     /// four, passes.
     #[test]
+    fn the_refused_model_flags_are_the_clis_global_options() {
+        // The refusal names its flags as literals; each half must be a global
+        // option the CLI really defines, or a renamed flag would be refused
+        // under a name that does not exist (the blocklist test's lesson).
+        use clap::CommandFactory;
+        let cmd = crate::Cli::command();
+        let mut names = std::collections::BTreeSet::new();
+        for a in cmd.get_arguments().filter(|a| a.is_global_set()) {
+            if let Some(l) = a.get_long() {
+                names.insert(format!("--{l}"));
+            }
+            if let Some(s) = a.get_short() {
+                names.insert(format!("-{s}"));
+            }
+        }
+        for spelled in ["--provider/-p", "--model/-m", "--effort/-e", "--system/-s"] {
+            for half in spelled.split('/') {
+                assert!(names.contains(half), "`{half}` is not a global option");
+            }
+            let err = refuse_model_flags(&GlobalOpts {
+                provider: spelled.starts_with("--provider").then(|| "x".into()),
+                model: spelled.starts_with("--model").then(|| "x".into()),
+                effort: spelled
+                    .starts_with("--effort")
+                    .then_some(mecha_core::message::Effort::Low),
+                system: spelled.starts_with("--system").then(|| "x".into()),
+                ..GlobalOpts::default()
+            })
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains(spelled), "{spelled}: {err}");
+        }
+    }
+
+    #[test]
     fn a_model_flag_exp_would_ignore_is_refused() {
         use clap::Parser;
         let parse = |argv: &[&str]| crate::Cli::try_parse_from(argv).unwrap();
