@@ -2451,6 +2451,16 @@ impl Session {
         Ok((t.meta, t.convo))
     }
 
+    /// The full session id a transcript's file holds: `create` names the file
+    /// `<id>.jsonl`. For a door that took an id *prefix* and resolved it with
+    /// [`find`](Self::find) — every marker names the full id, so a guard asked
+    /// with the prefix matches nothing (review of #907).
+    pub fn id_of(path: &Path) -> Option<String> {
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .map(str::to_string)
+    }
+
     /// Everything a reader can want from a transcript, in **one** pass.
     ///
     /// `load`, `run_configs` and `episode_stats` each open the file and walk
@@ -2465,16 +2475,6 @@ impl Session {
     /// thing and a caller that wants one thing should not have to hold a
     /// header it has no use for. This is the seam for the caller that wants
     /// all of them.
-    /// The full session id a transcript's file holds: `create` names the file
-    /// `<id>.jsonl`. For a door that took an id *prefix* and resolved it with
-    /// [`find`](Self::find) — every marker names the full id, so a guard asked
-    /// with the prefix matches nothing (review of #907).
-    pub fn id_of(path: &Path) -> Option<String> {
-        path.file_stem()
-            .and_then(|s| s.to_str())
-            .map(str::to_string)
-    }
-
     pub fn read(path: &Path) -> Result<Transcript> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
