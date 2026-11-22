@@ -212,7 +212,9 @@ repositories [`mecha github collect`](/docs/reference/cli#github) watches,
 and which package names it counts downloads under. It lists what the last
 collect saw, without asking GitHub, and says so when there is no collection
 yet or its store cannot be read, rather than showing an empty list. Per owner
-there is a checkbox for all or none and its forks and archived filters; per
+there is a checkbox for all (unticking it goes back to only the ones you
+picked), a separate *select none* that asks first when it would remove a
+repository you picked by name, and its forks and archived filters; per
 repository a checkbox, and a package-name editor per registry. Each click
 writes `~/.mecha/github/repos.toml` or `packages.toml` **in place**, so your
 own comments and lines stay. Each save carries the version of the file the

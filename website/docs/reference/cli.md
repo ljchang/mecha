@@ -2071,7 +2071,8 @@ mecha github collect [--json]
 
 The web app's Settings → GitHub writes this file, and
 `~/.mecha/github/packages.toml` (package-name corrections), on your click:
-per owner, all or none, and its forks and archived filters; per repository,
+per owner, all or only those you picked (or none, confirmed), and its forks
+and archived filters; per repository,
 in or out; per repository and registry, a package name or none. It lists
 what the last collect saw, so run `collect` once first. It edits the file in
 place, so your comments stay, and refuses a save when the file changed after

@@ -4,6 +4,8 @@
     visibleRepos,
     repoChange,
     ownerChange,
+    noneStep,
+    ownerLine,
     filterChange,
     packageChange,
     ownerCount,
@@ -34,6 +36,8 @@
   // Which repository's package editor is open, and its draft per registry.
   let editing = $state(null);
   let draft = $state({});
+  // An owner's "select none" waiting on its in-page confirm: `{ login, text }`.
+  let confirming = $state(null);
 
   async function load() {
     try {
@@ -87,6 +91,18 @@
   }
 
   const selection = (change) => post('selection', { base: view.selection.digest, changes: [change] });
+
+  // "Select none" removes the owner's lines, hand-picked inclusions too:
+  // where it would remove one, the first press asks and the second sends.
+  async function selectNone(owner, confirmed = false) {
+    const step = noneStep(owner, confirmed);
+    if (step.confirm) {
+      confirming = { login: owner.login, text: step.confirm };
+      return;
+    }
+    confirming = null;
+    await selection(step.change);
+  }
 
   function toggleRepo(repo, want) {
     const change = repoChange(repo, want);
@@ -161,7 +177,7 @@
     <label><input type="checkbox" bind:checked={recent} /> pushed in the last year</label>
   </div>
 
-  {#if !view.owners.length}
+  {#if !view.owners.length && !store.bad}
     <p class="hint">No owners yet: the collector has listed nothing, and repos.toml names no one.</p>
   {/if}
 
@@ -181,14 +197,9 @@
         <span class="count">{ownerCount(owner)}</span>
       </div>
       <div class="osub">
-        {#if owner.line?.include === 'all'}
-          every repository, and any added later{owner.line.forks ? ', forks included' : ''}{owner.line.archived
-            ? ', archived included'
-            : ''}
-        {:else if owner.line}
-          only those ticked below
-        {:else}
-          not named in repos.toml: only those ticked below
+        {ownerLine(owner, view.selection.state)}
+        {#if canSelect && (owner.repos.some((r) => r.included) || owner.unseen.some((l) => l.include))}
+          <button class="link" disabled={busy} onclick={() => selectNone(owner)}>select none</button>
         {/if}
         {#if owner.line}
           <span class="ofilters">
@@ -211,6 +222,15 @@
           </span>
         {/if}
       </div>
+      {#if confirming?.login === owner.login}
+        <div class="confirm" role="alert">
+          <span>{confirming.text}</span>
+          <span class="eact">
+            <button disabled={busy} onclick={() => selectNone(owner, true)}>Remove them</button>
+            <button class="link" disabled={busy} onclick={() => (confirming = null)}>keep them</button>
+          </span>
+        </div>
+      {/if}
 
       {#each rows as repo (repo.full_name)}
         <div class="repo">
@@ -375,6 +395,16 @@
     font-size: 12px;
     line-height: 1.45;
     padding-bottom: 6px;
+  }
+  .confirm {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 4px 0 8px;
+    padding: 8px 10px;
+    border-left: 2px solid var(--hazard);
+    font-size: 12.5px;
+    line-height: 1.45;
   }
   .ofilters {
     display: inline-flex;

@@ -11,6 +11,7 @@
   import { autolockLine } from './autolock.js';
   import { features } from './features.svelte.js';
   import { isShown, summary } from './features.js';
+  import { indexLine } from './github-picker.js';
 
   // Settings is an index of features, not one long scroll: each row opens a
   // pane at `#settings/<pane>`, so the hash names where you are, reload
@@ -159,15 +160,7 @@
   });
 
   // How many repositories the collector watches now, or why that is unknown.
-  const githubLine = $derived.by(() => {
-    if (github === null) return { text: 'which repositories the GitHub board watches' };
-    if (github.selection?.state === 'invalid') return { text: 'repos.toml cannot be used — nothing is watched', bad: true };
-    if (github.store?.state === 'unreadable') return { text: "the collector's store could not be read", bad: true };
-    if (github.store?.state === 'absent') return { text: 'no collection yet' };
-    const repos = (github.owners ?? []).flatMap((o) => o.repos);
-    const n = repos.filter((r) => r.included).length;
-    return { text: `${n} of ${repos.length} repositories watched` };
-  });
+  const githubLine = $derived(indexLine(github));
 
   const ICON = {
     // Ranked lines, shortening: the charter's order is its rank.

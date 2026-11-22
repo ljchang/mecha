@@ -8,6 +8,9 @@ import {
   visibleRepos,
   repoChange,
   ownerChange,
+  noneStep,
+  ownerLine,
+  indexLine,
   filterChange,
   packageChange,
   ownerCount,
@@ -68,6 +71,12 @@ t(
   same(names(visibleRepos(repos, { archived: true, recent: true, now: NOW })), ['tool-a', 'kept-fork']),
 );
 t('search is by name, case-insensitively', same(names(visibleRepos(repos, { query: 'TOOL', now: NOW })), ['tool-a']));
+t(
+  'a watched fork about to be dropped stays in sight, with its tag',
+  names(visibleRepos([repo('was-watched', { fork: true, collected: true, included: false })], { now: NOW })).includes(
+    'was-watched',
+  ),
+);
 t('search narrows selected ones too', same(names(visibleRepos(repos, { query: 'old', archived: true, now: NOW })), ['old-site']));
 
 console.log('repoChange');
@@ -87,7 +96,44 @@ t('no edit while the owner line is unknown (the file cannot be read)', repoChang
 
 console.log('owner and package changes');
 t('select-all', same(ownerChange('example-lab', true), { op: 'select_all', login: 'example-lab' }));
-t('select-none', same(ownerChange('example-lab', false), { op: 'select_none', login: 'example-lab' }));
+t(
+  'unticking all goes back to listed, keeping the hand-made lines — never select-none',
+  same(ownerChange('example-lab', false), { op: 'select_listed', login: 'example-lab' }),
+);
+
+console.log('select none, confirmed in the page');
+const picked = {
+  login: 'example-lab',
+  repos: [repo('tool-a', { line: true, included: true }), repo('tool-b', { line: false })],
+  unseen: [{ name: 'example-lab/gone', include: true }],
+};
+const first = noneStep(picked);
+t('a hand-made inclusion asks first, and sends nothing', !!first.confirm && first.change === undefined);
+t(
+  'the question names what goes',
+  /example-lab\/tool-a/.test(first.confirm) && /example-lab\/gone/.test(first.confirm) && /2 repositories/.test(first.confirm),
+);
+t(
+  'confirmed, it sends select-none',
+  same(noneStep(picked, true), { change: { op: 'select_none', login: 'example-lab' } }),
+);
+t(
+  'with no inclusion to lose, it sends at once',
+  same(noneStep({ login: 'example-lab', repos: [repo('tool-b', { line: false })], unseen: [] }), {
+    change: { op: 'select_none', login: 'example-lab' },
+  }),
+);
+t(
+  'an owner line that takes all is not an inclusion to confirm',
+  noneStep({ login: 'l', repos: [repo('x', { included: true, by_owner: true, line: null })], unseen: [] }).change?.op ===
+    'select_none',
+);
+
+console.log('the owner line');
+t('unknown when the file cannot be used', /unknown/.test(ownerLine({ line: null }, 'invalid')));
+t('no line is "not named"', /not named/.test(ownerLine({ line: null }, 'read')));
+t('all', /every repository/.test(ownerLine({ line: { include: 'all', forks: false, archived: false } }, 'read')));
+t('listed', ownerLine({ line: { include: 'listed', forks: false, archived: false } }, 'read') === 'only those ticked below');
 t(
   'filters',
   same(filterChange('example-lab', true, false), { op: 'filters', login: 'example-lab', forks: true, archived: false }),
@@ -140,6 +186,42 @@ t(
     last_collect: { started: '2031-04-20T10:40:00.000Z', finished: '2031-04-20T10:44:00.000Z' },
   }).bad,
 );
+const neverListed = {
+  state: 'read',
+  listed_at: null,
+  last_collect: { started: '2031-04-20T10:40:00.000Z', finished: '2031-04-20T10:40:01.000Z' },
+};
+t(
+  'a finished collect that never listed is said, and marked',
+  storeLine(neverListed).bad && /never listed/.test(storeLine(neverListed).text),
+);
+
+console.log('the Settings index row');
+t('before a read, what the pane is', indexLine(null).text === 'which repositories the GitHub board watches');
+t(
+  'never listed is not "0 of 0 watched"',
+  indexLine({ selection: { state: 'absent' }, store: neverListed, owners: [] }).bad &&
+    /never listed/.test(indexLine({ selection: { state: 'absent' }, store: neverListed, owners: [] }).text),
+);
+t(
+  'an empty list is not a count',
+  indexLine({
+    selection: { state: 'read' },
+    store: { ...neverListed, listed_at: '2031-04-20T10:40:00.000Z' },
+    owners: [{ repos: [] }],
+  }).text === 'nothing listed yet',
+);
+t(
+  'a list is counted',
+  indexLine({
+    selection: { state: 'read' },
+    store: { ...neverListed, listed_at: '2031-04-20T10:40:00.000Z' },
+    owners: [{ repos }],
+  }).text === '2 of 5 repositories watched',
+);
+t('an unusable file is marked', indexLine({ selection: { state: 'invalid' }, store: neverListed, owners: [] }).bad);
+t('an unreadable store is marked', indexLine({ selection: { state: 'read' }, store: { state: 'unreadable' }, owners: [] }).bad);
+
 t('an unusable file is said', /cannot be used/.test(fileNotice({ state: 'invalid', error: 'x' }, 'repos.toml')));
 t('a readable or absent file says nothing', fileNotice({ state: 'read' }, 'x') === null && fileNotice({ state: 'absent' }, 'x') === null);
 

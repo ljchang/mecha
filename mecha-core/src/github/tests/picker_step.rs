@@ -185,6 +185,60 @@ fn select_all_drops_the_owners_exclusions_and_select_none_drops_its_inclusions()
     assert!(text.contains("include = \"listed\""), "{text}");
 }
 
+/// The owner's all-or-listed switch undone gives the hand-made inclusions
+/// back: select-all and then select-listed is where the owner started, and
+/// only the explicit select-none clears the owner's lines (review of #913).
+#[test]
+fn all_then_listed_gives_the_owners_inclusions_back_and_only_none_clears_them() {
+    let dir = collected(
+        "picker-all-listed",
+        "[[owner]]\nlogin = \"example-lab\"\ninclude = \"listed\"\n\n\
+         [[repo]]\nname = \"example-lab/tool-b\"\ninclude = true # picked by hand\n\n\
+         [[repo]]\nname = \"example-lab/fork-of-upstream\"\ninclude = true\n",
+    );
+    let home = home(&dir);
+    let start = included(&picker::view(&home));
+    assert_eq!(
+        start,
+        ["example-lab/fork-of-upstream", "example-lab/tool-b"]
+    );
+    let lab = |op: fn(String) -> SelectionChange| [op("example-lab".into())];
+
+    save_selection(
+        &home,
+        base(&home).as_deref(),
+        &lab(|login| SelectionChange::SelectAll { login }),
+    )
+    .unwrap();
+    assert_eq!(
+        included(&picker::view(&home)),
+        [
+            "example-lab/fork-of-upstream",
+            "example-lab/tool-a",
+            "example-lab/tool-b"
+        ]
+    );
+    save_selection(
+        &home,
+        base(&home).as_deref(),
+        &lab(|login| SelectionChange::SelectListed { login }),
+    )
+    .unwrap();
+    assert_eq!(included(&picker::view(&home)), start, "the undo is an undo");
+    let text = selection_text(&home);
+    assert!(text.contains("include = \"listed\""), "{text}");
+    assert!(text.contains("include = true # picked by hand"), "{text}");
+
+    save_selection(
+        &home,
+        base(&home).as_deref(),
+        &lab(|login| SelectionChange::SelectNone { login }),
+    )
+    .unwrap();
+    assert_eq!(included(&picker::view(&home)), Vec::<String>::new());
+    assert!(!selection_text(&home).contains("[[repo]]"));
+}
+
 // ---- one repository at a time ----
 
 #[test]

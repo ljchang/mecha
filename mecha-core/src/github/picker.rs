@@ -585,8 +585,15 @@ pub enum SelectionChange {
     /// lines that exclude one are removed — or select-all would not select
     /// all. A line that includes a fork or an archived one stays.
     SelectAll { login: String },
+    /// Only the owner's repositories its `[[repo]]` lines include:
+    /// `include = "listed"`, and **no `[[repo]]` line is touched** — the
+    /// undo of [`SelectionChange::SelectAll`], which must give the owner's
+    /// hand-made inclusions back rather than delete them (review of #913).
+    SelectListed { login: String },
     /// None of the owner's repositories: `include = "listed"`, and the
-    /// owner's `[[repo]]` lines are removed, either way.
+    /// owner's `[[repo]]` lines are removed, either way. The page offers it
+    /// as its own action, confirmed in place when it would remove an
+    /// inclusion.
     SelectNone { login: String },
     /// The owner's line's filters (G4): whether its forks and its archived
     /// repositories are taken. The line is written if the file has none.
@@ -830,6 +837,10 @@ fn apply_selection(doc: &mut DocumentMut, c: &SelectionChange) -> Result<(), Ref
             remove_tables(doc, "repo", |t| {
                 of(t) && t.get("include").and_then(Item::as_bool) == Some(false)
             })?;
+        }
+        SelectionChange::SelectListed { login } => {
+            check_login(login)?;
+            owner_line(doc, login, Some("listed"), None)?;
         }
         SelectionChange::SelectNone { login } => {
             check_login(login)?;

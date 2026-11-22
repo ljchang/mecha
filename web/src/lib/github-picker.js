@@ -13,16 +13,17 @@ const YEAR_MS = 365 * 24 * 3600 * 1000;
 
 /**
  * The repositories of one owner the list shows. Forks and archived ones are
- * hidden unless asked for (G4) — but never one that is selected, so a
- * watched repository cannot drop out of sight behind a filter. `recent`
- * keeps those pushed in the last year; a repository with no push date is
- * not called recent.
+ * hidden unless asked for (G4) — but never one that is selected or that the
+ * last collect watched, so a watched repository cannot drop out of sight
+ * behind a filter, and neither can its "dropped next collect" (review of
+ * #913). `recent` keeps those pushed in the last year; a repository with no
+ * push date is not called recent.
  */
 export function visibleRepos(repos, { forks = false, archived = false, query = '', recent = false, now = Date.now() } = {}) {
   const q = query.trim().toLowerCase();
   return repos.filter((r) => {
     if (q && !r.full_name.toLowerCase().includes(q)) return false;
-    if (r.included === true) return true;
+    if (r.included === true || r.collected) return true;
     if (r.fork && !forks) return false;
     if (r.archived && !archived) return false;
     if (recent) {
@@ -44,9 +45,44 @@ export function repoChange(repo, want) {
   return { op: 'repo', name: repo.full_name, include: want === repo.by_owner ? null : want };
 }
 
-/** The owner's all-or-none switch, as the change it asks for. */
+/**
+ * The owner's all switch, as the change it asks for: `all`, or back to
+ * `listed` with every `[[repo]]` line kept — so ticking it and unticking it
+ * is where the owner started, never their hand-made picks deleted (review
+ * of #913). Clearing the owner's lines is `noneStep`'s, a separate action.
+ */
 export function ownerChange(login, all) {
-  return { op: all ? 'select_all' : 'select_none', login };
+  return { op: all ? 'select_all' : 'select_listed', login };
+}
+
+/**
+ * "Select none" for an owner removes the owner's `[[repo]]` lines,
+ * inclusions too, so where it would remove one it asks first, in the page:
+ * `{ confirm }` with the sentence to show until `confirmed`, else
+ * `{ change }` to send.
+ */
+export function noneStep(owner, confirmed = false) {
+  const picked = [
+    ...owner.repos.filter((r) => r.line === true).map((r) => r.full_name),
+    ...(owner.unseen ?? []).filter((l) => l.include).map((l) => l.name),
+  ];
+  if (picked.length && !confirmed) {
+    const n = picked.length;
+    return {
+      confirm: `This removes ${n === 1 ? 'the repository' : `the ${n} repositories`} you picked by name for ${owner.login} (${picked.join(', ')}), as well as anything else of it. Nothing of ${owner.login} is watched after.`,
+    };
+  }
+  return { change: { op: 'select_none', login: owner.login } };
+}
+
+/** What an owner's line means, in words — unknown said as unknown. */
+export function ownerLine(owner, selectionState) {
+  if (selectionState === 'invalid') return 'repos.toml cannot be used, so what this owner includes is unknown';
+  const l = owner.line;
+  if (!l) return 'not named in repos.toml: only those ticked below';
+  if (l.include === 'all')
+    return `every repository, and any added later${l.forks ? ', forks included' : ''}${l.archived ? ', archived included' : ''}`;
+  return 'only those ticked below';
 }
 
 /** The owner's filters (G4), as the change they ask for. */
@@ -122,8 +158,16 @@ export function storeLine(store) {
       return { text: `The collector's store could not be read: ${store.error}`, bad: true };
     case 'read': {
       if (!store.last_collect) return { text: 'The store holds no finished collection yet.', bad: false };
+      // A run that stopped before listing (no `gh` login, no `gh`) still
+      // writes its finished row: that is a finding, not a clean run with
+      // nothing in it (review of #913).
+      if (!store.listed_at)
+        return {
+          text: `Last collect finished ${when(store.last_collect.finished)}, and it never listed your repositories, so there is no list to choose from. \`mecha doctor\` says why.`,
+          bad: true,
+        };
       const listed =
-        store.listed_at && store.listed_at < store.last_collect.started
+        store.listed_at < store.last_collect.started
           ? ` The repository list is from ${when(store.listed_at)}: the last run could not list them.`
           : '';
       return { text: `Last collect finished ${when(store.last_collect.finished)}.${listed}`, bad: !!listed };
@@ -131,6 +175,25 @@ export function storeLine(store) {
     default:
       return { text: '—', bad: false };
   }
+}
+
+/**
+ * Settings' index row for the picker, from its read (`null` before or
+ * without one). No list is never "0 of 0 watched": a rate over nothing is
+ * not a count.
+ */
+export function indexLine(github) {
+  if (github === null || github === undefined) return { text: 'which repositories the GitHub board watches' };
+  if (github.selection?.state === 'invalid') return { text: 'repos.toml cannot be used — nothing is watched', bad: true };
+  const store = github.store;
+  if (store?.state === 'unreadable') return { text: "the collector's store could not be read", bad: true };
+  if (store?.state === 'absent') return { text: 'no collection yet' };
+  if (store?.state === 'read' && store.last_collect && !store.listed_at)
+    return { text: 'the last collect never listed your repositories', bad: true };
+  const repos = (github.owners ?? []).flatMap((o) => o.repos);
+  if (!repos.length) return { text: 'nothing listed yet' };
+  const n = repos.filter((r) => r.included).length;
+  return { text: `${n} of ${repos.length} repositories watched` };
 }
 
 /** A file that cannot be used, as the sentence the page shows; else null. */

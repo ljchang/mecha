@@ -457,8 +457,13 @@ routes), and Settings → GitHub (`SettingsGithub.svelte`, `github-picker.js`).
   of changes (`deny_unknown_fields`):
   - `select_all`: the owner's `include = "all"`, with the owner's `[[repo]]`
     exclusions removed, or select-all would not select all.
+  - `select_listed`: `include = "listed"`, touching no `[[repo]]` line. It
+    is the undo of `select_all`, so the owner's hand-made inclusions come
+    back rather than go (review of #913: unticking "all" used to send
+    `select_none` and delete them).
   - `select_none`: `include = "listed"`, with the owner's `[[repo]]` lines
-    removed.
+    removed, inclusions too. The page offers it as its own action, and asks
+    in place first when it would remove an inclusion.
   - `filters`: the owner's `forks` and `archived` (G4).
   - `repo`: one repository's line, set, or removed with `null`.
   - per `(repo, registry)`: a name, `none`, or back to `detected`.
@@ -494,14 +499,19 @@ routes), and Settings → GitHub (`SettingsGithub.svelte`, `github-picker.js`).
   model or a tool can reach writes either file: no tool names them, no
   agent path calls `picker::save_*`, and the collector only reads them.
 - **The page** is Settings → GitHub. Per owner it has a checkbox for all
-  (select all or none) and the owner's forks and archived filters. Per
+  (`select_all`, or back to `select_listed`), a separate "select none" with
+  an in-page confirm, and the owner's forks and archived filters. Per
   repository it has a checkbox and tags: fork, archived, private, named,
   and "added / dropped next collect" where the file now differs from what
   the last collect did. Each repository also shows its mapping, with an
   editor per registry. Forks and archived repositories are hidden by default
-  with a toggle (G4), but a selected one is never hidden. There is a search
+  with a toggle (G4), but one that is selected, or that the last collect
+  watched, is never hidden, so its "dropped next collect" stays in sight. There is a search
   box and a "pushed in the last year" filter, as §2 asks. The page says that
   changes take effect on the next collect, and when the last one finished.
+  A finished collect that never listed (no `gh` login, say: the run stops
+  early and still writes its `finished` row) is said as such, on the page
+  and on the Settings index, never as an empty account or "0 of 0".
 - **Acceptance**: `select_all_on_an_owner_writes_the_file_the_collector_then_obeys`
   drives `save_selection`, reads the written file with `read_selection`, runs
   the collector against the fake `gh`, and checks the watched set and
