@@ -4226,13 +4226,15 @@ fn begin_turn(
     // **never for a woken one**: with no baseline nothing is accepted, so a
     // follow-up's own run cannot schedule the next wake without the owner —
     // its proposals wait in the pane like any tainted one.
-    let follow_baseline = (!opts.unattended
-        && ws.session.kept().is_some()
-        && bound
+    let follow_baseline = follow_ups_may_auto_accept(
+        opts.unattended,
+        ws.session.kept().is_some(),
+        bound
             .agent
             .registry()
             .get(mecha_core::tool::follow_up::NAME)
-            .is_some())
+            .is_some(),
+    )
     .then(crate::commands::followups::baseline)
     .flatten();
     let follow_auto = Arc::clone(&ws.auto);
@@ -6553,6 +6555,15 @@ pub(super) async fn answer_in_chat(
             (StatusCode::CONFLICT, format!("{e:#}\n"))
         })),
     }
+}
+
+/// Whether a turn takes the follow-up baseline the auto rule (F7) needs at
+/// its end — without one, nothing it proposes is accepted. Never for a woken
+/// (unattended) turn: a follow-up's own run must not be able to schedule the
+/// next wake with no owner in the loop. Only in a recorded conversation whose
+/// binding can propose.
+fn follow_ups_may_auto_accept(unattended: bool, recorded: bool, can_propose: bool) -> bool {
+    !unattended && recorded && can_propose
 }
 
 /// Put a recorded conversation in the session map under its resume key,
@@ -9846,6 +9857,16 @@ mod wake_tests {
 
     /// A tool that changes something, and says whether it ran.
     struct WriteNote(Arc<std::sync::atomic::AtomicBool>);
+    /// A woken turn never takes the baseline, so with auto on its proposals
+    /// still wait: a follow-up cannot schedule the next one by itself.
+    #[test]
+    fn a_woken_turn_never_auto_accepts_a_follow_up() {
+        assert!(!follow_ups_may_auto_accept(true, true, true));
+        assert!(follow_ups_may_auto_accept(false, true, true));
+        assert!(!follow_ups_may_auto_accept(false, false, true));
+        assert!(!follow_ups_may_auto_accept(false, true, false));
+    }
+
     #[async_trait::async_trait]
     impl mecha_core::tool::Tool for WriteNote {
         fn name(&self) -> &str {
