@@ -1,10 +1,12 @@
 # The GitHub board — a HUD draft
 
-Step 2 of `docs/GITHUB-DASHBOARD-DESIGN.md` §7: views 1 and 2 (failing now,
-and new issues and outside pull requests), with the headline counts; and
-step 4's summaries in the New table (`about` and `summary`), which the
-collector's quarantined pass writes and the loader only reads. No links
-(step 3) yet.
+Steps 2, 3 and 4 of `docs/GITHUB-DASHBOARD-DESIGN.md` §7: views 1 and 2
+(failing now, and new issues and outside pull requests), with the headline
+counts. The New table's `GitHub` column is the typed reference (§4): on the
+tailnet board it opens the issue, but only for a repository that is in the
+collector's inventory and in `repos.toml`; a published copy shows it as text.
+Its `about` and `summary` columns are step 4's summaries, which the
+collector's quarantined pass writes and the loader only reads.
 
 **Summaries.** A local model's one or two sentences about each body, and a
 kind from a closed four (bug, question, request, other), made once per body

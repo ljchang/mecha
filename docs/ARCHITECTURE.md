@@ -8151,12 +8151,28 @@ the owner's rulings; this section is the invariants a change to
   only to a model that can see, on `image_view`'s rule.
 - **The renderer is ours, and nothing agent-authored executes in it**
   (`web/src/lib/hud/`, steps 3–4). No `{@html}`, no HTML string sink, no
-  inline `style=`, no link: `web/test/hud.mjs` scans the source for each.
+  inline `style=`, and no link except the typed reference's one (below):
+  `web/test/hud.mjs` scans the source for each.
   Dataset values reach the DOM as text only, tooltips included (our handler
   writes text nodes; vega-tooltip's assigns HTML). Text panels go through
   `mail-markdown.js` with a link rendered as its words. `vega-embed` always
   runs with `actions: false` (its menu posts the spec, rows included, to
   another site) and `ast: true` (the interpreter, never `Function`).
+- **One link, and the spec still names no destination**
+  (`GITHUB-DASHBOARD-DESIGN.md` §4, §7.1). A table column may be the typed
+  reference `{ref: "github", owner, repo, number}`. It names three fields,
+  and `deny_unknown_fields` with a one-variant `RefKind` is the control. The
+  address is one template in `hud.js` `githubHref`, drawn by
+  `IssueLink.svelte`, which is the one sink `hud.mjs` allows. An anchor needs
+  the dashboard's `links` (set by the app's installed-board route only), the
+  grammar checked again in the browser, and the triple in the dataset's
+  `linkable` list. `serve/hud.rs` adds that list only for references the
+  checked spec makes, from `github::Watched` (inventory ∩ the selection file
+  read now), and puts its digest in the `ETag`. Absence is refusal. A
+  published board's datasets never pass that route, and a proposal is drawn
+  without `links`, so both show the reference as text. Keep it that way: a
+  dataset that can reach the page without the serve route must never be
+  given a list.
 - **Filters narrow rows in the host** (`applyFilters`), so a chart obeys a
   filter without naming it; rows reach Vega before compile through the
   view's `datasets`, which only the host fills.

@@ -24,6 +24,16 @@
 //! - **The spec served is the checked one.** `Installed::load` parses it
 //!   through `Spec::parse`, so a file edited by hand after install that no
 //!   longer passes is a refusal here, never drawn.
+//! - **A typed reference links only what this route vouches for**
+//!   (`GITHUB-DASHBOARD-DESIGN.md` §4). When the checked spec makes a GitHub
+//!   reference over the dataset, the dataset is served with `linkable`: the
+//!   `[owner, repo, number]` of each row in GitHub's grammar whose repository
+//!   is in the collector's inventory and the owner's selection
+//!   (`github::Watched`, read here, never from the board's own rows). The
+//!   renderer links nothing that list does not hold, so a dataset served
+//!   without it — a proposal's, a published board's — links nothing. Its
+//!   digest is in the `ETag`, so a repository dropped from the selection
+//!   stops linking on the next poll, not at the next refresh.
 
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -55,7 +65,11 @@ pub(super) async fn data(
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    blocking(move || Ok(data_at(&Store::open()?, &id, &name, seen.as_deref()))).await
+    blocking(move || {
+        let home = mecha_core::work::mecha_home()?;
+        Ok(data_at(&Store::open()?, &home, &id, &name, seen.as_deref()))
+    })
+    .await
 }
 
 /// GET /api/hud-proposals/{id}.
@@ -345,7 +359,42 @@ pub(super) fn etag(d: &Dataset) -> String {
     )
 }
 
-pub(super) fn data_at(store: &Store, id: &str, name: &str, seen: Option<&str>) -> Response {
+/// The dataset as the page reads it: the stored rows, and — only when the
+/// spec makes a GitHub reference over it — which rows may link (module
+/// docs). Returns the body and the suffix its `ETag` carries for that list.
+fn served(
+    installed: &mecha_core::hud::Installed,
+    home: &std::path::Path,
+    d: &Dataset,
+) -> (serde_json::Value, Option<u64>) {
+    use std::hash::{Hash, Hasher};
+    let mut body = serde_json::to_value(d).unwrap_or(serde_json::Value::Null);
+    if installed.spec().github_refs(&d.name).is_empty() {
+        return (body, None);
+    }
+    let watched = mecha_core::github::Watched::read(home);
+    let linkable =
+        mecha_core::hud::link::github_linkable(installed.spec(), d, &|o, r| watched.contains(o, r));
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for l in &linkable {
+        l.allowed.hash(&mut h);
+    }
+    if let serde_json::Value::Object(map) = &mut body {
+        map.insert(
+            "linkable".into(),
+            serde_json::to_value(&linkable).unwrap_or_default(),
+        );
+    }
+    (body, Some(h.finish()))
+}
+
+pub(super) fn data_at(
+    store: &Store,
+    home: &std::path::Path,
+    id: &str,
+    name: &str,
+    seen: Option<&str>,
+) -> Response {
     if let Some(r) = unknown(store, id) {
         return r;
     }
@@ -372,7 +421,11 @@ pub(super) fn data_at(store: &Store, id: &str, name: &str, seen: Option<&str>) -
     }
     match store.dataset(id, name) {
         Ok(Some(d)) => {
-            let tag = etag(&d);
+            let (body, links) = served(&installed, home, &d);
+            let tag = match links {
+                None => etag(&d),
+                Some(h) => format!("{}-{h:016x}\"", etag(&d).trim_end_matches('"')),
+            };
             let same = seen.is_some_and(|s| s.split(',').any(|t| t.trim() == tag));
             if same {
                 return (
@@ -389,7 +442,7 @@ pub(super) fn data_at(store: &Store, id: &str, name: &str, seen: Option<&str>) -
                     (header::ETAG, tag),
                     (header::CACHE_CONTROL, "no-cache".into()),
                 ],
-                Json(d),
+                Json(body),
             )
                 .into_response()
         }
@@ -529,14 +582,14 @@ mod tests {
                 "{id:?}"
             );
             assert_eq!(
-                data_at(&store, id, "visits", None).status(),
+                data_at(&store, store.root(), id, "visits", None).status(),
                 StatusCode::NOT_FOUND,
                 "{id:?}"
             );
         }
         for name in ["other", "../hud", "visits.json"] {
             assert_eq!(
-                data_at(&store, "lab", name, None).status(),
+                data_at(&store, store.root(), "lab", name, None).status(),
                 StatusCode::NOT_FOUND,
                 "{name:?}"
             );
@@ -548,30 +601,31 @@ mod tests {
     #[tokio::test]
     async fn a_dataset_revalidates_by_its_generation() {
         let (_s, store) = lab();
-        let (status, _, text) = body(data_at(&store, "lab", "visits", None)).await;
+        let (status, _, text) = body(data_at(&store, store.root(), "lab", "visits", None)).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(text.contains("not been produced"), "{text}");
 
         let first = produce(&store, 1);
-        let (status, headers, text) = body(data_at(&store, "lab", "visits", None)).await;
+        let (status, headers, text) =
+            body(data_at(&store, store.root(), "lab", "visits", None)).await;
         assert_eq!(status, StatusCode::OK);
         let tag = headers[header::ETAG].to_str().unwrap().to_string();
         assert_eq!(tag, etag(&first));
         let got: Dataset = serde_json::from_str(&text).unwrap();
         assert_eq!(got.rows, first.rows);
 
-        let again = data_at(&store, "lab", "visits", Some(&tag));
+        let again = data_at(&store, store.root(), "lab", "visits", Some(&tag));
         assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
         let listed = format!("\"0-0\", {tag}");
         assert_eq!(
-            data_at(&store, "lab", "visits", Some(&listed)).status(),
+            data_at(&store, store.root(), "lab", "visits", Some(&listed)).status(),
             StatusCode::NOT_MODIFIED,
             "one of several tags"
         );
 
         produce(&store, 2);
         assert_eq!(
-            data_at(&store, "lab", "visits", Some(&tag)).status(),
+            data_at(&store, store.root(), "lab", "visits", Some(&tag)).status(),
             StatusCode::OK,
             "a refresh is new rows"
         );
@@ -597,9 +651,188 @@ mod tests {
             StatusCode::UNPROCESSABLE_ENTITY
         );
         assert_eq!(
-            data_at(&store, "lab", "visits", None).status(),
+            data_at(&store, store.root(), "lab", "visits", None).status(),
             StatusCode::UNPROCESSABLE_ENTITY
         );
+    }
+
+    /// A board `issues` whose table makes a GitHub reference over its one
+    /// dataset, with rows naming a watched repository, a selected owner's
+    /// repository the collector never saw, a stranger's, and `..`; and a
+    /// collector store under the same home whose inventory holds
+    /// `example-lab/tool-a` and `example-lab/tool-b`, the latter excluded.
+    fn issues() -> (Scratch, Store) {
+        use mecha_core::github;
+        let root = std::env::temp_dir().join(format!("mecha-serve-hud-{}", uuid::Uuid::new_v4()));
+        let draft = root.join("draft").join("issues");
+        std::fs::create_dir_all(draft.join("loaders")).unwrap();
+        std::fs::write(
+            root.join("sources.toml"),
+            format!(
+                "[source.github]\nkind = \"sqlite\"\npath = \"{}\"\ncontent = \"third-party\"\n",
+                github::db_path(&root).display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            draft.join("hud.json"),
+            r#"{"version":1,"title":"Issues","datasets":["new_items"],
+                "panels":[{"type":"table","title":"New","dataset":"new_items",
+                  "columns":["title",{"ref":"github","owner":"owner","repo":"name","number":"number"}]}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            draft.join("loaders").join("new_items.toml"),
+            "source = \"github\"\nschedule = \"0 * * * *\"\nmax_rows = 100\n\
+             query = \"SELECT title, owner, name, number FROM items\"\n\
+             [[column]]\nname = \"title\"\ntype = \"string\"\n\
+             [[column]]\nname = \"owner\"\ntype = \"string\"\n\
+             [[column]]\nname = \"name\"\ntype = \"string\"\n\
+             [[column]]\nname = \"number\"\ntype = \"integer\"\n",
+        )
+        .unwrap();
+        let store = Store::at(&root);
+        store
+            .install(&draft, Some("issues"), Utc::now())
+            .unwrap()
+            .unwrap_or_else(|r| panic!("the fixture does not install: {r}"));
+
+        std::fs::create_dir_all(github::dir(&root)).unwrap();
+        std::fs::write(
+            github::selection_path(&root),
+            "[[owner]]\nlogin = \"example-lab\"\ninclude = \"all\"\n\
+             [[repo]]\nname = \"example-lab/tool-b\"\ninclude = false\n",
+        )
+        .unwrap();
+        let repo = |name: &str| github::Repo {
+            full_name: format!("example-lab/{name}"),
+            owner: "example-lab".into(),
+            name: name.into(),
+            fork: false,
+            archived: false,
+            private: false,
+            default_branch: Some("main".into()),
+            pushed_at: None,
+            listed: true,
+        };
+        let mut c = github::Collected::new(Utc::now());
+        c.inventory = Some(vec![(repo("tool-a"), true), (repo("tool-b"), false)]);
+        github::record(&github::db_path(&root), &c).unwrap();
+
+        let d = Dataset {
+            name: "new_items".into(),
+            generated_at: Utc::now(),
+            generation: 1,
+            loader_digest: "fixture".into(),
+            columns: ["title", "owner", "name", "number"]
+                .iter()
+                .map(|n| Column {
+                    name: (*n).into(),
+                    kind: if *n == "number" {
+                        ColumnType::Integer
+                    } else {
+                        ColumnType::String
+                    },
+                })
+                .collect(),
+            rows: vec![
+                vec![
+                    "Watched".into(),
+                    "example-lab".into(),
+                    "tool-a".into(),
+                    7.into(),
+                ],
+                vec![
+                    "Excluded".into(),
+                    "example-lab".into(),
+                    "tool-b".into(),
+                    8.into(),
+                ],
+                vec![
+                    "Never seen".into(),
+                    "example-lab".into(),
+                    "tool-z".into(),
+                    9.into(),
+                ],
+                vec![
+                    "Stranger".into(),
+                    "stranger-org".into(),
+                    "bait".into(),
+                    1.into(),
+                ],
+                vec!["Walks".into(), "example-lab".into(), "..".into(), 2.into()],
+            ],
+            external: true,
+        };
+        let dir = store.root().join("boards").join("issues").join("data");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("new_items.json"), serde_json::to_vec(&d).unwrap()).unwrap();
+        (Scratch(root), store)
+    }
+
+    /// The served check (§4): only a row whose repository is in the
+    /// inventory *and* the selection is linkable — not one the selection
+    /// excludes, one of a selected owner the collector never saw, a
+    /// stranger's, or `..`. And the list moves with the selection on the
+    /// next poll: its digest is in the `ETag`.
+    #[tokio::test]
+    async fn a_reference_links_only_inventory_the_selection_includes() {
+        let (_s, store) = issues();
+        let (status, headers, text) =
+            body(data_at(&store, store.root(), "issues", "new_items", None)).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            v["linkable"],
+            serde_json::json!([{ "ref": "github", "owner": "owner", "repo": "name",
+                                 "number": "number",
+                                 "allowed": [["example-lab", "tool-a", 7]] }]),
+            "{text}"
+        );
+        assert_eq!(
+            v["rows"].as_array().unwrap().len(),
+            5,
+            "every row is still served"
+        );
+        let tag = headers[header::ETAG].to_str().unwrap().to_string();
+        assert_eq!(
+            data_at(&store, store.root(), "issues", "new_items", Some(&tag)).status(),
+            StatusCode::NOT_MODIFIED
+        );
+
+        // The owner drops the repository: the next poll is new, and links nothing.
+        std::fs::write(
+            mecha_core::github::selection_path(store.root()),
+            "[[owner]]\nlogin = \"example-lab\"\ninclude = \"listed\"\n",
+        )
+        .unwrap();
+        let (status, _, text) = body(data_at(
+            &store,
+            store.root(),
+            "issues",
+            "new_items",
+            Some(&tag),
+        ))
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the selection changed under an unchanged dataset"
+        );
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["linkable"][0]["allowed"], serde_json::json!([]), "{text}");
+    }
+
+    /// A board that makes no reference is served exactly as before: no
+    /// `linkable` key, and the plain `ETag`.
+    #[tokio::test]
+    async fn a_board_with_no_reference_is_served_without_a_link_list() {
+        let (_s, store) = lab();
+        let d = produce(&store, 1);
+        let (_, headers, text) = body(data_at(&store, store.root(), "lab", "visits", None)).await;
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(v.get("linkable").is_none(), "{text}");
+        assert_eq!(headers[header::ETAG].to_str().unwrap(), etag(&d));
     }
 
     /// A store whose `lab` source has rows, with a board `trend` proposed

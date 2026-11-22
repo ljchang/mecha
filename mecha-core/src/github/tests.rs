@@ -1117,6 +1117,68 @@ fn an_empty_log_reads_as_no_run() {
     );
 }
 
+// ---- what a board may link to (§4) ----
+
+/// A board may link to a repository the collector saw *and* the selection
+/// includes now: not the fork, the archived one or another owner's, all in
+/// the inventory; not a repository the inventory never held, even of a
+/// selected owner; and nothing at all once the file stops selecting, or is
+/// gone, or there is no store.
+#[test]
+fn a_board_links_only_to_inventory_the_selection_includes() {
+    let dir = scratch("watched");
+    let home = dir.join("home");
+    assert!(Watched::read(&home).is_empty(), "no store, no links");
+    select(&dir, LAB_ALL);
+    assert!(
+        Watched::read(&home).is_empty(),
+        "a selection without an inventory links nothing"
+    );
+    collect_and_record(&dir, &fake(&dir, &healthy()), now());
+
+    let w = Watched::read(&home);
+    assert!(w.contains("example-lab", "tool-a"));
+    assert!(
+        w.contains("Example-Lab", "TOOL-A"),
+        "GitHub's names are case-insensitive"
+    );
+    assert!(w.contains("example-lab", "tool-b"));
+    for (owner, repo) in [
+        ("example-lab", "fork-of-upstream"),
+        ("example-lab", "old-site"),
+        ("example-owner", "notes"),
+        // An owner with `include = "all"` names no repository: this one is
+        // of the right owner and was never seen.
+        ("example-lab", "never-listed"),
+        ("stranger-org", "tool-a"),
+    ] {
+        assert!(!w.contains(owner, repo), "{owner}/{repo}");
+    }
+
+    // The selection is read now, not as it was at the last collection.
+    select(
+        &dir,
+        &format!("{LAB_ALL}\n[[repo]]\nname = \"example-lab/tool-b\"\ninclude = false\n"),
+    );
+    let w = Watched::read(&home);
+    assert!(w.contains("example-lab", "tool-a"));
+    assert!(
+        !w.contains("example-lab", "tool-b"),
+        "excluded since the last run"
+    );
+
+    select(&dir, "this is not toml [");
+    assert!(
+        Watched::read(&home).is_empty(),
+        "an unusable file selects nothing"
+    );
+    std::fs::remove_file(selection_path(&home)).unwrap();
+    assert!(
+        Watched::read(&home).is_empty(),
+        "an absent file selects nothing"
+    );
+}
+
 // ---- the board shipped under scripts/hud/github ----
 
 /// The board shipped under `scripts/hud/github/` validates as written, and
@@ -1203,6 +1265,42 @@ fn the_shipped_board_validates_and_its_loaders_read_the_collector() {
             .shape(&fetched.columns, fetched.rows)
             .unwrap_or_else(|e| panic!("{name}: {e}"));
     }
+
+    // The New table's typed reference (§4, step 3) over the loader's own
+    // output: the watched repository's item is linkable, and nothing else is.
+    let spec = installed.spec();
+    assert_eq!(
+        spec.github_refs("new_items").len(),
+        1,
+        "the New table has the reference"
+    );
+    let items = &installed.loaders()["new_items"];
+    let fetched = run_sqlite(&path, items.query(), items.max_rows(), QUERY_TIMEOUT).unwrap();
+    let dataset = crate::hud::Dataset {
+        name: "new_items".into(),
+        generated_at: Utc::now(),
+        generation: 1,
+        loader_digest: items.digest(),
+        columns: items.columns().to_vec(),
+        rows: items.shape(&fetched.columns, fetched.rows).unwrap(),
+        external: true,
+    };
+    let watched = Watched::read(&dir.join("home"));
+    let linkable =
+        crate::hud::link::github_linkable(spec, &dataset, &|o, r| watched.contains(o, r));
+    assert!(
+        linkable[0]
+            .allowed
+            .contains(&("example-lab".into(), "tool-a".into(), 99)),
+        "{linkable:?}"
+    );
+    assert!(
+        linkable[0]
+            .allowed
+            .iter()
+            .all(|(o, r, _)| watched.contains(o, r)),
+        "{linkable:?}"
+    );
 
     let failing = &installed.loaders()["failing_now"];
     let fetched = run_sqlite(&path, failing.query(), 200, QUERY_TIMEOUT).unwrap();

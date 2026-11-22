@@ -22,7 +22,11 @@
   import Text from './Text.svelte';
   import Filters from './Filters.svelte';
 
-  let { spec, source, mode = 'auto', pollMs = 60_000, stale = {}, timeZone = undefined } = $props();
+  // - `links`: whether a typed GitHub reference may draw as an anchor
+  //   (`docs/GITHUB-DASHBOARD-DESIGN.md` §4). Off unless the caller says so,
+  //   and only the app's installed-board route does: a published page (the
+  //   standalone build) and a proposal render every reference as text.
+  let { spec, source, mode = 'auto', pollMs = 60_000, stale = {}, timeZone = undefined, links = false } = $props();
 
   // name → { dataset?, etag?, error? }. Replaced, never mutated: rows are
   // large and need no deep reactivity.
@@ -147,7 +151,12 @@
         {:else if panel.type === 'chart'}
           <Chart chart={panel.vegalite} {rowsByName} mode={scheme} />
         {:else if panel.type === 'table'}
-          <Table columns={panel.columns} rows={rowsByName[panel.dataset] ?? []} />
+          <Table
+            columns={panel.columns}
+            rows={rowsByName[panel.dataset] ?? []}
+            linkable={data[panel.dataset]?.dataset?.linkable ?? null}
+            links={links === true}
+          />
         {:else}
           <p class="note bad">A panel of a kind this page does not draw.</p>
         {/if}

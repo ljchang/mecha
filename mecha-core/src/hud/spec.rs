@@ -6,7 +6,7 @@
 //! unknown fields refused, and then the rules that relate one field to
 //! another. Both passes report everything they find.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use super::{is_identifier, pointer, vegalite, Checked, Refusal, Refusals};
@@ -108,7 +108,7 @@ pub enum Panel {
     Table {
         title: String,
         dataset: String,
-        columns: Vec<String>,
+        columns: Vec<TableColumn>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         span: Option<u8>,
     },
@@ -126,6 +126,79 @@ impl Panel {
             | Panel::Chart { span, .. }
             | Panel::Table { span, .. }
             | Panel::Text { span, .. } => *span,
+        }
+    }
+}
+
+/// One column of a table panel: a field the loader declares, or a **typed
+/// reference** whose destination our code builds from fields of the row
+/// (`GITHUB-DASHBOARD-DESIGN.md` §4, G7). The one exception to "a spec names
+/// no destinations", and it still names none: the spec names three fields,
+/// never a host, a path or a query, and the address is the renderer's fixed
+/// template over values checked at the serve route and again in the browser.
+///
+/// Serialised as the wire writes it — a bare string, or the reference's
+/// object — so the renderer reads what the model wrote.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum TableColumn {
+    Field(String),
+    Github(GithubRef),
+}
+
+impl TableColumn {
+    /// The dataset columns this one reads, each with the key that names it
+    /// (empty for a plain field), in the order a refusal reports them.
+    pub fn fields(&self) -> Vec<(&'static str, &str)> {
+        match self {
+            TableColumn::Field(f) => vec![("", f)],
+            TableColumn::Github(r) => vec![
+                ("owner", &r.owner),
+                ("repo", &r.repo),
+                ("number", &r.number),
+            ],
+        }
+    }
+}
+
+/// `{ "ref": "github", "owner": <field>, "repo": <field>, "number": <field> }`
+/// — an issue (or a pull request: GitHub redirects the issue path to one) at
+/// `https://github.com/{owner}/{repo}/issues/{number}`. Every key beside the
+/// four is refused, so a spec cannot add a host, a path or a query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GithubRef {
+    #[serde(rename = "ref")]
+    pub kind: RefKind,
+    pub owner: String,
+    pub repo: String,
+    pub number: String,
+}
+
+/// Which fixed destination a reference builds: a closed set, `github` alone.
+/// A second kind is its own ruling and its own allowlist (§4), never a value
+/// a spec can name into existence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RefKind {
+    Github,
+}
+
+/// What a table column may be, said whole: the reader of a refusal is a model
+/// that will retry, and "data did not match any variant" teaches it nothing.
+const TABLE_COLUMN_RULE: &str = "a table column is a field name, or the typed reference \
+     {\"ref\": \"github\", \"owner\": <field>, \"repo\": <field>, \"number\": <field>} \
+     with those four keys and no other";
+
+impl<'de> Deserialize<'de> for TableColumn {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        match Value::deserialize(d)? {
+            Value::String(field) => Ok(TableColumn::Field(field)),
+            v @ Value::Object(_) => serde_json::from_value::<GithubRef>(v)
+                .map(TableColumn::Github)
+                .map_err(|e| D::Error::custom(format!("{TABLE_COLUMN_RULE}: {e}"))),
+            _ => Err(D::Error::custom(TABLE_COLUMN_RULE)),
         }
     }
 }
@@ -169,6 +242,35 @@ impl Spec {
     }
     pub fn panels(&self) -> &[Panel] {
         &self.panels
+    }
+
+    /// Every distinct GitHub reference a table over `dataset` makes — what the
+    /// serve route checks that dataset's rows against. Read from the checked
+    /// spec, never from the data: which columns are a reference is the
+    /// spec's typed shape, not something a row can claim.
+    pub fn github_refs(&self, dataset: &str) -> Vec<&GithubRef> {
+        let mut out: Vec<&GithubRef> = Vec::new();
+        for panel in &self.panels {
+            let Panel::Table {
+                dataset: d,
+                columns,
+                ..
+            } = panel
+            else {
+                continue;
+            };
+            if d != dataset {
+                continue;
+            }
+            for c in columns {
+                if let TableColumn::Github(r) = c {
+                    if !out.contains(&r) {
+                        out.push(r);
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Parse and check a `hud.json`. Every refusal found is returned,
@@ -349,8 +451,15 @@ impl Spec {
                         ));
                     }
                     for (j, col) in columns.iter().enumerate() {
-                        if !is_identifier(col) {
-                            out.push(not_a_column(format!("{at}/columns/{j}")));
+                        let here = format!("{at}/columns/{j}");
+                        for (key, field) in col.fields() {
+                            if !is_identifier(field) {
+                                out.push(not_a_column(if key.is_empty() {
+                                    here.clone()
+                                } else {
+                                    pointer(&here, key)
+                                }));
+                            }
                         }
                     }
                 }

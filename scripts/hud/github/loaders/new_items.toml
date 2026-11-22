@@ -11,8 +11,12 @@ max_rows = 500
 # summarised yet" until the next run, never the old body's summary. Where
 # there is none the column says why, in the loader's own words — no summary
 # is not an empty summary.
+#
+# `owner`, `name` and `number` feed the table's typed reference (design §4):
+# the serve route links a row only when that pair is in the inventory and the
+# selection, and the address is the renderer's, never this query's.
 query = """
-SELECT it.repo, i.owner, CASE it.kind WHEN 'pull_request' THEN 'PR' ELSE 'issue' END AS kind,
+SELECT it.repo, i.owner, i.name, CASE it.kind WHEN 'pull_request' THEN 'PR' ELSE 'issue' END AS kind,
        it.number, it.title, it.author, it.created_at,
        CAST(julianday('now') - julianday(it.created_at) AS INTEGER) AS age_days,
        coalesce(it.comments, 0) AS comments,
@@ -40,6 +44,9 @@ name = "repo"
 type = "string"
 [[column]]
 name = "owner"
+type = "string"
+[[column]]
+name = "name"
 type = "string"
 [[column]]
 name = "kind"

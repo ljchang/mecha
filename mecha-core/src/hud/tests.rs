@@ -645,6 +645,143 @@ fn unknown_spec_fields_and_panel_types_are_refused() {
     assert!(parse(&v).is_err());
 }
 
+// ---- the typed reference (GITHUB-DASHBOARD-DESIGN.md §4) ----
+
+fn github_ref() -> Value {
+    json!({ "ref": "github", "owner": "owner", "repo": "name", "number": "number" })
+}
+
+/// The reference as the design writes it parses, and is served back in the
+/// shape the renderer matches: the bare field as a string, the reference as
+/// its own four keys.
+#[test]
+fn the_designs_typed_reference_parses_and_round_trips() {
+    let v = with(
+        example(),
+        "/panels/2/columns",
+        json!(["instrument", github_ref()]),
+    );
+    let spec = parse(&v).unwrap_or_else(|r| panic!("{r}"));
+    let Panel::Table { columns, .. } = &spec.panels()[2] else {
+        panic!("not a table")
+    };
+    assert_eq!(columns[0], TableColumn::Field("instrument".into()));
+    assert!(matches!(&columns[1], TableColumn::Github(r) if r.kind == RefKind::Github));
+    let served = serde_json::to_value(&spec).unwrap();
+    assert_eq!(
+        served["panels"][2]["columns"],
+        json!(["instrument", github_ref()])
+    );
+    assert_eq!(spec.github_refs("instruments").len(), 1);
+    assert!(spec.github_refs("visits_by_day").is_empty());
+}
+
+/// The spec gate is the control: `ref` is a closed set, and a key beside the
+/// four — a host, a path, a query, a template — is refused before any
+/// renderer sees it, as is a reference missing one.
+#[test]
+fn the_spec_gate_refuses_an_unknown_ref_and_any_key_beside_the_three() {
+    let mut cases = vec![
+        ("an unknown ref", {
+            let mut r = github_ref();
+            r["ref"] = json!("gitlab");
+            r
+        }),
+        (
+            "no ref",
+            json!({ "owner": "owner", "repo": "name", "number": "number" }),
+        ),
+        (
+            "no number",
+            json!({ "ref": "github", "owner": "owner", "repo": "name" }),
+        ),
+        ("a reference that is not an object or a name", json!(7)),
+    ];
+    for key in ["host", "path", "query", "url", "href", "template", "label"] {
+        let mut r = github_ref();
+        r[key] = json!("x");
+        cases.push((key, r));
+    }
+    for (what, col) in cases {
+        let v = with(example(), "/panels/2/columns", json!(["instrument", col]));
+        let refusals = parse(&v).expect_err(what).0;
+        assert!(
+            refusals.iter().any(|r| r
+                .rule
+                .contains("a table column is a field name, or the typed reference")),
+            "{what}: {refusals:?}"
+        );
+    }
+    // A field it names is a column name like any other.
+    let mut r = github_ref();
+    r["repo"] = json!("../name");
+    let v = with(example(), "/panels/2/columns", json!([r]));
+    let refused = refused_at(&v, "/panels/2/columns/0/repo");
+    assert!(refused.rule.contains("column name"), "{}", refused.rule);
+}
+
+/// Only the loader can say a reference's fields exist, and its number must be
+/// declared an integer — a string column would render as text on every row.
+#[test]
+fn a_references_fields_are_declared_by_its_loader_and_its_number_is_an_integer() {
+    const ITEMS: &str = r#"
+source = "lab"
+schedule = "0 * * * *"
+max_rows = 100
+query = "SELECT title, owner, name, number FROM items"
+[[column]]
+name = "title"
+type = "string"
+[[column]]
+name = "owner"
+type = "string"
+[[column]]
+name = "name"
+type = "string"
+[[column]]
+name = "number"
+type = "NUMBER_TYPE"
+"#;
+    let board = |number_type: &str, r: Value| {
+        let s = Scratch::new("issues");
+        s.write(
+            "hud.json",
+            &json!({ "version": 1, "title": "Issues", "datasets": ["items"],
+                     "panels": [{ "type": "table", "title": "New", "dataset": "items",
+                                  "columns": ["title", r] }] })
+            .to_string(),
+        );
+        s.write(
+            "loaders/items.toml",
+            &ITEMS.replace("NUMBER_TYPE", number_type),
+        );
+        let got = s.load().unwrap();
+        got.map(|_| ())
+    };
+    board("integer", github_ref()).unwrap_or_else(|r| panic!("{r}"));
+
+    let refusals = board("string", github_ref()).unwrap_err();
+    assert!(
+        refusals
+            .0
+            .iter()
+            .any(|r| r.at == "hud.json#/panels/0/columns/1/number"
+                && r.rule.contains("type = \"integer\"")),
+        "{refusals}"
+    );
+    let mut r = github_ref();
+    r["owner"] = json!("login");
+    let refusals = board("integer", r).unwrap_err();
+    assert!(
+        refusals
+            .0
+            .iter()
+            .any(|r| r.at == "hud.json#/panels/0/columns/1/owner"
+                && r.rule.contains("not declared by the loader")),
+        "{refusals}"
+    );
+}
+
 #[test]
 fn pointers_escape_slashes_and_tildes() {
     assert_eq!(pointer("/a", "b/c~d"), "/a/b~1c~0d");

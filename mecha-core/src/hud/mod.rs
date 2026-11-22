@@ -37,6 +37,7 @@
 //! else may control.
 
 pub mod draft;
+pub mod link;
 pub mod loader;
 pub mod publish;
 pub mod render;
@@ -55,7 +56,7 @@ use anyhow::Result;
 pub use draft::{Draft, Fetch, Preview, Proposed};
 pub use loader::{Column, ColumnType, Loader, ShapeRefusal};
 pub use source::{Source, Sources};
-pub use spec::{Panel, Spec};
+pub use spec::{GithubRef, Panel, RefKind, Spec, TableColumn};
 pub use store::{Dataset, Store};
 
 /// How a model drafts a board: what `hud_sources` hands it, beside the
@@ -366,13 +367,42 @@ fn cross_check(spec: &Spec, loaders: &BTreeMap<String, Loader>) -> Vec<Refusal> 
             Panel::Table {
                 dataset, columns, ..
             } => {
-                for (j, field) in columns.iter().enumerate() {
-                    if !has_column(dataset, field) {
-                        out.push(missing(
-                            format!("hud.json#/panels/{i}/columns/{j}"),
-                            dataset,
-                            field,
-                        ));
+                for (j, col) in columns.iter().enumerate() {
+                    let here = format!("hud.json#/panels/{i}/columns/{j}");
+                    for (key, field) in col.fields() {
+                        let at = if key.is_empty() {
+                            here.clone()
+                        } else {
+                            pointer(&here, key)
+                        };
+                        if !has_column(dataset, field) {
+                            out.push(missing(at, dataset, field));
+                            continue;
+                        }
+                        // A reference's number is an issue number: a column
+                        // declared anything but an integer would render as
+                        // text on every row, which is a draft to fix, not a
+                        // board to install.
+                        let want = match key {
+                            "number" => Some((ColumnType::Integer, "integer")),
+                            "owner" | "repo" => Some((ColumnType::String, "string")),
+                            _ => None,
+                        };
+                        let declared = loaders
+                            .get(dataset)
+                            .and_then(|l| l.columns().iter().find(|c| c.name == field))
+                            .map(|c| c.kind);
+                        if let (Some((want, word)), Some(got)) = (want, declared) {
+                            if want != got {
+                                out.push(Refusal::new(
+                                    at,
+                                    format!(
+                                        "a github reference's {key} is a column its loader \
+                                         declares `type = \"{word}\"`, and {field:?} is not"
+                                    ),
+                                ));
+                            }
+                        }
                     }
                 }
             }
