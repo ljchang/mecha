@@ -86,6 +86,13 @@ struct Running {
     /// be read, and then nothing is opened or released: acting on a guess
     /// about what a run staged is worse than a missed convenience.
     outbox_before: Option<std::collections::HashSet<String>>,
+    /// Every follow-up id that existed when the run started — the same
+    /// before half for `/review auto`'s follow-up acceptance
+    /// (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` F7), so it touches only what
+    /// *this run* proposed. `None` when the session is unrecorded, the agent
+    /// cannot propose, or the store could not be read whole — and then
+    /// nothing is accepted on the owner's behalf.
+    followups_before: Option<std::collections::HashSet<String>>,
 }
 
 /// What an off-loop `/remote-control` did.
@@ -1391,6 +1398,7 @@ async fn run_loop(
             outcome = wait_for_run(&mut app.running), if app.running.is_some() => {
                 let persisted = app.running.as_mut().map(|r| std::mem::take(&mut r.persisted)).unwrap_or_default();
                 let baseline = app.running.as_mut().and_then(|r| r.outbox_before.take());
+                let follow_baseline = app.running.as_mut().and_then(|r| r.followups_before.take());
                 // **Steering the run ended before folding in.** The queue is
                 // drained at the top of each turn, so a run that finishes in
                 // one turn — no tool calls, just an answer — never reaches a
@@ -1415,7 +1423,7 @@ async fn run_loop(
                 // next run instead — and what was dropped is named, because
                 // silently discarding it is the other half of the same bug.
                 let cancelled = app.running.as_ref().is_some_and(|r| r.cancelling);
-                finish_run(app, outcome, persisted, baseline, session)?;
+                finish_run(app, outcome, persisted, baseline, follow_baseline, session)?;
                 if cancelled && !leftover.is_empty() {
                     app.transcript.push(Entry::Notice(format!(
                         "dropped {} queued line(s) — the run was stopped",
@@ -1481,6 +1489,7 @@ fn finish_run(
     outcome: RunResult,
     persisted: Vec<Message>,
     baseline: Option<std::collections::HashSet<String>>,
+    follow_baseline: Option<std::collections::HashSet<String>>,
     session: Option<&Session>,
 ) -> Result<()> {
     let (result, convo) = outcome;
@@ -1586,7 +1595,43 @@ fn finish_run(
     app.running = None;
     set_title(&format!("mecha · {}", workspace_name(app)));
     settle_staged_drafts(app, baseline, finished_clean);
+    if let (Some(baseline), Some(s)) = (follow_baseline, session) {
+        settle_follow_ups(app, &s.meta.id, &baseline, finished_clean);
+    }
     Ok(())
+}
+
+/// `/review auto`'s half for follow-ups (F2, and F7's rule for every
+/// surface with an auto mode): this run's proposals, settled by
+/// `review_policy::auto_accepts` through the accept `mecha followups accept`
+/// runs — the web chat's run end makes the same call. Every other mode
+/// leaves them in the proposals pane, as before.
+fn settle_follow_ups(
+    app: &mut App,
+    session_id: &str,
+    baseline: &std::collections::HashSet<String>,
+    finished_clean: bool,
+) {
+    if app.review != command::ReviewMode::Auto {
+        return;
+    }
+    // Read where `followups accept` reads it, so an auto-accepted workflow
+    // and a clicked one record the same outbox root.
+    let config = mecha_core::config::Config::load_global().ok();
+    let outbox_root = config.as_ref().and_then(|c| c.outbox.dir.clone());
+    let tz = config
+        .as_ref()
+        .and_then(|c| c.agent.timezone())
+        .unwrap_or(chrono_tz::UTC);
+    for line in crate::commands::followups::settle_auto_lines(
+        session_id,
+        baseline,
+        finished_clean,
+        outbox_root,
+        tz,
+    ) {
+        app.transcript.push(Entry::Notice(line));
+    }
 }
 
 /// What the finished run staged, and what to do about it — the `/review`
@@ -4025,6 +4070,16 @@ fn submit(
         }
     };
 
+    // Only where the run can propose into a recorded conversation; the
+    // review mode is read at the end, so a `/review auto` typed mid-run
+    // governs this run's proposals as it governs its drafts.
+    let followups_before = (session.is_some()
+        && agent
+            .registry()
+            .get(mecha_core::tool::follow_up::NAME)
+            .is_some())
+    .then(crate::commands::followups::baseline)
+    .flatten();
     let agent = Arc::clone(agent);
     // Everything up to and including the message just submitted is on disk.
     let persisted = app.convo.messages.clone();
@@ -4042,6 +4097,7 @@ fn submit(
         cancelling: false,
         persisted,
         outbox_before: outbox_ids(),
+        followups_before,
     });
     Ok(())
 }
@@ -10576,10 +10632,69 @@ mod tests {
             cancelling: false,
             persisted: Vec::new(),
             outbox_before: None,
+            followups_before: None,
         });
         let text = frame_text(&mut app, 80, 12, None);
         assert!(text.contains("working"), "{text}");
         assert!(text.contains("type to steer"), "{text}");
+    }
+
+    /// `/review auto` takes this run's clean follow-up proposal through the
+    /// owner's accept path, recorded as the standing rule's, and leaves a
+    /// tainted one proposed; every other mode accepts nothing (F2/F7).
+    #[test]
+    fn review_auto_accepts_this_runs_clean_follow_ups_and_no_other_mode_does() {
+        use mecha_core::agent::Taint;
+        use mecha_core::followup::{self, FollowUpStore};
+        let home = crate::testenv::HomeGuard::new("tui-followup-auto");
+        let store = FollowUpStore::open(home.dir.join("followups")).unwrap();
+        let base = crate::commands::followups::baseline().expect("readable");
+        let now = chrono::Utc::now();
+        let propose = |what: &str, taint: Taint| {
+            store
+                .propose(
+                    what.into(),
+                    now + chrono::Duration::hours(2),
+                    "sess-tui",
+                    Some("/tmp/w".into()),
+                    taint,
+                    now,
+                )
+                .unwrap()
+        };
+        let clean = propose("check the build", Taint::default());
+        let tainted = propose(
+            "the link the page asked for",
+            Taint {
+                private: false,
+                untrusted: true,
+            },
+        );
+
+        let mut app = test_app();
+        for mode in [command::ReviewMode::Later, command::ReviewMode::Now] {
+            app.review = mode;
+            settle_follow_ups(&mut app, "sess-tui", &base, true);
+            assert!(
+                store.get(&clean.id).unwrap().is_proposed(),
+                "{mode:?} accepted"
+            );
+        }
+
+        app.review = command::ReviewMode::Auto;
+        settle_follow_ups(&mut app, "sess-tui", &base, true);
+        let done = store.get(&clean.id).unwrap();
+        assert_eq!(done.status, followup::ACCEPTED);
+        assert_eq!(done.accepted_by, Some(followup::Acceptance::Auto));
+        assert!(store.get(&tainted.id).unwrap().is_proposed());
+        let w = mecha_core::workflow::WorkflowStore::default_store()
+            .unwrap()
+            .get(done.workflow_id.as_deref().unwrap())
+            .unwrap();
+        assert_eq!(w.accepted_by, Some(followup::Acceptance::Auto));
+        let text = frame_text(&mut app, 220, 20, None);
+        assert!(text.contains("accepted automatically"), "{text}");
+        assert!(text.contains("read outside content"), "{text}");
     }
 
     #[test]

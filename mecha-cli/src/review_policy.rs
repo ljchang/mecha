@@ -19,6 +19,11 @@
 //!   drafts are half a thought; its untainted drafts still surface for
 //!   review — they just never release themselves.
 //!
+//! The follow-up proposals a run makes are decided beside the drafts, by
+//! [`auto_accepts`]: the same standing word (`/review auto`, or a web chat's
+//! **auto** button), the same two exclusions, read off the proposal's own
+//! recorded taint (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` F7).
+//!
 //! What deliberately does *not* live here: how a mode is uttered (a slash
 //! command, a command word) and where held drafts are shown (a modal, a
 //! card). Those are each surface's own.
@@ -74,9 +79,10 @@ impl ReviewMode {
             ReviewMode::Now => "drafts a run stages are offered for review when it finishes",
             ReviewMode::Later => "drafts wait in the outbox until you get to them",
             ReviewMode::Auto => {
-                "untainted drafts a run stages release when it finishes cleanly — \
-                 tainted drafts still stop for review, and an errored or \
-                 early-stopped run releases nothing"
+                "untainted drafts a run stages release when it finishes cleanly, \
+                 and its untainted follow-up proposals are accepted — tainted \
+                 ones still stop for review, and an errored or early-stopped \
+                 run releases and accepts nothing"
             }
         }
     }
@@ -98,6 +104,36 @@ impl ReviewMode {
 /// the TUI's call site.
 pub fn auto_releases(mode: ReviewMode, tainted: bool, finished_clean: bool) -> bool {
     mode == ReviewMode::Auto && !tainted && finished_clean
+}
+
+/// Whether one proposed follow-up is accepted without the owner's click
+/// (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` F7, and F2 for the TUI). The whole
+/// rule, beside the drafts' one and on the same reasoning:
+///
+/// - `auto` — the owner's standing word for this conversation: the web
+///   chat's **auto** button, or the TUI's `/review auto`. Set by an explicit
+///   gesture only, as a [`ReviewMode`] is; nothing a model or a message says
+///   reaches it.
+/// - **The proposal's own recorded taint**, never the conversation's as it
+///   stands now: [`FollowUp::armed`] reads unknown as untrusted, so a record
+///   with no taint — written by hand, or by an older binary — waits too. A
+///   proposal from a conversation that had read outside content is an
+///   injection's way to schedule itself, and the owner's standing word was
+///   given before that content arrived.
+/// - `finished_clean` — the drafts rule's early-stop exclusion, which F2
+///   named: a run the owner stopped, or one that errored, proposed half a
+///   thought, and its follow-up waits for a decision like a tainted one.
+///
+/// Only a proposal still `proposed` qualifies; a decision is made once.
+/// Drafts are not this function's: F7 leaves them to [`auto_releases`].
+///
+/// [`FollowUp::armed`]: mecha_core::followup::FollowUp::armed
+pub fn auto_accepts(
+    auto: bool,
+    proposal: &mecha_core::followup::FollowUp,
+    finished_clean: bool,
+) -> bool {
+    auto && proposal.is_proposed() && !proposal.armed() && finished_clean
 }
 
 /// The drafts one run staged: pending items that were not pending when it
@@ -809,6 +845,53 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn follow_up(taint: Option<mecha_core::agent::Taint>) -> mecha_core::followup::FollowUp {
+        let now = chrono::Utc::now();
+        mecha_core::followup::FollowUp {
+            id: "20261122T090000-rule1234".into(),
+            status: mecha_core::followup::PROPOSED.into(),
+            what: "check whether the parcel arrived".into(),
+            due_at: now + chrono::Duration::hours(3),
+            session_id: "sess-a".into(),
+            workspace: Some("/tmp/w".into()),
+            taint,
+            proposed_at: now,
+            decided_at: None,
+            workflow_id: None,
+            reason: None,
+            accepted_by: None,
+        }
+    }
+
+    /// F7's whole rule: auto on and a clean recorded taint, from a run that
+    /// finished. Tainted, unknown, auto off, an early stop, or a proposal
+    /// already decided — each waits for the owner.
+    #[test]
+    fn only_an_untainted_proposal_under_auto_is_accepted_on_the_owners_behalf() {
+        use mecha_core::agent::Taint;
+        let clean = follow_up(Some(Taint::default()));
+        assert!(auto_accepts(true, &clean, true));
+        assert!(!auto_accepts(false, &clean, true), "auto off waits");
+        assert!(!auto_accepts(true, &clean, false), "an early stop waits");
+        let read_outside = follow_up(Some(Taint {
+            private: false,
+            untrusted: true,
+        }));
+        assert!(!auto_accepts(true, &read_outside, true), "tainted waits");
+        // Unknown is untrusted: a record with no taint never qualifies.
+        assert!(!auto_accepts(true, &follow_up(None), true), "unknown waits");
+        // Private data alone is not outside content: the owner's own mail in
+        // the conversation does not stop a follow-up about it.
+        let private = follow_up(Some(Taint {
+            private: true,
+            untrusted: false,
+        }));
+        assert!(auto_accepts(true, &private, true));
+        let mut decided = follow_up(Some(Taint::default()));
+        decided.status = mecha_core::followup::REJECTED.into();
+        assert!(!auto_accepts(true, &decided, true), "decided once");
     }
 
     #[test]

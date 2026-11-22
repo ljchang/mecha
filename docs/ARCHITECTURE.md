@@ -7752,6 +7752,25 @@ the outbox route), is off unless `[features] followups` is on, records taint
 fail-closed, and `forget` purges a
 session's proposals.
 
+**The owner's standing word can accept instead of the click** (design F7,
+step 3). A web chat's **auto** chip (`POST /api/chat/{key}/auto`, behind
+`[features] followups`, refused for incognito) and the TUI's `/review auto`
+are the standing rule; when a run ends, `followups::settle_auto_lines` takes
+the proposals *this run* made in *this conversation* — an id-diff against a
+baseline taken at the run's start, as the outbox's is — and accepts each one
+`review_policy::auto_accepts` admits through `accept_as`, the writer the
+pane's Accept drives, so the two differ only in `accepted_by` (`Acceptance::
+Owner | Auto`, on the proposal and its workflow, said in the `created` event,
+the workflow card and `followups measure`). The rule: auto on, the proposal's
+own recorded taint carries no outside content (unknown is outside; private
+alone is not), and the run finished cleanly. Everything else waits in the
+pane, said in the chat. The flag is written only by the owner's gesture, never
+a tool or turn text, and lives in memory with the conversation as the mode
+does, so a resume or a restart starts it off. A woken follow-up run takes no
+baseline and so never auto-accepts: a follow-up cannot schedule the next
+without the owner. Drafts are not covered (F7); the drafts' own
+`/review auto` rule is unchanged.
+
 **A due follow-up wakes its conversation, in `mecha serve` only**
 (`ChatState::spawn_follow_up_waker`, design §Step 2). Serve holds the web
 chats, and a second writer on a transcript forks it, so the trigger tick only

@@ -23,6 +23,7 @@
   import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
   import { features } from './features.svelte.js';
   import { isShown } from './features.js';
+  import { autoChip, autoFrom, autoOffered } from './chat-auto.js';
   // The chat view: a rendering of the conversation the server owns, plus a
   // live SSE feed of the run in flight. Sending during a run steers it —
   // the server folds the text into the tool-results turn.
@@ -38,6 +39,9 @@
 
   let key = $state('main');
   let mode = $state('read_only');
+  // Auto for this chat's follow-up proposals (F7) — the server's word, off
+  // until the owner taps the chip; `chat-auto.js` says what it covers.
+  let auto = $state(false);
   // Only authenticated responses establish session identity. These hints live
   // in RAM and never authorize a turn; the server rechecks the sealed ordinal.
   const memorySessions = new Map();
@@ -447,6 +451,7 @@
       taint = data.taint;
       model = data.model;
       mode = data.mode ?? 'read_only';
+      auto = autoFrom(data.auto);
       grants = data.grants ?? [];
       for (const q of data.questions ?? []) {
         if (!entries.some((e) => e.kind === 'question' && e.qid === q.qid)) {
@@ -625,6 +630,12 @@
           // same session, and a POST whose response was lost must not leave
           // the chip describing a run that is no longer gated that way.
           mode = ev.mode;
+          break;
+        case 'auto':
+          // The server's word, like `mode`: a chip reading off over a chat
+          // that accepts follow-ups on the owner's behalf is the dangerous
+          // staleness.
+          auto = autoFrom(ev.on);
           break;
         case 'grants':
           // The server's word, like `mode`: a grant made on the phone reaches
@@ -1965,6 +1976,28 @@
     }
   }
 
+  // One tap toggles, no confirmation: it covers follow-ups only, a tainted
+  // proposal still waits, and every accepted one is a workflow the owner can
+  // close. Optimistic like `setMode`, settled by the server's `auto` event.
+  async function toggleAuto() {
+    const prev = auto;
+    const next = !auto;
+    auto = next;
+    try {
+      const res = await fetch(`/api/chat/${key}/auto`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ on: next }),
+      });
+      if (!res.ok) {
+        auto = prev;
+        pushEntry({ kind: 'notice', text: (await res.text()).trim() });
+      }
+    } catch {
+      auto = prev;
+    }
+  }
+
   // A grant, a revoke, or the list. The server's `notice` event says what
   // changed and its `grants` event updates every open page; the response
   // settles this one even if its stream is reconnecting. A refusal (a path
@@ -2137,6 +2170,16 @@
         onclick={nextMode}
         title="read-only: reads run, sends stage · ask: every other call becomes an approval card · allow: nothing asks (the interlock still refuses sends once this conversation holds private and untrusted content)"
       >{MODE_LABEL[mode] ?? mode}</button>
+      {#if autoOffered({ memoryIntent, incognito, rows: features.rows })}
+        {@const chip = autoChip(auto)}
+        <button
+          class="chip modechip autochip"
+          class:on={auto}
+          aria-pressed={chip.pressed}
+          onclick={toggleAuto}
+          title={chip.title}
+        >{chip.label}</button>
+      {/if}
       <ModelChip {model} {incognito} />
       {:else}
         <span class="chip" title="Model and tool profile are fixed for this memory conversation">{model || 'Fixed profile'}</span>
@@ -3759,6 +3802,11 @@
     color: var(--hazard);
     background: var(--bg);
     border-color: var(--hazard);
+  }
+  .autochip.on {
+    color: var(--accent-100);
+    background: var(--accent-900);
+    border-color: var(--accent-500);
   }
   .qcard {
     background: var(--surface);
