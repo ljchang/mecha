@@ -581,6 +581,26 @@ fn start_unit(
     Ok(())
 }
 
+/// The engine the installed router runs, read from what its service names:
+/// the unit's drop-ins under systemd (`engine_gate::Servers`), the agent's
+/// plist under launchd — never the engine an install would pick now, since
+/// the service keeps the one it was written with until `--adopt` moves it.
+/// `Ok(None)` is a service that names none; an error is a service that could
+/// not be read, which the caller says rather than reading as `None`.
+pub fn running_engine(m: &Machinery, naming: &Naming) -> Result<Option<PathBuf>> {
+    if cfg!(target_os = "macos") {
+        let plist = crate::engine_gate::unit_dir(m)?.join(crate::launchd::plist_name(&naming.stem));
+        let text = match std::fs::read_to_string(&plist) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", plist.display())),
+        };
+        Ok(crate::launchd::env_value(&text, "LLAMA_SERVER").map(PathBuf::from))
+    } else {
+        Ok(crate::engine_gate::Servers::read()?.engine(crate::engine_gate::Role::Router))
+    }
+}
+
 /// The launchd half: the plist, written with the environment a unit's
 /// drop-ins carry, and loaded — which starts it. `check` then waits for the
 /// load, as `mecha-wait-healthy` does under systemd.

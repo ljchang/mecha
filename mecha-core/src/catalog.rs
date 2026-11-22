@@ -106,6 +106,32 @@ const GEMMA_GEOMETRY: &[TierGeometry] = &[
     },
 ];
 
+/// Inkling 2 Mini's: the largest windows, in 8k steps, within the fit rule —
+/// 240k at 128 GB, 96k at 64 GB, 72k at 32 GB. The window is dear for an MoE
+/// this size: llama.cpp gives each of the 48 layer passes (24 layers, the 12
+/// of `loop_config`'s core 6..18 run three times) a full-length cache, its
+/// sliding-window layers included — `kv_kib_per_token` — so 256k at 128 GB
+/// would ask 50,960 MiB against a budget of 49,783 (production's 45,258, to
+/// a tenth). Trained to 1M; the window grows if llama.cpp windows those
+/// layers.
+const INKLING_GEOMETRY: &[TierGeometry] = &[
+    TierGeometry {
+        tier_gb: 32,
+        ctx: 73_728,
+        slots: 1,
+    },
+    TierGeometry {
+        tier_gb: 64,
+        ctx: 98_304,
+        slots: 1,
+    },
+    TierGeometry {
+        tier_gb: 128,
+        ctx: 245_760,
+        slots: 1,
+    },
+];
+
 /// One catalog entry.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Entry {
@@ -128,6 +154,11 @@ pub struct Entry {
     pub kv_kib_per_token: u32,
     /// Constant state per slot, MiB (Qwen3.6's recurrent layers).
     pub state_mb_per_slot: u32,
+    /// The oldest llama.cpp build that loads it, where that is newer than
+    /// some engine mecha has shipped: `add` asks the router's engine before
+    /// anything is fetched (`engine_refusal`). `None` is any engine mecha
+    /// has pinned since the catalog began.
+    pub min_engine_build: Option<u32>,
 }
 
 /// Qwen's thinking-mode sampling past `temp`, as the GB10 serves every Qwen
@@ -144,9 +175,10 @@ macro_rules! qwen_sampling {
 const UNCENSORED_NOTE: &str =
     "an uncensored build: its refusals were trained out, so it answers what the base model would decline";
 
-/// The registry, in the order the chip lists it. Every entry was loaded,
+/// The registry, in the order the chip lists it. The first five were loaded,
 /// answered and drafted on the owner's Mac on 2026-10-19 from these pins
-/// (design §4), from the GB10 router's presets of the same day.
+/// (design §4), from the GB10 router's presets of the same day; later entries
+/// say where they were measured.
 pub const CATALOG: &[Entry] = &[
     Entry {
         id: "qwen3.6-35b-a3b-uncensored",
@@ -193,6 +225,7 @@ pub const CATALOG: &[Entry] = &[
         temperature: Some(0.6),
         kv_kib_per_token: 22,
         state_mb_per_slot: 64,
+        min_engine_build: None,
     },
     Entry {
         id: "qwen3.8-27b",
@@ -234,6 +267,7 @@ pub const CATALOG: &[Entry] = &[
         temperature: Some(1.0),
         kv_kib_per_token: 64,
         state_mb_per_slot: 0,
+        min_engine_build: None,
     },
     Entry {
         id: "qwen3.8-27b-uncensored",
@@ -273,6 +307,7 @@ pub const CATALOG: &[Entry] = &[
         temperature: Some(1.0),
         kv_kib_per_token: 64,
         state_mb_per_slot: 0,
+        min_engine_build: None,
     },
     Entry {
         id: "qwen3.8-27b-abliterated",
@@ -312,6 +347,7 @@ pub const CATALOG: &[Entry] = &[
         temperature: Some(1.0),
         kv_kib_per_token: 64,
         state_mb_per_slot: 0,
+        min_engine_build: None,
     },
     Entry {
         id: "gemma-4-26b-a4b",
@@ -362,8 +398,136 @@ pub const CATALOG: &[Entry] = &[
         // 256k — 4,928 MiB for 229,376 more tokens. Was 64, an estimate.
         kv_kib_per_token: 22,
         state_mb_per_slot: 0,
+        min_engine_build: None,
+    },
+    // Measured on the GB10 only (2026-11-21/22), not on a Mac: the
+    // `inkling2_loop` architecture is in llama.cpp from b12611, so the pinned
+    // engine (`engine::PIN`) has to be that new for this entry to load.
+    Entry {
+        id: "inkling-2-mini",
+        provider: "inkling2",
+        label: "Inkling 2 Mini UD-Q4_K_XL (MoE, 3.4B active), with its vision projector",
+        note: "Thinking Machines' MoE, with no draft: about half the production model's speed with its draft off, and a shorter window at each tier, since its context costs six times as much per token",
+        // unsloth's mainline-layout file: the repository's root GGUFs are in
+        // unsloth's own fork's layout, which mainline llama.cpp refuses.
+        // `.gguf_file` is the upload's name; llama-server reads it as is.
+        pins: &[
+            Pin {
+                repo: "unsloth/Inkling-2-Mini-GGUF",
+                revision: "ae9327c5fbc7333116ba32eee78bb5d2bbefae4f",
+                file: HubFile {
+                    path: "Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file",
+                    sha256: "e64276656f072e9b2197a61723667cbdb71da66a716ffd966e572c21088f3cd3",
+                    bytes: 17_629_760_736,
+                },
+                role: Role::Weights,
+            },
+            // BF16, the one `start-router.sh`'s `hub_mmproj` (`mmproj_in`)
+            // picks when the revision ships BF16 and F16 side by side, as
+            // this one does: pin the other and the router serves one
+            // projector while `present()` checks another.
+            Pin {
+                repo: "unsloth/Inkling-2-Mini-GGUF",
+                revision: "ae9327c5fbc7333116ba32eee78bb5d2bbefae4f",
+                file: HubFile {
+                    path: "mmproj-BF16.gguf",
+                    sha256: "2c165c78790e78a3f45a2d1e9e931083e52ee69d45ff2a0dc9c281fdf1a666e7",
+                    bytes: 641_805_760,
+                },
+                role: Role::Projector,
+            },
+        ],
+        geometry: Geometry::PerTier(INKLING_GEOMETRY),
+        // The model card's sampling. No draft: its own drafter (DSpark) is
+        // not in llama.cpp yet. Through both open versions (#32218, and the
+        // rewrite at 8b4c3aae) it decoded 5–14% faster on code and 5–15%
+        // slower on prose, accepting 0.39 of three drafted tokens and 0.50
+        // of two (GB10, 2026-11-21 and -22). The template's own default
+        // effort (0.9, "high") stands; a request sets
+        // `chat_template_kwargs.reasoning_effort`.
+        //
+        // `reasoning-preserve` is set, never left to the build, as for every
+        // Qwen preset (`start-router.sh`'s `qwen_sampling`): the template
+        // has no rule of its own and renders every `reasoning_content` it is
+        // handed, so the flag alone decides whether earlier thinking stays in
+        // the prompt — and llama.cpp flipped its default once already. Kept,
+        // so each prompt is a prefix of the next. No `reasoning-budget`:
+        // whether the build's forced end of thinking lands in Inkling's
+        // `<|content_thinking|>` format is not measured. No
+        // `image-min-tokens`: the floor is Qwen-VL's grounding fix.
+        lines: &[
+            "temp = 1.0",
+            "top-p = 1.0",
+            "top-k = 0",
+            "min-p = 0.0",
+            "reasoning-preserve = true",
+        ],
+        temperature: Some(1.0),
+        // Measured on the GB10 (2026-11-21), weights and projector loaded:
+        // 21,924 MiB of GPU at 32k, 51,244 MiB at 256k — 29,320 MiB for
+        // 229,376 more tokens.
+        kv_kib_per_token: 131,
+        state_mb_per_slot: 0,
+        // b12611: the first release with #32704.
+        min_engine_build: Some(12_611),
     },
 ];
+
+/// Why the router's engine here cannot load `entry`, or `None`. Asked of the
+/// engine itself, by its `--version`, before anything is fetched: an entry
+/// newer than the engine would otherwise download, restart the router, pass
+/// its health check on the base model, and fail only when the owner picks it.
+///
+/// `running` is the engine the router's service names today
+/// (`router_unit::running_engine`: the unit's drop-ins, or the launchd
+/// plist), which is the one to ask: the service is written once, at `setup
+/// chat`, and installing mecha's engine afterwards does not rewrite it —
+/// that is `--adopt`'s move. Only where the service names none or cannot be
+/// read — which `add` says — is the engine `Engine::resolve` would install
+/// with asked instead.
+///
+/// A version that cannot be read is a refusal, never a pass — and a build
+/// from source counts its own commits, not the release's number, so it reads
+/// low and is sent to `--adopt` rather than trusted.
+pub fn engine_refusal(
+    entry: &Entry,
+    m: &crate::sidecar::Machinery,
+    running: Option<&Path>,
+) -> Option<String> {
+    let min = entry.min_engine_build?;
+    let server = match running {
+        Some(p) => p.to_path_buf(),
+        None => match crate::llama_units::Engine::resolve(m) {
+            Ok(e) => e.path().to_path_buf(),
+            Err(e) => return Some(format!("{e:#}")),
+        },
+    };
+    // Compared as files, as `engine_gate` asks "is this mecha's engine": a
+    // unit may spell the same binary another way.
+    let same = |a: &Path, b: &Path| match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    };
+    let remedy = if same(&server, &crate::engine_gate::managed_binary(&m.mecha_home)) {
+        "`mecha setup engine --upgrade` moves it to a newer release"
+    } else {
+        "`mecha setup engine --adopt` moves the router onto mecha's pinned engine"
+    };
+    let needs = format!("{} needs llama.cpp b{min} or newer", entry.id);
+    let at = server.display();
+    match crate::engine::build_of(&server) {
+        Ok(Some(b)) if b >= min => None,
+        Ok(Some(b)) => Some(format!(
+            "{needs}, and the router's engine ({at}) is build {b} — {remedy}"
+        )),
+        Ok(None) => Some(format!(
+            "{needs}, and the router's engine ({at}) names no build in its --version — {remedy}"
+        )),
+        Err(e) => Some(format!(
+            "{needs}, and the router's engine could not be asked: {e:#} — {remedy}"
+        )),
+    }
+}
 
 /// The entry `id` names.
 pub fn entry(id: &str) -> Option<&'static Entry> {
@@ -790,6 +954,121 @@ mod tests {
         }
     }
 
+    /// mecha's own engine loads every entry: an entry may ask more than an
+    /// older install's engine, never more than the one mecha ships.
+    #[test]
+    fn the_pinned_engine_loads_every_entry() {
+        for e in CATALOG {
+            if let Some(min) = e.min_engine_build {
+                assert!(crate::engine::PIN.build >= min, "{} needs b{min}", e.id);
+            }
+        }
+        assert!(
+            CATALOG.iter().any(|e| e.min_engine_build.is_some()),
+            "the comparison is not vacuous"
+        );
+    }
+
+    /// A machine whose router engine answers `--version` with `text`.
+    #[cfg(unix)]
+    fn machine_whose_engine_says(dir: &Path, text: &str) -> crate::sidecar::Machinery {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let server = bin.join("llama-server");
+        std::fs::write(&server, format!("#!/bin/sh\nprintf '%s\\n' '{text}' >&2\n")).unwrap();
+        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::sidecar::Machinery {
+            home: dir.join("home"),
+            mecha_home: dir.join("home/.mecha"),
+            unit_dirs: vec![],
+            path: vec![bin],
+            docker: Box::new(|_| crate::sidecar::Lookup::Absent),
+        }
+    }
+
+    /// `add` refuses an entry newer than the router's engine before it
+    /// fetches anything, and refuses one whose engine's build it cannot read.
+    #[cfg(unix)]
+    #[test]
+    fn an_engine_older_than_the_entry_is_refused_before_the_download() {
+        let ink = entry("inkling-2-mini").unwrap();
+        let gemma = entry("gemma-4-26b-a4b").unwrap();
+        for (said, refused) in [
+            ("version: 1.0.0-dev (build 12627, commit 225a5345b)", None),
+            ("version: 1.0.0-dev (build 12611, commit 0123456)", None),
+            (
+                "version: 1.0.0-dev (build 12608, commit 93cb37ea)",
+                Some("is build 12608"),
+            ),
+            // A build from source counts its own commits: it reads low.
+            (
+                "version: 1.0.0-dev (build 2371, commit c56be864)",
+                Some("is build 2371"),
+            ),
+            ("version: 11205 (95887577)", Some("names no build")),
+            ("", Some("names no build")),
+        ] {
+            let dir = scratch("engine");
+            let m = machine_whose_engine_says(&dir, said);
+            let got = engine_refusal(ink, &m, None);
+            match refused {
+                None => assert_eq!(got, None, "{said}"),
+                Some(why) => {
+                    let got = got.unwrap_or_else(|| panic!("{said} passed"));
+                    assert!(got.contains(why), "{said}: {got}");
+                    assert!(got.contains("b12611"), "{got}");
+                    // Found on the PATH, not mecha's: the remedy is --adopt.
+                    assert!(got.contains("--adopt"), "{got}");
+                }
+            }
+            // An entry with no minimum never asks the engine.
+            assert_eq!(engine_refusal(gemma, &m, None), None);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // No engine at all is said, not passed.
+        let dir = scratch("engine");
+        let mut m = machine_whose_engine_says(&dir, "");
+        m.path.clear();
+        assert!(engine_refusal(ink, &m, None).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The engine asked is the one the router's unit runs, not the one an
+    /// install would pick: mecha's own engine installed after `setup chat`
+    /// does not move the router onto it until `--adopt`.
+    #[cfg(unix)]
+    #[test]
+    fn the_engine_asked_is_the_one_the_router_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let ink = entry("inkling-2-mini").unwrap();
+        let dir = scratch("engine");
+        // The PATH's engine — and the router's — is old.
+        let m = machine_whose_engine_says(&dir, "version: 1.0.0-dev (build 12000, commit 0123456)");
+        let old = dir.join("bin/llama-server");
+        // mecha's own is new, and installed.
+        let managed = crate::engine_gate::managed_binary(&m.mecha_home);
+        std::fs::create_dir_all(managed.parent().unwrap()).unwrap();
+        std::fs::write(
+            &managed,
+            "#!/bin/sh\nprintf '%s\\n' 'version: 1.0.0-dev (build 12627, commit 225a5345b)' >&2\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&managed, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // With the unit unreadable, the install's choice — mecha's — passes.
+        assert_eq!(engine_refusal(ink, &m, None), None);
+        // The router's unit still names the old one: that is what is asked.
+        let got = engine_refusal(ink, &m, Some(&old)).expect("the router's own engine is old");
+        assert!(
+            got.contains("is build 12000") && got.contains("--adopt"),
+            "{got}"
+        );
+        // Named by the unit as mecha's own, it passes, and its remedy would
+        // have been --upgrade.
+        assert_eq!(engine_refusal(ink, &m, Some(&managed)), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Exactly one weights file per entry, at most one projector and draft;
     /// every pin a full sha256 and a size.
     #[test]
@@ -879,6 +1158,57 @@ mod tests {
         assert!(
             settings(section).contains_key("ctx-size"),
             "the comparison is not vacuous"
+        );
+    }
+
+    /// The same agreement for Inkling, whose script section is a function
+    /// both its presets share: every line but the file paths is the
+    /// catalog's at 128 GB, the GB10's tier.
+    #[test]
+    fn the_scripts_inkling_section_is_the_catalogs() {
+        let script = include_str!("../../scripts/start-router.sh");
+        let body = script
+            .split_once("\ninkling() {\n")
+            .expect("the script's inkling function moved")
+            .1;
+        let body = &body[..body.find("\nEOF").unwrap()];
+        let settings = |text: &str| -> std::collections::BTreeMap<String, String> {
+            text.lines()
+                .filter_map(|l| l.split_once(" = "))
+                .filter(|(k, _)| !["model", "mmproj"].contains(&k.trim()))
+                .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+                .collect()
+        };
+        let p = Paths {
+            model: "/m/w.gguf".into(),
+            mmproj: Some("/m/p.gguf".into()),
+            draft: None,
+        };
+        let e = entry("inkling-2-mini").unwrap();
+        let ours = section_text(e, 128, &p).unwrap();
+        assert_eq!(settings(body), settings(&ours));
+        assert!(
+            settings(body).contains_key("ctx-size"),
+            "the comparison is not vacuous"
+        );
+        // The paths themselves: the script looks up the pinned weights by
+        // name, and its projector is `mmproj_in`'s first choice — which must
+        // be the pinned one, since this revision ships two.
+        let pinned = |r: Role| e.pins.iter().find(|p| p.role == r).unwrap().file.path;
+        assert!(
+            script.contains(&format!("hub_file \"$R\" {}", pinned(Role::Weights))),
+            "the script serves other weights"
+        );
+        let mmproj = include_str!("../../scripts/mmproj.sh");
+        let first = mmproj
+            .split_once("for p in \"${1%/}/")
+            .expect("mmproj_in's list moved")
+            .1;
+        let first = &first[..first.find('"').unwrap()];
+        assert_eq!(
+            first,
+            pinned(Role::Projector),
+            "the router would serve another projector"
         );
     }
 

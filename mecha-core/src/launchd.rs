@@ -249,6 +249,24 @@ pub fn plist_text(a: &Agent) -> String {
 
 /// Text made safe inside a plist element: a path with `&` or `<` in it is a
 /// malformed plist launchd refuses to load, not a different path.
+/// The value `plist_text` wrote for environment variable `key`, unescaped;
+/// `None` where the plist names no such variable. Read back the way it was
+/// written, so this reads mecha's own plists, not an arbitrary one.
+pub fn env_value(plist: &str, key: &str) -> Option<String> {
+    let env = plist.split_once("<key>EnvironmentVariables</key>")?.1;
+    let env = &env[..env.find("</dict>")?];
+    let after = env.split_once(&format!("<key>{}</key>", xml(key)))?.1;
+    let value = after.trim_start().strip_prefix("<string>")?;
+    let value = &value[..value.find("</string>")?];
+    Some(
+        value
+            .replace("&quot;", "\"")
+            .replace("&gt;", ">")
+            .replace("&lt;", "<")
+            .replace("&amp;", "&"),
+    )
+}
+
 fn xml(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -424,6 +442,18 @@ mod tests {
             assert!(text.contains(want), "{want} missing:\n{text}");
         }
         assert!(!text.contains("R&D"), "an unescaped ampersand:\n{text}");
+        // And read back as written: the engine the router runs, by name.
+        assert_eq!(
+            env_value(&text, "LLAMA_SERVER").as_deref(),
+            Some("/opt/R&D/llama-server")
+        );
+        assert_eq!(
+            env_value(&text, "MECHA_ROUTER_PORT").as_deref(),
+            Some("8080")
+        );
+        assert_eq!(env_value(&text, "MECHA_HOME"), None);
+        // A key outside the environment is not an environment variable.
+        assert_eq!(env_value(&text, "Label"), None);
     }
 
     /// When `plutil` is here (every Mac), the plist is one it accepts — the

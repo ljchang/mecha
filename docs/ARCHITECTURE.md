@@ -386,6 +386,17 @@ rather than the 82 the naive per-layer arithmetic predicts.
 - **One fit rule.** No entry asks more of a tier than the production chat
   model does there, to a tenth (`every_offered_tier_has_a_geometry_that_fits`),
   since the router holds one chat model at a time.
+- **One engine floor.** An entry newer than an engine mecha has shipped
+  names its oldest build (`Entry::min_engine_build`), and `add` asks the
+  engine the router's service runs (`router_unit::running_engine`: the
+  unit's drop-ins, or the launchd plist) for its `--version` before
+  anything is fetched (`catalog::engine_refusal`). A service that cannot be
+  read is said, and the engine an install would pick is asked instead. The
+  floor is asked at `add` only: `model use`, a re-render and `setup engine
+  --rollback` do not ask it. An older build, or one whose build cannot be
+  read, is a refusal, never a pass; `engine::PIN` is held at or above every
+  floor (`the_pinned_engine_loads_every_entry`). Design:
+  `MODEL-CATALOG-DESIGN.md` §3.
 
 ## Images
 

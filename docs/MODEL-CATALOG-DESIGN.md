@@ -135,9 +135,14 @@ on the first run) read them against the server.
   is by hand (§14).
 - Deleting the downloaded files. They are in the shared Hugging Face cache;
   `remove` says how much they hold.
-- Engine compatibility checks per entry. Every catalog file is a plain GGUF
-  the pinned llama.cpp loads; an entry's draft lines were checked on Metal
-  and on the GB10's CUDA before it was added (§4).
+- Engine compatibility checks per entry, past one floor. Every catalog file
+  is a plain GGUF the pinned llama.cpp loads; an entry's draft lines were
+  checked on Metal and on the GB10's CUDA before it was added (§4). The
+  floor is `Entry::min_engine_build`, for an entry newer than an engine
+  mecha has shipped (`inkling-2-mini`, b12611). `add` asks the router's
+  engine its `--version` before anything is fetched
+  (`catalog::engine_refusal`) and refuses an older build, or one whose
+  build it cannot read.
 - Hand-built routers. A router mecha did not install is the owner's: `model
   add` prints the section and the provider table to paste, and changes
   nothing.
@@ -158,3 +163,25 @@ answered and drafted on the owner's M-series Mac the same day:
 Three of the five are uncensored or abliterated builds. They are in the
 catalog because the owner runs them; the catalog says so in each entry's
 note, and nothing installs one without its name on the confirmation.
+
+### Later entries
+
+Measured on the GB10 only, not on a Mac:
+
+| id | files | tiers | ctx × slots | draft |
+|---|---|---|---|---|
+| `inkling-2-mini` (2026-11-22) | unsloth's `Mainline_Support` UD-Q4_K_XL + BF16 projector, one revision | 32, 64, 128 | 73728 × 1 at 32, 98304 × 1 at 64, 245760 × 1 at 128 | none |
+
+**Inkling 2 Mini** needs engine b12611 or newer: that is the first release
+with the `inkling2_loop` fix (llama.cpp #32704; without it the output is
+gibberish), and `engine::PIN` moved to b12627 with this entry. Its window is
+short for its size because llama.cpp gives each of its 48 layer passes a
+full-length cache: 131 KiB a token, against Gemma's 22. Its own drafter
+(DSpark) is not in llama.cpp yet.
+
+Its uncensored twin is **not** in the catalog. OpenUncensored's checkpoint
+changes only the 20 attention-output tensors of layers 4–23. On the GB10,
+`scripts/inkling-uncensor-graft.py` grafts them onto unsloth's file, and
+`start-router.sh` serves the result as `inkling-2-mini-uncensored`. It
+becomes a catalog entry only if it is published, like the Qwen3.6 graft. The
+owner ruled on 2026-11-22 that it is used here first.

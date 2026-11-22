@@ -328,6 +328,28 @@ pub(super) async fn add(
         for (k, v) in provider_settings(e, tier, &base)? {
             eprintln!("{k} = {v}");
         }
+        // Your router's engine is yours, and not asked: what it must be is said.
+        if let Some(min) = e.min_engine_build {
+            eprintln!("\n{id} needs llama.cpp b{min} or newer on that router.");
+        }
+        bail!("nothing was installed: {why}");
+    }
+    // Before the plan and the download: an engine too old for the entry
+    // would take the whole fetch and fail only at the first pick.
+    // The engine the router's service runs; where that cannot be read, the
+    // check falls back to the engine an install would pick, and says so.
+    let running = if e.min_engine_build.is_some() {
+        router_unit::running_engine(&here.m, &here.naming).unwrap_or_else(|err| {
+            eprintln!(
+                "the router's service could not be read ({err:#}); checking the engine an \
+                 install would pick instead"
+            );
+            None
+        })
+    } else {
+        None
+    };
+    if let Some(why) = catalog::engine_refusal(e, &here.m, running.as_deref()) {
         bail!("nothing was installed: {why}");
     }
     if let Some(why) = table_conflict(cfg, e, here.naming.port) {

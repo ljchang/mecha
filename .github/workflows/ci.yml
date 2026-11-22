@@ -383,6 +383,9 @@ jobs:
       # gguf the script pins — through uv, so each file's header is the only
       # copy of its pins.
       - run: pipx run uv run scripts/test_mtp_graft.py
+      # And the one the uncensored Inkling preset serves: its claim is that
+      # gguf's Q8_0 re-encodes to the base's own bytes.
+      - run: pipx run uv run scripts/test_inkling_uncensor_graft.py
 
   # The integration tests skip themselves when a sandbox backend is missing, and
   # a silently skipped test reads exactly like a passing one. This job installs

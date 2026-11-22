@@ -67,22 +67,22 @@ use crate::sidecar::{Machinery, Manifest};
 /// The shipped engine: the newest the project has measured (§10.3). Moved by a
 /// reviewed change; `--upgrade` (7b-3) is the owner's way past it.
 pub const PIN: Pin = Pin {
-    tag: "b11391",
-    build: 11391,
-    commit: "2bc563573479d53b30b8793039485887bc0fdda8",
+    tag: "b12627",
+    build: 12627,
+    commit: "225a5345bbb0e0c70859af5441ba922beb666fcf",
     assets: &[
         Asset {
             target: Target::LinuxArm64Cuda13,
             archives: &[
                 (
-                    "llama-b11391-bin-ubuntu-cuda-13.4-arm64.tar.gz",
-                    "5bca8f1039fef06b8972adc06369044de6e04b155e62d6f91a161623d1a279e1",
-                    147_596_012,
+                    "llama-b12627-bin-ubuntu-cuda-13.5-arm64.tar.gz",
+                    "09aafef90bc548fd91b6b7b53fc3d6c021863fe306c7270b48710020adf9333b",
+                    219_360_226,
                 ),
                 (
-                    "cudart-llama-b11391-bin-ubuntu-cuda-13.4-arm64.tar.gz",
-                    "3643a1ff6a6dde792b9bf6cf4dcf731b53503355f443f5d0d9ab4f3f4bcd92ab",
-                    552_521_398,
+                    "cudart-llama-b12627-bin-ubuntu-cuda-13.5-arm64.tar.gz",
+                    "88dcc4dbb93ca7a93fa8f632185c1319130f6872a0cf591785ccc12d642ca574",
+                    559_873_307,
                 ),
             ],
         },
@@ -90,14 +90,14 @@ pub const PIN: Pin = Pin {
             target: Target::LinuxX64Cuda13,
             archives: &[
                 (
-                    "llama-b11391-bin-ubuntu-cuda-13.4-x64.tar.gz",
-                    "e414fc5c77adbbb0547e76a5bb38672e611de61c74dec3de409e7de443fa3b0d",
-                    152_344_197,
+                    "llama-b12627-bin-ubuntu-cuda-13.5-x64.tar.gz",
+                    "a3b135ee21156c0b8854b44d49e4afdd49e97cab0a99b61d35bb6824690ec2ee",
+                    224_454_252,
                 ),
                 (
-                    "cudart-llama-b11391-bin-ubuntu-cuda-13.4-x64.tar.gz",
-                    "d3b2ffdde468f7247a352385c9c92871844e545ad47069bcb8d2adc153c5b10c",
-                    440_236_642,
+                    "cudart-llama-b12627-bin-ubuntu-cuda-13.5-x64.tar.gz",
+                    "52d0ce3e96564f561b5dcce220b20ec2a43653d9c6fedf6d9e40b249985d58fa",
+                    444_078_941,
                 ),
             ],
         },
@@ -105,47 +105,47 @@ pub const PIN: Pin = Pin {
             target: Target::LinuxX64Cuda12,
             archives: &[
                 (
-                    "llama-b11391-bin-ubuntu-cuda-12.8-x64.tar.gz",
-                    "3a76d8d1b0f3d558d0de2d060283f2da0afac79a9f68dd1486b987b9fedc5bc5",
-                    171_499_631,
+                    "llama-b12627-bin-ubuntu-cuda-12.8-x64.tar.gz",
+                    "5d007ea69b6cba02a31525ac9d47c1cd9bae8649b31cee9ba7c8d66b78070afb",
+                    220_083_974,
                 ),
                 (
-                    "cudart-llama-b11391-bin-ubuntu-cuda-12.8-x64.tar.gz",
-                    "8cd7789d811ed44d8b5ccc53feb7c1e2a0e3ab92e8e3fc450f43282fb2c81a87",
-                    594_377_794,
+                    "cudart-llama-b12627-bin-ubuntu-cuda-12.8-x64.tar.gz",
+                    "77ab970d496524a264cb71f290cf9ccfa38590a0af52ba6d94351b70462d3e71",
+                    594_371_876,
                 ),
             ],
         },
         Asset {
             target: Target::LinuxArm64Cpu,
             archives: &[(
-                "llama-b11391-bin-ubuntu-arm64.tar.gz",
-                "76f0ede98765d74e6d2e02ce8f0f22f4cbed5c4411ebca8594d13c076d0bc7fb",
-                13_667_865,
+                "llama-b12627-bin-ubuntu-arm64.tar.gz",
+                "5276f8f45da2b880b6ec2de60a83ad63721b504b725888dec29a3e91e948932a",
+                18_750_077,
             )],
         },
         Asset {
             target: Target::LinuxX64Cpu,
             archives: &[(
-                "llama-b11391-bin-ubuntu-x64.tar.gz",
-                "b620b4143ab92b050e435209d612415c0d3b19d71e6afd60fa6b96458fae891b",
-                17_637_234,
+                "llama-b12627-bin-ubuntu-x64.tar.gz",
+                "7a00a31eb63c4a5411d74517e7967f386d8b7da077ea0a7bedacb89c664c28b2",
+                23_226_300,
             )],
         },
         Asset {
             target: Target::MacArm64,
             archives: &[(
-                "llama-b11391-bin-macos-arm64.tar.gz",
-                "25d2bb54a394de7c75d11d4b4a678f600704349c5e5a5366443f746d862df27a",
-                11_915_952,
+                "llama-b12627-bin-macos-arm64.tar.gz",
+                "3ed18ae15fc53d05044c4e3e074e2057506fcb7c1d118b088dc407fdd8789818",
+                16_599_950,
             )],
         },
         Asset {
             target: Target::MacX64,
             archives: &[(
-                "llama-b11391-bin-macos-x64.tar.gz",
-                "6c6b671a6e54fc50b84ea361e9b2861dd98a542784cca4152ad0c6549931917b",
-                11_466_225,
+                "llama-b12627-bin-macos-x64.tar.gz",
+                "48bf598b6c90448e166c955ff4a4b7a0f75d16a6aee039226192786e1fefc6ec",
+                12_382_016,
             )],
         },
     ],
@@ -1449,8 +1449,9 @@ fn run_within(server: &Path, flag: &str, limit: std::time::Duration) -> Result<S
 }
 
 /// `--version`'s first line names the build and an abbreviated commit:
-/// `version: 0.5.0-dev (build 11391, commit 2bc563573)` from the pinned
-/// release, read on the GB10 on 2026-10-04. The abbreviation's length is the
+/// `version: 1.0.0-dev (build 12627, commit 225a5345b)` from the pinned
+/// release, read on the GB10 on 2026-11-22 (b11391's, on 2026-10-04, was
+/// `0.5.0-dev`: only the build and commit are read, never that prefix). The abbreviation's length is the
 /// release builder's `git rev-parse --short`, so any prefix of the expected
 /// commit of seven or more characters is that build.
 pub fn reports(text: &str, build: u32, commit: &str) -> bool {
@@ -1465,13 +1466,30 @@ pub fn reports(text: &str, build: u32, commit: &str) -> bool {
     line.contains(&wanted) && short.len() >= 7 && commit.starts_with(&short)
 }
 
+/// The build number `--version` names — `(build 12627, commit 225a5345b)`
+/// from a release — or `None` where it names none, as older builds from
+/// source printed `version: 11205 (95887577)`. A build from source counts
+/// its own clone's commits, so its number is not a release's; a comparison
+/// against a release number reads it low and fails closed.
+pub fn build_number(text: &str) -> Option<u32> {
+    let line = text.lines().find(|l| l.contains("version:"))?;
+    let rest = line.split_once("(build ")?.1;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// The build `server --version` reports, run as the install checks run it.
+pub(crate) fn build_of(server: &Path) -> Result<Option<u32>> {
+    Ok(build_number(&engine_output(server, "--version")?))
+}
+
 /// The pin's own version check.
 #[cfg(test)]
 fn reports_the_pin(text: &str) -> bool {
     reports(text, PIN.build, PIN.commit)
 }
 
-/// `/props`' `build_info` — `b11391-2bc563573` — names the same build
+/// `/props`' `build_info` — `b12627-225a5345b` — names the same build
 /// `--version` does: asked of the router after a promotion, it is the model's
 /// own process saying which engine it runs.
 pub fn build_info_is(info: &str, build: u32, commit: &str) -> bool {
@@ -2060,27 +2078,27 @@ mod tests {
     }
 
     /// The version check over the text the pinned release printed on the
-    /// GB10 — the one check `health` makes that CI could not otherwise see,
+    /// GB10 (b12627, 2026-11-22) — the one check `health` makes that CI could not otherwise see,
     /// since the end-to-end test is ignored there.
     #[test]
     fn the_pinned_release_s_version_reads_as_the_pin() {
-        let real = "version: 0.5.0-dev (build 11391, commit 2bc563573)\n\
+        let real = "version: 1.0.0-dev (build 12627, commit 225a5345b)\n\
                     built with GNU 14.2.0 for Linux aarch64\n";
         assert!(reports_the_pin(real));
         // Another abbreviation length is the same commit.
         assert!(reports_the_pin(
-            "version: 0.5.0-dev (build 11391, commit 2bc5635)"
+            "version: 1.0.0-dev (build 12627, commit 225a534)"
         ));
         // This box's from-source engine, another build, another commit.
         assert!(!reports_the_pin("version: 11205 (95887577)"));
         assert!(!reports_the_pin(
-            "version: 0.5.0-dev (build 113910, commit 2bc563573)"
+            "version: 1.0.0-dev (build 126270, commit 225a5345b)"
         ));
         assert!(!reports_the_pin(
-            "version: 0.5.0-dev (build 11391, commit 2bc56)"
+            "version: 1.0.0-dev (build 12627, commit 225a5)"
         ));
         assert!(!reports_the_pin(
-            "version: 0.5.0-dev (build 11391, commit deadbeef0)"
+            "version: 1.0.0-dev (build 12627, commit deadbeef0)"
         ));
         assert!(!reports_the_pin(""));
     }
@@ -2158,9 +2176,9 @@ mod tests {
     fn the_download_is_the_sum_of_the_target_s_archives() {
         assert_eq!(
             download_bytes(Target::LinuxArm64Cuda13),
-            147_596_012 + 552_521_398
+            219_360_226 + 559_873_307
         );
-        assert_eq!(download_bytes(Target::LinuxX64Cpu), 17_637_234);
+        assert_eq!(download_bytes(Target::LinuxX64Cpu), 23_226_300);
     }
 
     fn release(names: &[&str]) -> Release {
