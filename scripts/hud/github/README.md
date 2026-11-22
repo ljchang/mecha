@@ -1,8 +1,11 @@
 # The GitHub board — a HUD draft
 
-Step 2 of `docs/GITHUB-DASHBOARD-DESIGN.md` §7: views 1 and 2 (failing now,
-and new issues and outside pull requests), with the headline counts. No
-summaries (step 4) and no links (step 3) yet.
+Steps 2 and 3 of `docs/GITHUB-DASHBOARD-DESIGN.md` §7: views 1 and 2 (failing
+now, and new issues and outside pull requests), with the headline counts. The
+New table's `GitHub` column is the typed reference (§4). On the tailnet board
+it opens the issue, but only for a repository that is in the collector's
+inventory and in `repos.toml`. A published copy shows it as text. No
+summaries (step 4) yet.
 
 It reads the collector's store (`mecha github collect`, daily per G10), which
 the owner registers once in `~/.mecha/hud/sources.toml` — third-party,
