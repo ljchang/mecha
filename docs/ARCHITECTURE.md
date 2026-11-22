@@ -12201,6 +12201,19 @@ comparison over a chosen set**, with the design written before the run.
   ran every trial on the config's default provider, saying so only in its
   first line (2026-11-22), and the first fix listed four flags and still
   dropped the rest.
+- **A flag writes a manifest; `exp run` runs what is written.** `exp new`
+  is the one verb that takes global options, and only those a manifest can
+  say (`exp::writes`: `-p`, `-m`, the four `OverrideKey` flags, the
+  `--no-<lever>` flags read off `Lever::ALL`): `experiment::rewrite_manifest`
+  writes them into **every** arm, so the arms still differ only in what the
+  file made them differ in, keeps the file's comments (`toml_edit`), puts
+  the command on the first line, and needs `--name` — the result is a
+  different experiment. It never overwrites: an arm that names another
+  provider or model, an override at another value, or a lever turned back
+  on in `levers_on` refuses the command. A flag that could rewrite an
+  existing experiment's manifest would orphan its rows (the hash carries
+  the model) and leave predictions written for one model judging another,
+  so there is no such flag.
 - **Of the environment overrides, `exp` honours the model and refuses the
   effort.** `MECHA_PROVIDER` and `MECHA_MODEL` rewrite the operator's
   default provider — a machine fact a trial home copies, `plan` hashes and

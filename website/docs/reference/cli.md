@@ -386,6 +386,17 @@ that names no provider runs on the config's `default_provider`, which
 `MECHA_PROVIDER` and `MECHA_MODEL` set as they do for any command; `MECHA_EFFORT`
 would not reach a trial, so `exp` refuses to start while it is set.
 
+To run a design on another model, write it as a new experiment from the command
+line: `exp new` takes `-p`, `-m`, `-e`, `--max-turns`, `--max-output-tokens`,
+`--compact-at` and the `--no-<lever>` flags, writes each into every arm of the
+stored manifest, and needs `--name` for the new experiment. It refuses a flag that
+contradicts what an arm already says, and keeps the file's comments.
+
+```bash
+mecha exp new eval/memory-yard.toml --name memory-yard-inkling -p inkling-uncensored
+mecha exp run memory-yard-inkling
+```
+
 ```bash
 mecha exp new eval/assistant-lifetime.toml
 mecha exp run assistant-follow-through --dry-run

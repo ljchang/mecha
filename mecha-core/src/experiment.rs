@@ -2632,6 +2632,178 @@ where
         .unwrap_or(TrialStatus::Unknown))
 }
 
+// ─── Writing a manifest from a command line ─────────────────────────────────
+
+/// What `mecha exp new` writes into **every** arm of a manifest from its
+/// command line: the model and the knobs a global flag names. Every arm
+/// alike, so the arms still differ in exactly what the file made them
+/// differ in — the same design on another model, or at another effort.
+/// `exp run` takes none of these: a flag writes a manifest, and a run runs
+/// what is written (`ARCHITECTURE.md` §the experiment store).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct ArmEdits {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    /// Canonical, through `harness::parse_change`.
+    pub overrides: Vec<crate::harness::ConfigChange>,
+    pub levers_off: Vec<Lever>,
+}
+
+impl ArmEdits {
+    pub fn is_empty(&self) -> bool {
+        self == &ArmEdits::default()
+    }
+
+    /// One line per thing written, for the command's report.
+    pub fn describe(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(p) = &self.provider {
+            out.push(format!("provider = \"{p}\""));
+        }
+        if let Some(m) = &self.model {
+            out.push(format!("model = \"{m}\""));
+        }
+        for c in &self.overrides {
+            out.push(format!("overrides += \"{}={}\"", c.key.as_str(), c.value));
+        }
+        for l in &self.levers_off {
+            out.push(format!("levers_off += \"{}\"", l.as_str()));
+        }
+        out
+    }
+}
+
+/// `text` with `name` set and `edits` written into every arm, its comments
+/// and layout kept (`toml_edit`), and `provenance` as a comment on the first
+/// line — the stored manifest says what wrote it. Fail-closed on a
+/// contradiction rather than overwrite one: an arm that already names a
+/// different provider or model, an override already set to another value,
+/// or a lever the arm turns back on in `levers_on` (which wins over
+/// `levers_off`, so writing it would record a lever off that the trials
+/// ran on). The same value already there is not a contradiction and is
+/// written once. The result is the caller's to validate (`Manifest::parse`).
+pub fn rewrite_manifest(
+    text: &str,
+    name: &str,
+    edits: &ArmEdits,
+    provenance: &str,
+) -> Result<String> {
+    use toml_edit::{value, DocumentMut, Item};
+    let mut doc: DocumentMut = text.parse().context("parsing the manifest")?;
+    doc["name"] = value(name);
+    let arms = doc
+        .get_mut("arms")
+        .and_then(Item::as_table_like_mut)
+        .context("the manifest names no [arms]")?;
+    anyhow::ensure!(!arms.is_empty(), "the manifest names no arms");
+    for (arm_name, item) in arms.iter_mut() {
+        let arm_name = arm_name.get().to_string();
+        let arm = item
+            .as_table_like_mut()
+            .with_context(|| format!("arm `{arm_name}` is not a table"))?;
+        for (key, new) in [("provider", &edits.provider), ("model", &edits.model)] {
+            let Some(new) = new else { continue };
+            match arm.get(key).map(|v| v.as_str()) {
+                None => {
+                    arm.insert(key, value(new.as_str()));
+                }
+                Some(Some(old)) if old == new => {}
+                Some(old) => anyhow::bail!(
+                    "arm `{arm_name}` already names {key} `{}`, and the command line says `{new}`: \
+                     a flag writes what the file leaves open and never replaces what it says — \
+                     edit the file for a design whose arms differ in {key}",
+                    old.unwrap_or("(not a string)")
+                ),
+            }
+        }
+        if !edits.overrides.is_empty() {
+            let mut present = Vec::new();
+            if let Some(list) = arm.get("overrides").and_then(Item::as_array) {
+                for v in list.iter() {
+                    let spec = v.as_str().with_context(|| {
+                        format!("arm `{arm_name}`: an override is not a string")
+                    })?;
+                    present.push(
+                        crate::harness::parse_change(spec)
+                            .with_context(|| format!("arm `{arm_name}`, override `{spec}`"))?,
+                    );
+                }
+            }
+            let mut add = Vec::new();
+            for c in &edits.overrides {
+                match present.iter().find(|p| p.key == c.key) {
+                    Some(p) if p.value == c.value => {}
+                    Some(p) => anyhow::bail!(
+                        "arm `{arm_name}` already overrides {} to `{}`, and the command line says \
+                         `{}`: edit the file for a design whose arms differ in it",
+                        c.key.as_str(),
+                        p.value,
+                        c.value
+                    ),
+                    None => add.push(format!("{}={}", c.key.as_str(), c.value)),
+                }
+            }
+            append_strings(arm, "overrides", &add, &arm_name)?;
+        }
+        if !edits.levers_off.is_empty() {
+            let strings = |key: &str| -> Vec<String> {
+                arm.get(key)
+                    .and_then(Item::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let on = strings("levers_on");
+            let off = strings("levers_off");
+            let mut add = Vec::new();
+            for l in &edits.levers_off {
+                anyhow::ensure!(
+                    !on.iter().any(|n| n == l.as_str()),
+                    "arm `{arm_name}` turns `{}` on in `levers_on`, which wins over `levers_off`: \
+                     --no-{} would record a lever off that its trials run on — edit the file",
+                    l.as_str(),
+                    l.as_str().replace('_', "-")
+                );
+                if !off.iter().any(|n| n == l.as_str()) {
+                    add.push(l.as_str().to_string());
+                }
+            }
+            append_strings(arm, "levers_off", &add, &arm_name)?;
+        }
+    }
+    Ok(format!("# {provenance}\n{doc}"))
+}
+
+/// Push `add` onto the string array `key` of `arm`, making it if absent.
+fn append_strings(
+    arm: &mut dyn toml_edit::TableLike,
+    key: &str,
+    add: &[String],
+    arm_name: &str,
+) -> Result<()> {
+    if add.is_empty() {
+        return Ok(());
+    }
+    match arm.get_mut(key) {
+        Some(item) => {
+            let list = item
+                .as_array_mut()
+                .with_context(|| format!("arm `{arm_name}`: `{key}` is not an array"))?;
+            for s in add {
+                list.push(s.as_str());
+            }
+        }
+        None => {
+            let list: toml_edit::Array = add.iter().map(String::as_str).collect();
+            arm.insert(key, toml_edit::value(list));
+        }
+    }
+    Ok(())
+}
+
 // ─── The store ──────────────────────────────────────────────────────────────
 
 /// `~/.mecha/experiments/<name>/` — the manifest, the trials, and the
@@ -3901,6 +4073,92 @@ overrides = ["max_turns=20"]
 metric = "turns"
 rationale = "no notice, fewer turns"
 "#;
+
+    fn change(spec: &str) -> crate::harness::ConfigChange {
+        crate::harness::parse_change(spec).unwrap()
+    }
+
+    /// `exp new`'s flags land in every arm, beside what each arm already
+    /// says, with the file's comments and predictions kept, and the result
+    /// is a manifest that parses.
+    #[test]
+    fn a_rewritten_manifest_carries_the_flags_into_every_arm_and_keeps_the_file() {
+        let text = format!("# why this experiment exists\n{MANIFEST}");
+        let edits = ArmEdits {
+            provider: Some("fixture-b".into()),
+            model: None,
+            overrides: vec![change("effort=low")],
+            levers_off: vec![Lever::Mcp],
+        };
+        let out = rewrite_manifest(&text, "levers-b", &edits, "written by a test").unwrap();
+        assert!(out.starts_with("# written by a test\n"), "{out}");
+        assert!(out.contains("# why this experiment exists"), "{out}");
+        assert!(out.contains("everything off should fail more"), "{out}");
+        let m = Manifest::parse(&out).unwrap();
+        assert_eq!(m.name, "levers-b");
+        assert_eq!(m.arms.len(), 3);
+        for (name, arm) in &m.arms {
+            assert_eq!(arm.provider.as_deref(), Some("fixture-b"), "{name}");
+            assert!(arm.overrides.contains(&"effort=low".to_string()), "{name}");
+            assert!(arm.levers_off.contains(&"mcp".to_string()), "{name}");
+        }
+        assert_eq!(m.arms["quiet"].overrides, ["max_turns=20", "effort=low"]);
+        assert_eq!(
+            m.arms["quiet"].levers_off,
+            ["boredom", "compact_validate", "mcp"]
+        );
+        assert!(m.arms["bare"].prediction.is_some());
+    }
+
+    /// A flag fills what the file leaves open and never replaces what it
+    /// says; the same value already there is no contradiction and is not
+    /// written twice.
+    #[test]
+    fn a_rewrite_refuses_to_contradict_an_arm() {
+        let with =
+            |extra: &str| MANIFEST.replace("[arms.quiet]\n", &format!("[arms.quiet]\n{extra}\n"));
+        let edit = |edits: ArmEdits, text: &str| rewrite_manifest(text, "n", &edits, "p");
+        let provider = |p: &str| ArmEdits {
+            provider: Some(p.into()),
+            ..ArmEdits::default()
+        };
+        let e = edit(provider("b"), &with("provider = \"a\""))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("arm `quiet` already names provider `a`"), "{e}");
+        let same = edit(provider("a"), &with("provider = \"a\"")).unwrap();
+        assert_eq!(same.matches("provider = \"a\"").count(), 3, "{same}");
+        let model = ArmEdits {
+            model: Some("m2".into()),
+            ..ArmEdits::default()
+        };
+        assert!(edit(model, &with("model = \"m1\"")).is_err());
+
+        let turns = |n: &str| ArmEdits {
+            overrides: vec![change(&format!("max_turns={n}"))],
+            ..ArmEdits::default()
+        };
+        let e = edit(turns("30"), MANIFEST).unwrap_err().to_string();
+        assert!(e.contains("already overrides max_turns to `20`"), "{e}");
+        let m = Manifest::parse(&edit(turns("20"), MANIFEST).unwrap()).unwrap();
+        assert_eq!(m.arms["quiet"].overrides, ["max_turns=20"], "once");
+        assert_eq!(m.arms["full"].overrides, ["max_turns=20"]);
+
+        let mcp = ArmEdits {
+            levers_off: vec![Lever::Mcp],
+            ..ArmEdits::default()
+        };
+        let e = edit(mcp, &with("levers_on = [\"mcp\"]"))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("turns `mcp` on in `levers_on`"), "{e}");
+        let boredom = ArmEdits {
+            levers_off: vec![Lever::Boredom],
+            ..ArmEdits::default()
+        };
+        let m = Manifest::parse(&edit(boredom, MANIFEST).unwrap()).unwrap();
+        assert_eq!(m.arms["quiet"].levers_off, ["boredom", "compact_validate"]);
+    }
 
     /// `MANIFEST` with its case file swapped for a source and `extra` lines
     /// appended to `[tasks]`.

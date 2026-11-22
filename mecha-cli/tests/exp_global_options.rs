@@ -121,3 +121,100 @@ fn exp_refuses_a_global_option_it_would_ignore_and_only_then() {
         );
     }
 }
+
+/// `exp new` writes the options a manifest can say into every arm of the
+/// stored design, under a new name, and refuses the rest; with no option it
+/// stores the file as written.
+#[test]
+fn exp_new_writes_the_model_flags_into_a_new_experiment() {
+    let root = Root(std::env::temp_dir().join(format!(
+        "mecha-exp-new-flags-{}",
+        mecha_core::session::Session::new_id()
+    )));
+    let home = root.0.join("home");
+    let work = root.0.join("work");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    let file = "# why this design exists\n\
+        name = \"levers\"\n\
+        control = \"full\"\n\
+        split_seed = 7\n\
+        seeds = [1]\n\
+        repetitions = 1\n\
+        [tasks]\n\
+        cases = \"eval/cases.jsonl\"\n\
+        fixture = \"eval/workspace\"\n\
+        [arms.full]\n\
+        preset = \"full\"\n\
+        [arms.quiet]\n\
+        overrides = [\"max_turns=20\"]\n\
+        [arms.quiet.prediction]\n\
+        metric = \"turns\"\n\
+        rationale = \"fewer turns\"\n";
+    std::fs::write(work.join("m.toml"), file).unwrap();
+    let ok = |args: &[&str]| {
+        let out = mecha(&home, &work, args, &[]);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let refused = |args: &[&str]| {
+        let out = mecha(&home, &work, args, &[]);
+        assert!(!out.status.success(), "{args:?} must fail");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    let stored = |name: &str| {
+        std::fs::read_to_string(home.join("experiments").join(name).join("manifest.toml")).unwrap()
+    };
+
+    let err = refused(&["exp", "new", "m.toml", "-p", "other"]);
+    assert!(err.contains("--name <new-name>"), "{err}");
+    let err = refused(&[
+        "exp", "new", "m.toml", "--name", "b", "-p", "other", "-w", "/tmp",
+    ]);
+    assert!(
+        err.contains(REFUSAL) && err.contains("--workspace/-w"),
+        "{err}"
+    );
+    assert!(
+        !home.join("experiments").join("b").exists(),
+        "nothing stored"
+    );
+
+    let said = ok(&[
+        "exp", "new", "m.toml", "--name", "levers-b", "-p", "other", "-e", "low", "--no-mcp",
+    ]);
+    assert!(said.contains("every arm: provider = \"other\""), "{said}");
+    let text = stored("levers-b");
+    assert!(
+        text.starts_with("# Written by `mecha exp new --name levers-b`"),
+        "{text}"
+    );
+    assert!(text.contains("# why this design exists"), "{text}");
+    let m = mecha_core::experiment::Manifest::parse(&text).unwrap();
+    assert_eq!(m.name, "levers-b");
+    for (arm, a) in &m.arms {
+        assert_eq!(a.provider.as_deref(), Some("other"), "{arm}");
+        assert!(a.overrides.contains(&"effort=low".to_string()), "{arm}");
+        assert_eq!(a.levers_off, ["mcp"], "{arm}");
+    }
+    assert_eq!(m.arms["quiet"].overrides, ["max_turns=20", "effort=low"]);
+
+    // A flag that contradicts an arm is refused, not written over it.
+    let err = refused(&["exp", "new", "m.toml", "--name", "c", "--max-turns", "30"]);
+    assert!(err.contains("already overrides max_turns to `20`"), "{err}");
+
+    // `exp run` still takes none of them, and points at `exp new`.
+    let err = refused(&["exp", "run", "levers-b", "-p", "other"]);
+    assert!(
+        err.contains(REFUSAL) && err.contains("mecha exp new <file>"),
+        "{err}"
+    );
+
+    // No option: the file as written.
+    ok(&["exp", "new", "m.toml"]);
+    assert_eq!(stored("levers"), file);
+}
