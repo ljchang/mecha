@@ -8542,6 +8542,34 @@ mod boundary_tests {
         );
         markers.clear("task-live");
 
+        // A trigger's run writing this conversation the same way: its marker
+        // names the transcript, and the delete refuses (review of #907).
+        let triggers = mecha_core::trigger::TriggerStore::open_default().unwrap();
+        triggers.mark_running("morning", None).unwrap();
+        triggers.name_session("morning", &id).unwrap();
+        let busy = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/sessions/{id}"))
+            .header(TAILSCALE_LOGIN, "owner@example.com")
+            .header("x-mecha-request", "1")
+            .body(Body::empty())
+            .unwrap();
+        let r = app.clone().oneshot(busy).await.unwrap();
+        assert_eq!(r.status(), StatusCode::CONFLICT);
+        let why = String::from_utf8(
+            axum::body::to_bytes(r.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(why.contains("`morning` trigger"), "{why}");
+        assert!(
+            transcript.exists(),
+            "a refused delete touched the transcript"
+        );
+        triggers.clear_running("morning");
+
         // A marker store that cannot be read is not "no run": the delete
         // refuses rather than remove a workspace a run may be using.
         {

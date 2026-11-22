@@ -66,11 +66,19 @@ export function taintBadge(row) {
   return row.taint.untrusted ? 'outside' : null;
 }
 
-const AGENT = 'mecha';
-const CLOSED = ['done', 'dropped'];
-// The stop causes a person, a question, or the process produced — never a
-// failure (the board card's own rule, `Tasks.svelte` stateOf).
-const QUIET_STOPS = ['interrupted', 'parked', 'stopped', 'shutdown'];
+// The board's own vocabulary, said once: `Tasks.svelte` imports these for
+// its cards rather than keeping a copy, so the card and this view cannot
+// come to disagree about what a task's run is (pinned in test/background.mjs).
+
+/// Who `waiting_on` names when the assistant has a task.
+export const AGENT = 'mecha';
+/// The statuses a task is disposed of in.
+export const CLOSED_STATUSES = ['done', 'dropped'];
+/// The stop causes a person, a question, or the process produced — never a
+/// failure: `stopped` is a person, `parked` a question to the owner,
+/// `shutdown` the process, and `interrupted` the older record that did not
+/// say which.
+export const QUIET_STOPS = ['interrupted', 'parked', 'stopped', 'shutdown'];
 
 /// A delegated task's run, as a row — or null when the task never had one.
 ///
@@ -112,19 +120,23 @@ export function delegatedRow(t, questions = []) {
     summary: null,
     detail,
     task: t.id,
-    closed: CLOSED.includes(t.status),
+    closed: CLOSED_STATUSES.includes(t.status),
   };
 }
 
 /// Which delegated rows belong in a seven-day view: anything running or
-/// waiting; a finished one that ended inside the window; and an unknown one
-/// with no end time only while its task is still open (a closed task's old
-/// run is history the board card already keeps quiet).
+/// waiting; a finished one that ended inside the window; and one with no
+/// end time — unknown, or a done or failed run from a record older than its
+/// `ended_at` — only while its task is still open (a closed task's old run
+/// is history the board card already keeps quiet). An undated run of an
+/// open task dropped here would leave the view saying "no assistant runs"
+/// about a task the board still shows; it is drawn "no time recorded" and
+/// sorts last (`sortKey`).
 function inWindow(row, now) {
   if (row.state === 'running' || row.state === 'waiting') return true;
   const at = Date.parse(row.finished_at ?? '');
   if (Number.isFinite(at)) return at >= now - WINDOW_MS;
-  return row.state === 'unknown' && !row.closed;
+  return !row.closed;
 }
 
 export function delegatedRows(items, questions = [], now = Date.now()) {

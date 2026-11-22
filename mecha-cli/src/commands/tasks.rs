@@ -2279,15 +2279,44 @@ pub(crate) fn markers() -> Result<mecha_core::runmarker::RunMarkers> {
     )))
 }
 
+/// Another process writing a transcript: a delegated task run or a trigger's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Writer {
+    Task(String),
+    Trigger(String),
+}
+
+impl Writer {
+    /// "a run is working <task>" / "the `<name>` trigger is running", and how
+    /// to stop it, for a refusal.
+    pub(crate) fn refusal(&self, place: &str) -> String {
+        match self {
+            Writer::Task(t) => {
+                format!("a run is working {t} in {place} — stop it first (`mecha tasks stop {t}`)")
+            }
+            Writer::Trigger(n) => format!(
+                "the `{n}` trigger is still running in {place} — let its run end first, or \
+                 `mecha trigger cancel {n}`"
+            ),
+        }
+    }
+}
+
 /// The detached task run writing session `session`, if any — for a surface
 /// about to remove what that run is using. A marker store that exists but
 /// cannot be read is an error, never "no run": `live_writer_of` alone folds
 /// the two together, and a delete read that as permission to remove a live
 /// run's workspace.
-pub(crate) fn detached_writer(session: &str) -> Result<Option<String>> {
+pub(crate) fn detached_writer(session: &str) -> Result<Option<Writer>> {
+    // A trigger's live run writes its transcript too, and Tasks → Background
+    // names it — so a surface about to remove a transcript asks the trigger
+    // markers as well, failing closed like the task half (review of #907).
+    if let Some(name) = crate::commands::trigger::live_writer_checked(session)? {
+        return Ok(Some(Writer::Trigger(name)));
+    }
     let m = markers()?;
     match std::fs::read_dir(m.dir()) {
-        Ok(_) => Ok(m.live_writer_of(session)),
+        Ok(_) => Ok(m.live_writer_of(session).map(Writer::Task)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(anyhow::Error::new(e).context(format!(
             "cannot tell whether a task run is writing this conversation: reading {}",
@@ -2791,13 +2820,19 @@ async fn work(
     // `resume` surface, because a guard on one door is a UI condition.
     let (session, mut convo) = match resume {
         Some(id) => {
-            if let Some(other) = markers()?.live_writer_of(id) {
+            let path = mecha_core::session::Session::find(&session_dir, id)?;
+            // The full id the markers hold, whatever prefix was given
+            // (review of #907).
+            let full = mecha_core::session::Session::id_of(&path).unwrap_or_else(|| id.to_string());
+            if let Some(other) = markers()?.live_writer_of(&full) {
                 bail!(
                     "a run is already working {other} in that conversation — \
                      `mecha tasks stop {other}` first"
                 );
             }
-            let path = mecha_core::session::Session::find(&session_dir, id)?;
+            if let Some(name) = crate::commands::trigger::live_writer_of(&full) {
+                bail!("the `{name}` trigger is still running in that conversation");
+            }
             let (meta, prior) = load_task_resume(&path)?;
             eprintln!(
                 "taking over {} ({} message(s) already said)",

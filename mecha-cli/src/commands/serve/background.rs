@@ -458,9 +458,6 @@ pub(super) fn follow_up_row(
     Some(row)
 }
 
-/// The recorded taint of the transcript `id` in `dir`, resolved by name as
-/// the board resolves it — `None` when the id is not a bare file name, the
-/// transcript is gone, or it records no checkpoint.
 /// What a trigger run read. A finished or cleanly parked run's ledger row
 /// carries the run's taint, stamped on the way out; a run that failed —
 /// before or after parking a question — (or whose
@@ -485,6 +482,9 @@ fn trigger_taint(r: &RunRecord, sessions: Option<&Path>) -> Option<Taint> {
     }
 }
 
+/// The recorded taint of the transcript `id` in `dir`, resolved by name as
+/// the board resolves it — `None` when the id is not a bare file name, the
+/// transcript is gone, or it records no checkpoint.
 fn transcript_taint(dir: &Path, id: &str) -> Option<Taint> {
     if !super::board::is_bare_path_component(id) {
         return None;
@@ -1053,6 +1053,17 @@ mod tests {
         writeln!(ledger, "{{\"trigger\": \"torn").unwrap();
         // This process is alive, so its marker is a run in flight.
         store.mark_running("nightly-build", None).unwrap();
+        let section = trigger_rows(Some(&store), None, None, now);
+        assert_eq!(
+            rows(&section)[0].session,
+            None,
+            "a run that has not named its transcript yet opens no chat"
+        );
+        // And once the run names the transcript it is writing, the row
+        // carries it for *Open chat* (review of #904).
+        store
+            .name_session("nightly-build", "20261120T110000-nightly1")
+            .unwrap();
 
         let section = trigger_rows(Some(&store), None, None, now);
         let got = rows(&section);
@@ -1060,6 +1071,7 @@ mod tests {
         assert_eq!(names, ["nightly-build", "recent"]);
         assert_eq!(got[0].state, RunState::Running);
         assert!(got[0].started_at.is_some());
+        assert_eq!(got[0].session.as_deref(), Some("20261120T110000-nightly1"));
         let Section::Rows { unreadable, .. } = section else {
             unreachable!()
         };

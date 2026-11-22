@@ -41,11 +41,10 @@ fn sessions_dir(state: &super::WebState) -> Result<std::path::PathBuf, axum::res
 /// detached task run in another process — whose conversation this map cannot
 /// see, and whose workspace a delete would remove mid-tool-call.
 async fn release(state: &super::WebState, id: &str) -> Result<(), String> {
-    if let Some(task) = crate::commands::tasks::detached_writer(id).map_err(|e| format!("{e:#}"))? {
-        return Err(format!(
-            "a run is working {task} in this conversation — stop it first \
-             (`mecha tasks stop {task}`)"
-        ));
+    if let Some(writer) =
+        crate::commands::tasks::detached_writer(id).map_err(|e| format!("{e:#}"))?
+    {
+        return Err(writer.refusal("this conversation"));
     }
     // No chat subsystem means no open conversations to let go of; archiving
     // and deleting the record still work.
