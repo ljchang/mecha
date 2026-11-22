@@ -874,3 +874,52 @@ fn only_the_collections_own_problems_fail_it() {
         assert_eq!(Kind::parse(k.as_str()), Some(k));
     }
 }
+
+/// Running out of the pass's minute is not a registry failure: nothing was
+/// asked, nothing refused — it is counted deferred and logs no problem
+/// (review of #912).
+#[tokio::test]
+async fn a_spent_registry_budget_is_deferred_not_failed() {
+    let fetch = FakeRegistry {
+        answers: vec![],
+        asked: Mutex::new(Vec::new()),
+    };
+    let todo = vec![
+        (Registry::Pypi, "tool-a".to_string()),
+        (Registry::Npm, "tool-b".to_string()),
+    ];
+    let pass = registry::run(&fetch, &todo, std::time::Duration::ZERO).await;
+    assert_eq!(pass.deferred, 2);
+    assert!(pass.problems.is_empty(), "{:?}", pass.problems);
+    assert!(fetch.asked.lock().unwrap().is_empty());
+}
+
+/// Release samples older than the keep window go at the next write; the
+/// board reads thirty days of them (review of #912).
+#[test]
+fn release_samples_past_the_keep_window_are_pruned() {
+    let dir = scratch("release-keep");
+    select(&dir, LAB_ALL);
+    collect_and_record(&dir, &fake(&dir, &healthy()), now());
+    let old = (now() - Duration::days(RELEASE_KEEP_DAYS + 1))
+        .format("%Y-%m-%d")
+        .to_string();
+    let recent = (now() - Duration::days(5)).format("%Y-%m-%d").to_string();
+    {
+        let conn = db(&dir);
+        for day in [&old, &recent] {
+            conn.execute(
+                "INSERT INTO releases (repo, day, asset_id, release_id, tag, asset, downloads, at)
+                 VALUES ('example-lab/tool-a', ?1, 1, 1, 'v1', 'tool.tar.gz', 3, ?1)",
+                [day],
+            )
+            .unwrap();
+        }
+    }
+    collect_and_record(&dir, &fake(&dir, &healthy()), now() + Duration::minutes(5));
+    let days = strings(
+        &db(&dir),
+        "SELECT day FROM releases WHERE asset_id = 1 ORDER BY day",
+    );
+    assert_eq!(days, [recent]);
+}

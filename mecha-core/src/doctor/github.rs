@@ -216,7 +216,9 @@ pub fn check_github(db: &Path, now: DateTime<Utc>) -> Vec<Finding> {
                 if no_access.len() == 1 { "it" } else { "them" }
             ),
             format!(
-                "in {}: {}. GitHub shows clones and views only to accounts with push access, so                  the board shows a dash for {} — never a zero. If the login should be able to                  push, `gh auth status` says which scopes its token holds.",
+                "in {}: {}. GitHub shows clones and views only to accounts with push access, so \
+                 the board shows a dash for {} — never a zero. If the login should be able to \
+                 push, `gh auth status` says which scopes its token holds.",
                 lasted(last, Kind::TrafficNoAccess),
                 no_access
                     .iter()
