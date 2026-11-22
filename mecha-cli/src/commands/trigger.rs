@@ -920,6 +920,18 @@ pub(crate) fn live_writer_of(session: &str) -> Option<String> {
     TriggerStore::open_existing_default()?.live_writer_of(session)
 }
 
+/// [`live_writer_of`], failing closed: a store that exists and cannot be read
+/// is an error, for a reader that waits when it cannot tell.
+pub(crate) fn live_writer_checked(session: &str) -> anyhow::Result<Option<String>> {
+    match TriggerStore::default_root() {
+        Ok(root) => match TriggerStore::existing_at(&root) {
+            Some(store) => store.live_writer_checked(session),
+            None => Ok(None),
+        },
+        Err(e) => Err(e),
+    }
+}
+
 /// Run one trigger to completion and record what happened.
 async fn fire(
     global: &GlobalOpts,

@@ -1356,6 +1356,27 @@ impl TriggerStore {
         self.markers().live_writer_of(session)
     }
 
+    /// [`live_writer_of`](Self::live_writer_of) that cannot hide a store it
+    /// could not read: an unreadable marker directory or marker is an error,
+    /// never "no run" — for a reader whose rule is that "cannot tell" waits
+    /// (the follow-up waker; review of #907).
+    pub fn live_writer_checked(&self, session: &str) -> Result<Option<String>> {
+        let markers = self.markers();
+        let live = markers.live_names()?;
+        if live.unreadable > 0 {
+            anyhow::bail!("{} trigger marker(s) could not be read", live.unreadable);
+        }
+        for name in live.names {
+            if markers
+                .peek_checked(&name)?
+                .is_some_and(|m| m.session.as_deref() == Some(session))
+            {
+                return Ok(Some(name));
+            }
+        }
+        Ok(None)
+    }
+
     /// Announce that a run has started, for anything that wants to *display*
     /// whether one is in flight. See [`crate::runmarker`] for why this is not
     /// the flock.
@@ -2310,5 +2331,42 @@ mod tests {
         empty.scan_runs_rev(|_| panic!("nothing to visit")).unwrap();
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The checked reader says "cannot tell" for a marker directory it cannot
+    /// read, where the plain one says "no run"; both name a live run's
+    /// session the same way.
+    #[test]
+    fn the_checked_writer_reader_refuses_a_store_it_cannot_read() {
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-trigger-checked-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = TriggerStore::open(dir.join("triggers")).unwrap();
+        assert_eq!(store.live_writer_checked("s1").unwrap(), None);
+        store.mark_running("morning", None).unwrap();
+        store.name_session("morning", "s1").unwrap();
+        assert_eq!(
+            store.live_writer_checked("s1").unwrap().as_deref(),
+            Some("morning")
+        );
+        assert_eq!(store.live_writer_checked("s2").unwrap(), None);
+        store.clear_running("morning");
+        // The locks directory replaced by a file: unreadable as a directory.
+        let locks = store.locks_dir();
+        let _ = std::fs::remove_dir_all(&locks);
+        std::fs::write(&locks, "not a directory").unwrap();
+        assert!(
+            store.live_writer_checked("s1").is_err(),
+            "cannot tell is not no run"
+        );
+        assert_eq!(
+            store.live_writer_of("s1"),
+            None,
+            "the plain reader folds it to none"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -2791,16 +2791,19 @@ async fn work(
     // `resume` surface, because a guard on one door is a UI condition.
     let (session, mut convo) = match resume {
         Some(id) => {
-            if let Some(other) = markers()?.live_writer_of(id) {
+            let path = mecha_core::session::Session::find(&session_dir, id)?;
+            // The full id the markers hold, whatever prefix was given
+            // (review of #907).
+            let full = mecha_core::session::Session::id_of(&path).unwrap_or_else(|| id.to_string());
+            if let Some(other) = markers()?.live_writer_of(&full) {
                 bail!(
                     "a run is already working {other} in that conversation — \
                      `mecha tasks stop {other}` first"
                 );
             }
-            if let Some(name) = crate::commands::trigger::live_writer_of(id) {
+            if let Some(name) = crate::commands::trigger::live_writer_of(&full) {
                 bail!("the `{name}` trigger is still running in that conversation");
             }
-            let path = mecha_core::session::Session::find(&session_dir, id)?;
             let (meta, prior) = load_task_resume(&path)?;
             eprintln!(
                 "taking over {} ({} message(s) already said)",

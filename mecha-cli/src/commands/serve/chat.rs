@@ -1066,7 +1066,11 @@ impl ChatState {
             Ok(m) if m.live_writer_of(&session_id).is_none() => {}
             _ => return Err(WakeSkip::Later),
         }
-        if crate::commands::trigger::live_writer_of(&session_id).is_some() {
+        // Fails closed like the task markers above: "cannot tell" waits.
+        if !matches!(
+            crate::commands::trigger::live_writer_checked(&session_id),
+            Ok(None)
+        ) {
             return Err(WakeSkip::Later);
         }
         // The cheapest refusals before a seat or the router hold is taken: a
@@ -6496,9 +6500,17 @@ fn resume_locked(
     // arriving through the one door it cannot see. The marker names the
     // session it is writing, and a marker whose process is gone is swept on
     // the way past, so a crashed run does not lock its transcript out.
+    let path = match Session::find(&dir, id) {
+        Ok(p) => p,
+        Err(e) => return Err((StatusCode::NOT_FOUND, format!("{e:#}\n"))),
+    };
+    // Resolved before the markers are asked: `find` takes a prefix, and every
+    // marker names the full id, so a guard asked with the prefix would match
+    // nothing (review of #907).
+    let full = Session::id_of(&path).unwrap_or_else(|| id.to_string());
     if let Some(task) = crate::commands::tasks::markers()
         .ok()
-        .and_then(|m| m.live_writer_of(id))
+        .and_then(|m| m.live_writer_of(&full))
     {
         return Err((
             StatusCode::CONFLICT,
@@ -6511,7 +6523,7 @@ fn resume_locked(
     }
     // A trigger's run the same way: its marker names the transcript once it
     // exists, and Tasks → Background offers *Open chat* on it while it runs.
-    if let Some(name) = crate::commands::trigger::live_writer_of(id) {
+    if let Some(name) = crate::commands::trigger::live_writer_of(&full) {
         return Err((
             StatusCode::CONFLICT,
             format!(
@@ -6520,10 +6532,6 @@ fn resume_locked(
             ),
         ));
     }
-    let path = match Session::find(&dir, id) {
-        Ok(p) => p,
-        Err(e) => return Err((StatusCode::NOT_FOUND, format!("{e:#}\n"))),
-    };
     // `Session::load` refuses a memory-marked transcript, because a closed
     // profile may not be continued outside its own host. An ordinary
     // remembered chat is continued here, and its memory re-attached below.
@@ -11026,13 +11034,15 @@ mod wake_tests {
         let triggers = mecha_core::trigger::TriggerStore::open_default().unwrap();
         triggers.mark_running("morning", None).unwrap();
         triggers.name_session("morning", &session).unwrap();
-        {
+        // The full id and a prefix of it alike: `find` resolves a prefix and
+        // the marker names the full id.
+        for asked in [session.as_str(), &session[..session.len() - 4]] {
             let mut sessions = chat.sessions.lock().await;
-            let err = resume_locked(&chat, &mut sessions, &session, false, true).unwrap_err();
-            assert_eq!(err.0, StatusCode::CONFLICT, "{}", err.1);
+            let err = resume_locked(&chat, &mut sessions, asked, false, true).unwrap_err();
+            assert_eq!(err.0, StatusCode::CONFLICT, "{asked}: {}", err.1);
             assert!(
                 err.1.contains("`morning` trigger is still running"),
-                "{}",
+                "{asked}: {}",
                 err.1
             );
             assert!(sessions.is_empty(), "nothing was resumed");

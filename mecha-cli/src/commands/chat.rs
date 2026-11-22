@@ -320,6 +320,9 @@ pub async fn execute(
         // Authenticated task resume was carried from preflight under the same lease.
     } else if let Some(id) = &args.resume {
         let path = Session::find(&session_dir, id)?;
+        // The full id the markers hold: `--resume` takes a prefix (review of
+        // #907).
+        let full = Session::id_of(&path).unwrap_or_else(|| id.clone());
         // **The other door onto one transcript.** A delegated run is a
         // detached child, so nothing in *this* process can see that its
         // conversation is live; picking the file up anyway would give it two
@@ -330,7 +333,7 @@ pub async fn execute(
         // guard that is really a UI condition.
         if let Some(task) = crate::commands::tasks::markers()
             .ok()
-            .and_then(|m| m.live_writer_of(id))
+            .and_then(|m| m.live_writer_of(&full))
         {
             anyhow::bail!(
                 "a run is working {task} in this transcript — `mecha tasks stop {task}` ends \
@@ -338,7 +341,7 @@ pub async fn execute(
                  where it is"
             );
         }
-        if let Some(name) = crate::commands::trigger::live_writer_of(id) {
+        if let Some(name) = crate::commands::trigger::live_writer_of(&full) {
             anyhow::bail!(
                 "the `{name}` trigger is still running in this transcript — resume it when it \
                  has finished, or `mecha trigger cancel {name}`"
