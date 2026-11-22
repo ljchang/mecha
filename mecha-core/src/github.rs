@@ -1,8 +1,10 @@
 //! The GitHub board's collector (`docs/GITHUB-DASHBOARD-DESIGN.md`, step 1):
 //! `mecha github collect` reads the owner's selection file, asks `gh api`,
 //! and writes `~/.mecha/github/github.db`, which the HUD reads through an
-//! ordinary `sqlite` source. No agent loop and no model call: the fetch is
-//! fixed, and the quick summaries are a later step.
+//! ordinary `sqlite` source. No agent loop: the fetch is fixed, and the one
+//! model call is the quick summary ([`summary`], step 4) — a quarantined
+//! one-shot per new or edited body, made after the collection is written, so
+//! a pass that cannot run never costs the board its tables.
 //!
 //! **mecha never holds the token (G9).** Every call shells out to `gh`, whose
 //! login stays in `gh`'s own store; nothing here reads, passes or prints it.
@@ -24,6 +26,10 @@
 //!
 //! **Unknown is never zero.** A count GitHub did not answer is `NULL`, and an
 //! item listing that could not be read to its end marks nothing closed.
+//!
+//! **A body is never written here.** It is read with the listing, held in
+//! memory for the summary pass, and stored only as its hash — the key that
+//! says whether a summary is of the body GitHub holds now (§5).
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -67,6 +73,16 @@ pub const LOG_KEEP_DAYS: i64 = 90;
 pub const RUN_BUDGET: StdDuration = StdDuration::from_secs(8 * 60);
 /// The most any one call may take.
 pub const CALL_TIMEOUT: StdDuration = StdDuration::from_secs(90);
+/// The most of one `gh` answer this process will hold, capped at the door:
+/// read past it is discarded as it arrives, and the answer is refused
+/// ([`GhError::TooLarge`]), never parsed cut short. Bodies are a stranger's
+/// length — GitHub allows 65,536 characters each, so a batch of ten
+/// repositories' two hundred items could reach ~130 MB on a machine holding
+/// a model resident — and the items listing, refused at this size, is asked
+/// again without them.
+pub const ANSWER_BYTES_MAX: usize = 32 * 1024 * 1024;
+/// What is kept of `gh`'s stderr: only its first line is ever read.
+const STDERR_BYTES_MAX: usize = 64 * 1024;
 /// Repositories per GraphQL query: ten repositories of a hundred issues and
 /// a hundred pull requests with twenty labels each is ~42,000 nodes, well
 /// under GitHub's 500,000.
@@ -326,6 +342,16 @@ pub struct Item {
     pub updated_at: Option<String>,
     pub labels: Vec<String>,
     pub comments: Option<i64>,
+    /// The body's head, at most [`summary::BODY_CHARS_MAX`] characters, for
+    /// the summary pass alone: **never written to the store and never
+    /// serialized**, so no `--json` and no table carries a stranger's prose
+    /// beyond the title the board already shows. `None` when GitHub gave none.
+    #[serde(skip)]
+    pub body: Option<String>,
+    /// The hash of the whole body as GitHub gave it ([`summary::body_hash`]),
+    /// which a summary is keyed by: an unchanged body is never summarised
+    /// again, an edited one is. `None` when GitHub gave no body field.
+    pub body_hash: Option<String>,
 }
 
 /// What one selected repository's GraphQL answer held.
@@ -427,10 +453,18 @@ pub enum Kind {
     BadSelection,
     /// Anything else: a transport error, an answer that did not parse.
     Failed,
+    /// The summary pass did not run, or stopped before it was done: no
+    /// model, no seat, a model switch, an outage, its budget spent. The
+    /// detail says which; the items it did not reach wait for the next run.
+    SummarySkipped,
+    /// One item's summary call failed for a reason of its own (a request the
+    /// model server rejected, a body that did not fit). Not a refusal: a
+    /// refusal is an answer, stored, and never asked again for that body.
+    SummaryFailed,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 11] = [
         Kind::Finished,
         Kind::RateLimited,
         Kind::Auth,
@@ -440,6 +474,8 @@ impl Kind {
         Kind::NoSelection,
         Kind::BadSelection,
         Kind::Failed,
+        Kind::SummarySkipped,
+        Kind::SummaryFailed,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -453,7 +489,15 @@ impl Kind {
             Kind::NoSelection => "no_selection",
             Kind::BadSelection => "bad_selection",
             Kind::Failed => "failed",
+            Kind::SummarySkipped => "summary_skipped",
+            Kind::SummaryFailed => "summary_failed",
         }
+    }
+
+    /// A problem of the summary pass's (§5), not the collection's: it never
+    /// makes a repository "not read in full", and never fails the unit.
+    pub fn is_summary(self) -> bool {
+        matches!(self, Kind::SummarySkipped | Kind::SummaryFailed)
     }
 
     /// `None` for a kind this build does not know (a newer build's row),
@@ -473,6 +517,8 @@ pub enum Step {
     Inventory,
     Items,
     Ci,
+    /// The quick-summary pass (§5), after the collection is written.
+    Summaries,
 }
 
 impl Step {
@@ -483,6 +529,7 @@ impl Step {
             Step::Inventory => "inventory",
             Step::Items => "items",
             Step::Ci => "ci",
+            Step::Summaries => "summaries",
         }
     }
 }
@@ -505,6 +552,9 @@ pub enum GhError {
     RateLimited(String),
     NotFound(String),
     OutOfTime,
+    /// The answer passed [`ANSWER_BYTES_MAX`] (the cap it passed): refused
+    /// whole, never read cut short.
+    TooLarge(usize),
     Failed(String),
 }
 
@@ -525,6 +575,7 @@ impl GhError {
                     RUN_BUDGET.as_secs()
                 ),
             ),
+            GhError::TooLarge(cap) => (Kind::Failed, too_large(*cap)),
             GhError::Failed(d) => (Kind::Failed, d.clone()),
         };
         Problem {
@@ -534,6 +585,37 @@ impl GhError {
             detail,
         }
     }
+}
+
+fn too_large(cap: usize) -> String {
+    format!(
+        "gh's answer was larger than {} MiB and was not read",
+        cap / (1024 * 1024)
+    )
+}
+
+/// Read `pipe` to its end, keeping at most `cap` bytes: the rest is read and
+/// dropped, so the child never stalls on a full pipe and this process never
+/// holds more than the cap. `true` when anything was dropped.
+fn drain_bounded(mut pipe: impl Read, cap: usize) -> (Vec<u8>, bool) {
+    let mut kept = Vec::new();
+    let mut over = false;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        match pipe.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let room = cap.saturating_sub(kept.len());
+                if n > room {
+                    over = true;
+                }
+                kept.extend_from_slice(&buf[..n.min(room)]);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    (kept, over)
 }
 
 /// What one finished `gh` process said.
@@ -588,6 +670,7 @@ pub struct Gh {
     bin: OsString,
     deadline: Instant,
     call_timeout: StdDuration,
+    answer_cap: usize,
 }
 
 impl Gh {
@@ -596,6 +679,7 @@ impl Gh {
             bin: bin.into(),
             deadline: Instant::now() + RUN_BUDGET,
             call_timeout: CALL_TIMEOUT,
+            answer_cap: ANSWER_BYTES_MAX,
         }
     }
 
@@ -610,6 +694,12 @@ impl Gh {
     /// A shorter allowance than [`RUN_BUDGET`], for a test.
     pub fn with_budget(mut self, budget: StdDuration) -> Gh {
         self.deadline = Instant::now() + budget;
+        self
+    }
+
+    /// A smaller cap than [`ANSWER_BYTES_MAX`], for a test.
+    pub fn with_answer_cap(mut self, cap: usize) -> Gh {
+        self.answer_cap = cap;
         self
     }
 
@@ -657,13 +747,11 @@ impl Gh {
         };
         // Drained while it runs: an inventory of four hundred repositories is
         // more than a pipe holds, and waiting first would stall the child.
-        let drain = |pipe: Option<Box<dyn Read + Send>>| {
-            std::thread::spawn(move || {
-                let mut text = String::new();
-                if let Some(mut p) = pipe {
-                    let _ = p.read_to_string(&mut text);
-                }
-                text
+        // Bounded as it is read — the cap is at the door, not after the parse.
+        let drain = |pipe: Option<Box<dyn Read + Send>>, cap: usize| {
+            std::thread::spawn(move || match pipe {
+                Some(p) => drain_bounded(p, cap),
+                None => (Vec::new(), false),
             })
         };
         let out = drain(
@@ -671,12 +759,14 @@ impl Gh {
                 .stdout
                 .take()
                 .map(|p| Box::new(p) as Box<dyn Read + Send>),
+            self.answer_cap,
         );
         let err = drain(
             child
                 .stderr
                 .take()
                 .map(|p| Box::new(p) as Box<dyn Read + Send>),
+            STDERR_BYTES_MAX,
         );
         let started = Instant::now();
         let status = loop {
@@ -691,14 +781,19 @@ impl Gh {
                 Err(_) => break None,
             }
         };
-        let stdout = out.join().unwrap_or_default();
-        let stderr = err.join().unwrap_or_default();
+        let (stdout, stdout_over) = out.join().unwrap_or_default();
+        let (stderr, _) = err.join().unwrap_or_default();
+        let stdout = String::from_utf8_lossy(&stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&stderr).into_owned();
         match status {
             None if Instant::now() >= self.deadline => Err(GhError::OutOfTime),
             None => Err(GhError::Failed(format!(
                 "gh did not answer within {} s",
                 timeout.as_secs()
             ))),
+            // Refused whole, whatever the exit: a JSON document cut at the
+            // cap is not the answer, and a prefix of it may still parse.
+            Some(_) if stdout_over => Err(GhError::TooLarge(self.answer_cap)),
             Some(s) => Ok(Ran {
                 code: s.code(),
                 stdout,
@@ -796,10 +891,35 @@ fn json_stream(text: &str) -> Result<Vec<Value>, String> {
 
 // ---- the GraphQL ----
 
-const ITEM_FIELDS: &str = "number title createdAt updatedAt authorAssociation \
+/// `body` is a scalar: it adds bytes to the answer and nothing to GitHub's
+/// node count, so the batch's cost bound (`BATCH`) is unchanged by it. The
+/// bytes are bounded at the door ([`ANSWER_BYTES_MAX`]); an answer refused
+/// for its size is asked again with [`ITEM_FIELDS_NO_BODY`], so the
+/// collection never depends on what strangers wrote at length.
+const ITEM_FIELDS: &str = "number title body createdAt updatedAt authorAssociation \
+     author { login } comments { totalCount } labels(first: 20) { nodes { name } }";
+const ITEM_FIELDS_NO_BODY: &str = "number title createdAt updatedAt authorAssociation \
      author { login } comments { totalCount } labels(first: 20) { nodes { name } }";
 
-fn batch_query(n: usize) -> String {
+fn item_fields(bodies: bool) -> &'static str {
+    if bodies {
+        ITEM_FIELDS
+    } else {
+        ITEM_FIELDS_NO_BODY
+    }
+}
+
+/// Why a listing's items carry no body this run, for the log.
+fn bodies_unread(cap: usize) -> String {
+    format!(
+        "the listing with issue bodies was larger than {} MiB, so it was read again without \
+         them: its items are not summarised this run",
+        cap / (1024 * 1024)
+    )
+}
+
+fn batch_query(n: usize, bodies: bool) -> String {
+    let fields = item_fields(bodies);
     let mut q = String::from("query(");
     for i in 0..n {
         if i > 0 {
@@ -816,24 +936,28 @@ fn batch_query(n: usize) -> String {
     q.push_str(&format!(
         "}}\nfragment R on Repository {{\n  stargazerCount forkCount watchers {{ totalCount }}\n  \
          issues(states: OPEN, first: 100, orderBy: {{field: CREATED_AT, direction: DESC}}) {{\n    \
-         totalCount pageInfo {{ hasNextPage endCursor }} nodes {{ {ITEM_FIELDS} }}\n  }}\n  \
+         totalCount pageInfo {{ hasNextPage endCursor }} nodes {{ {fields} }}\n  }}\n  \
          pullRequests(states: OPEN, first: 100, orderBy: {{field: CREATED_AT, direction: DESC}}) {{\n    \
-         totalCount pageInfo {{ hasNextPage endCursor }} nodes {{ {ITEM_FIELDS} }}\n  }}\n}}\n"
+         totalCount pageInfo {{ hasNextPage endCursor }} nodes {{ {fields} }}\n  }}\n}}\n"
     ));
     q
 }
 
-fn page_query(connection: &str) -> String {
+fn page_query(connection: &str, bodies: bool) -> String {
+    let fields = item_fields(bodies);
     format!(
         "query($o: String!, $n: String!, $after: String!) {{\n  repository(owner: $o, name: $n) {{\n    \
          {connection}(states: OPEN, first: 100, after: $after, orderBy: {{field: CREATED_AT, direction: DESC}}) {{\n      \
-         pageInfo {{ hasNextPage endCursor }} nodes {{ {ITEM_FIELDS} }}\n    }}\n  }}\n}}\n"
+         pageInfo {{ hasNextPage endCursor }} nodes {{ {fields} }}\n    }}\n  }}\n}}\n"
     )
 }
 
 fn parse_item(v: &Value, kind: ItemKind) -> Option<Item> {
     let text = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+    let body = v.get("body").and_then(Value::as_str);
     Some(Item {
+        body: body.map(summary::body_head),
+        body_hash: body.map(summary::body_hash),
         number: v.get("number")?.as_i64()?,
         kind,
         title: text("title")?,
@@ -945,6 +1069,7 @@ impl Collected {
         let troubled: BTreeSet<&str> = self
             .problems
             .iter()
+            .filter(|p| !p.kind.is_summary())
             .filter_map(|p| p.repo.as_deref())
             .collect();
         let ci: BTreeSet<&str> = self.ci_read.iter().map(String::as_str).collect();
@@ -1226,7 +1351,23 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
                 ]
             })
             .collect();
-        let answer = match gh.graphql(&batch_query(chunk.len()), &vars) {
+        // Bodies first; a batch refused for its size is asked once more
+        // without them, so the collection is never the price of a long body.
+        let answer = match gh.graphql(&batch_query(chunk.len(), true), &vars) {
+            Err(GhError::TooLarge(cap)) => {
+                for r in chunk {
+                    c.problems.push(Problem {
+                        kind: Kind::SummarySkipped,
+                        step: Step::Items,
+                        repo: Some(r.full_name.clone()),
+                        detail: bodies_unread(cap),
+                    });
+                }
+                gh.graphql(&batch_query(chunk.len(), false), &vars)
+            }
+            other => other,
+        };
+        let answer = match answer {
             Ok(v) => v,
             Err(e) => match e {
                 GhError::Auth(_) | GhError::Missing(_) | GhError::OutOfTime => {
@@ -1252,7 +1393,15 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
             let data = answer.get("data").and_then(|d| d.get(&alias));
             match data {
                 Some(d) if d.is_object() => match repo_items(gh, r, d) {
-                    Ok(items) => {
+                    Ok((items, unread)) => {
+                        if let Some(cap) = unread {
+                            c.problems.push(Problem {
+                                kind: Kind::SummarySkipped,
+                                step: Step::Items,
+                                repo: Some(r.full_name.clone()),
+                                detail: bodies_unread(cap),
+                            });
+                        }
                         // A listing not read to its end marks nothing closed
                         // (`store`), and is said as what it is: unknown is
                         // never clean, so the repo is not "read in full" and
@@ -1378,8 +1527,12 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
 }
 
 /// A repository's GraphQL object, with any further pages of its issues and
-/// pull requests asked for.
-fn repo_items(gh: &Gh, r: &Repo, d: &Value) -> Result<RepoItems, GhError> {
+/// pull requests asked for — with bodies while they fit, and, from the first
+/// page refused for its size, without them. The cap that page passed rides
+/// out beside the items, for the log.
+fn repo_items(gh: &Gh, r: &Repo, d: &Value) -> Result<(RepoItems, Option<usize>), GhError> {
+    let mut bodies = true;
+    let mut unread = None;
     let total = |k: &str| {
         d.get(k)
             .and_then(|v| v.get("totalCount"))
@@ -1415,7 +1568,14 @@ fn repo_items(gh: &Gh, r: &Repo, d: &Value) -> Result<RepoItems, GhError> {
                 ("n".to_string(), r.name.clone()),
                 ("after".to_string(), cursor),
             ];
-            let page = gh.graphql(&page_query(field), &vars)?;
+            let page = match gh.graphql(&page_query(field, bodies), &vars) {
+                Err(GhError::TooLarge(cap)) if bodies => {
+                    bodies = false;
+                    unread = Some(cap);
+                    gh.graphql(&page_query(field, false), &vars)?
+                }
+                other => other?,
+            };
             match page
                 .get("data")
                 .and_then(|d| d.get("repository"))
@@ -1435,12 +1595,15 @@ fn repo_items(gh: &Gh, r: &Repo, d: &Value) -> Result<RepoItems, GhError> {
         }
     }
     items.retain(kept);
-    Ok(RepoItems {
-        repo: r.full_name.clone(),
-        counts,
-        items,
-        complete,
-    })
+    Ok((
+        RepoItems {
+            repo: r.full_name.clone(),
+            counts,
+            items,
+            complete,
+        },
+        unread,
+    ))
 }
 
 /// The default branch's own runs: on that branch, and from this repository —
@@ -1500,8 +1663,12 @@ CREATE TABLE IF NOT EXISTS items (
   repo TEXT NOT NULL, number INTEGER NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL,
   author TEXT, author_association TEXT, created_at TEXT, updated_at TEXT,
   labels TEXT NOT NULL, comments INTEGER,
-  first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, gone_at TEXT,
+  first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, gone_at TEXT, body_hash TEXT,
   PRIMARY KEY (repo, number));
+CREATE TABLE IF NOT EXISTS summaries (
+  repo TEXT NOT NULL, number INTEGER NOT NULL, body_hash TEXT NOT NULL,
+  outcome TEXT NOT NULL, summary TEXT, kind TEXT, refusal TEXT, model TEXT, at TEXT NOT NULL,
+  PRIMARY KEY (repo, number, body_hash));
 CREATE TABLE IF NOT EXISTS counts (
   repo TEXT NOT NULL, day TEXT NOT NULL,
   stars INTEGER, forks INTEGER, watchers INTEGER, open_issues INTEGER, at TEXT NOT NULL,
@@ -1510,24 +1677,55 @@ CREATE TABLE IF NOT EXISTS collect_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT, run TEXT NOT NULL, at TEXT NOT NULL,
   kind TEXT NOT NULL, step TEXT, repo TEXT, detail TEXT,
   selected INTEGER, collected INTEGER,
-  core_used INTEGER, core_remaining INTEGER, graphql_used INTEGER, graphql_remaining INTEGER);
+  core_used INTEGER, core_remaining INTEGER, graphql_used INTEGER, graphql_remaining INTEGER,
+  summarised INTEGER, summary_refused INTEGER, summary_failed INTEGER, summary_deferred INTEGER);
 CREATE INDEX IF NOT EXISTS collect_log_run ON collect_log (run);
 ";
+
+/// Columns added to a table after its first release, as `(table, column,
+/// declaration)`. `SCHEMA`'s `CREATE TABLE IF NOT EXISTS` makes them on a new
+/// store and does nothing to an old one, so [`open_store`] adds each that a
+/// store lacks — and a reader asks [`has_column`] before reading one, because
+/// a store the new collector has not written yet does not have it.
+const ADDED: [(&str, &str, &str); 5] = [
+    ("items", "body_hash", "TEXT"),
+    ("collect_log", "summarised", "INTEGER"),
+    ("collect_log", "summary_refused", "INTEGER"),
+    ("collect_log", "summary_failed", "INTEGER"),
+    ("collect_log", "summary_deferred", "INTEGER"),
+];
+
+pub(crate) fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn.prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2")?;
+    Ok(stmt.exists(params![table, column])?)
+}
+
+/// The store, opened for writing: its directory made, the schema applied and
+/// any column a store from an earlier build lacks added.
+pub(crate) fn open_store(db: &Path) -> Result<Connection> {
+    if let Some(dir) = db.parent() {
+        crate::create_private_dir(dir)?;
+    }
+    let conn = Connection::open(db).with_context(|| format!("opening {}", db.display()))?;
+    // As `system::record`: a board refreshing mid-write makes the writer wait
+    // rather than lose the run, and rollback-journal mode because the HUD's
+    // loaders open read-only and could not recreate WAL's -shm file.
+    conn.busy_timeout(StdDuration::from_secs(5))?;
+    conn.execute_batch(SCHEMA)?;
+    for (table, column, decl) in ADDED {
+        if !has_column(&conn, table, column)? {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))?;
+        }
+    }
+    Ok(conn)
+}
 
 /// Write one run: the inventory (when it was listed), today's counts (once a
 /// day: a row already there is kept), items and workflow runs, what has
 /// closed, retention, and the run's log rows — in one transaction, so a
 /// reader never sees half a run.
 pub fn record(db: &Path, c: &Collected) -> Result<()> {
-    if let Some(dir) = db.parent() {
-        crate::create_private_dir(dir)?;
-    }
-    let mut conn = Connection::open(db).with_context(|| format!("opening {}", db.display()))?;
-    // As `system::record`: a board refreshing mid-write makes the writer wait
-    // rather than lose the run, and rollback-journal mode because the HUD's
-    // loaders open read-only and could not recreate WAL's -shm file.
-    conn.busy_timeout(StdDuration::from_secs(5))?;
-    conn.execute_batch(SCHEMA)?;
+    let mut conn = open_store(db)?;
     let tx = conn.transaction()?;
     let run = ts(c.started);
     let at = ts(c.finished);
@@ -1572,13 +1770,23 @@ pub fn record(db: &Path, c: &Collected) -> Result<()> {
         )?;
         for i in &r.items {
             tx.execute(
-                "INSERT INTO items (repo, number, kind, title, author, author_association, created_at, updated_at, labels, comments, first_seen, last_seen, gone_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, NULL)
+                "INSERT INTO items (repo, number, kind, title, author, author_association, created_at, updated_at, labels, comments, first_seen, last_seen, gone_at, body_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, NULL, ?12)
                  ON CONFLICT (repo, number) DO UPDATE SET
                    kind = excluded.kind, title = excluded.title, author = excluded.author,
                    author_association = excluded.author_association, created_at = excluded.created_at,
                    updated_at = excluded.updated_at, labels = excluded.labels, comments = excluded.comments,
-                   last_seen = excluded.last_seen, gone_at = NULL",
+                   last_seen = excluded.last_seen, gone_at = NULL,
+                   -- A body-less listing (the size cap's retry) knows nothing
+                   -- new about the body: keep the hash the summaries are keyed
+                   -- by while the item has not been updated since, and only
+                   -- then — an edit bumps updated_at, and a summary must never
+                   -- stand for a body that may have changed (review of #909).
+                   body_hash = CASE
+                     WHEN excluded.body_hash IS NOT NULL THEN excluded.body_hash
+                     WHEN excluded.updated_at IS items.updated_at THEN items.body_hash
+                     ELSE NULL
+                   END",
                 params![
                     r.repo,
                     i.number,
@@ -1590,7 +1798,8 @@ pub fn record(db: &Path, c: &Collected) -> Result<()> {
                     i.updated_at,
                     serde_json::to_string(&i.labels)?,
                     i.comments,
-                    run
+                    run,
+                    i.body_hash
                 ],
             )?;
         }
@@ -1640,6 +1849,13 @@ pub fn record(db: &Path, c: &Collected) -> Result<()> {
     tx.execute(
         "DELETE FROM items WHERE coalesce(gone_at, last_seen) < ?1",
         params![ts(c.started - Duration::days(ITEM_KEEP_DAYS))],
+    )?;
+    // A summary goes with its item (§3): every revision's row, once the item
+    // itself is pruned.
+    tx.execute(
+        "DELETE FROM summaries WHERE NOT EXISTS
+           (SELECT 1 FROM items i WHERE i.repo = summaries.repo AND i.number = summaries.number)",
+        [],
     )?;
     tx.execute(
         "DELETE FROM collect_log WHERE run < ?1",
@@ -1692,6 +1908,10 @@ pub struct LastRun {
     /// `None` where the run wrote no `finished` row (a newer or older build).
     pub selected: Option<i64>,
     pub collected: Option<i64>,
+    /// What the summary pass did, from the `finished` row. `None` when the
+    /// pass did not run at all — switched off (`--no-summaries`), or a build
+    /// from before it — which is not a pass that summarised nothing.
+    pub summaries: Option<summary::Tally>,
     pub problems: Vec<Logged>,
     /// For each kind in this run: the earliest run of the unbroken streak of
     /// runs that all had it, and how many runs that is.
@@ -1726,6 +1946,33 @@ pub fn read_log(db: &Path, vanished_within: Duration, now: DateTime<Utc>) -> Res
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
+    // A store the summarising collector has not written yet has no such
+    // columns: no tally, never an unreadable store.
+    let summaries = if has_column(&conn, "collect_log", "summarised")? {
+        conn.query_row(
+            "SELECT summarised, summary_refused, summary_failed, summary_deferred FROM collect_log
+             WHERE run = ?1 AND kind = 'finished' ORDER BY id DESC LIMIT 1",
+            params![latest],
+            |r| {
+                let n = |i: usize| -> rusqlite::Result<usize> {
+                    Ok(r.get::<_, Option<i64>>(i)?.unwrap_or(0).max(0) as usize)
+                };
+                Ok(match r.get::<_, Option<i64>>(0)? {
+                    None => None,
+                    Some(_) => Some(summary::Tally {
+                        summarised: n(0)?,
+                        refused: n(1)?,
+                        failed: n(2)?,
+                        deferred: n(3)?,
+                    }),
+                })
+            },
+        )
+        .optional()?
+        .flatten()
+    } else {
+        None
+    };
     let mut stmt = conn.prepare(
         "SELECT kind, step, repo, detail FROM collect_log WHERE run = ?1 AND kind <> 'finished' ORDER BY id",
     )?;
@@ -1785,12 +2032,15 @@ pub fn read_log(db: &Path, vanished_within: Duration, now: DateTime<Utc>) -> Res
             run,
             selected: finished.and_then(|f| f.0),
             collected: finished.and_then(|f| f.1),
+            summaries,
             problems,
             since,
         }),
         vanished,
     })
 }
+
+pub mod summary;
 
 #[cfg(test)]
 mod tests;

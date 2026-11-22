@@ -199,6 +199,73 @@ pub fn check_github(db: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             ),
         ));
     }
+    // The summary pass (§5). The collection is written before it runs, so
+    // these never say the board is stale — they say its New view shows
+    // titles alone, which reads the same as summaries nobody needed.
+    if let Some(p) = of(Kind::SummarySkipped).next() {
+        out.push(finding(
+            Severity::Attention,
+            "the GitHub board's summaries were not made",
+            format!(
+                "{}: {}",
+                lasted(last, Kind::SummarySkipped),
+                p.detail.as_deref().unwrap_or("skipped")
+            ),
+        ));
+    }
+    let summary_failed: Vec<String> = of(Kind::SummaryFailed)
+        .map(|p| {
+            format!(
+                "{} {}",
+                p.repo.as_deref().unwrap_or("?"),
+                p.detail.as_deref().unwrap_or("failed")
+            )
+        })
+        .collect();
+    if !summary_failed.is_empty() {
+        out.push(finding(
+            Severity::Attention,
+            format!(
+                "{} GitHub summar{} failed",
+                summary_failed.len(),
+                if summary_failed.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
+            ),
+            format!(
+                "in {}: {}; each is asked again next run",
+                lasted(last, Kind::SummaryFailed),
+                summary_failed
+                    .iter()
+                    .take(3)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        ));
+    }
+    // Every answer refused and none made: a model that cannot do this job
+    // (the wrong one loaded, a template that ignores the format) looks, on
+    // the board, exactly like strangers' bodies it would not read.
+    if let Some(t) = last
+        .summaries
+        .filter(|t| t.refused > 0 && t.summarised == 0)
+    {
+        out.push(finding(
+            Severity::Attention,
+            "every GitHub summary the last run asked for was refused",
+            format!(
+                "{} refused, none made ({}): the model's answers were not a summary and a kind, \
+                 or it declined. Those items show their titles alone, and are asked again only \
+                 when their bodies change or another model answers; is the loaded model one \
+                 that can answer in JSON?",
+                t.refused,
+                when(last.run)
+            ),
+        ));
+    }
     let unknown: Vec<&str> = last
         .problems
         .iter()
@@ -493,6 +560,84 @@ mod tests {
                 Severity::Broken,
                 "the GitHub board's repos.toml cannot be used, so nothing is watched".into()
             )]
+        );
+    }
+
+    /// Summaries that have stopped being made are a finding, with how long:
+    /// the collection is fine, and the board's New view shows titles alone,
+    /// which reads exactly like summaries nobody needed.
+    #[test]
+    fn summaries_that_were_not_made_are_a_finding_and_say_since_when() {
+        use crate::github::summary::{record_pass, Pass};
+        let h = home("summary-skipped");
+        let db = github::db_path(&h);
+        for m in [0, 10] {
+            let at = now() + Duration::minutes(m);
+            record(&db, &run(at, &[])).unwrap();
+            let skipped = Pass {
+                skipped: Some("the model did not answer: the model server did not answer".into()),
+                deferred: 3,
+                ..Pass::default()
+            };
+            record_pass(&db, at, &skipped).unwrap();
+        }
+        let f = check_github(&db, now() + Duration::minutes(10));
+        assert_eq!(
+            summaries(&f),
+            [(
+                Severity::Attention,
+                "the GitHub board's summaries were not made".into()
+            )]
+        );
+        assert!(
+            f[0].detail
+                .contains("every run since 2026-11-18 12:00Z (2 runs)")
+                && f[0].detail.contains("did not answer")
+                && f[0].detail.contains("3 item(s) left"),
+            "{}",
+            f[0].detail
+        );
+    }
+
+    #[test]
+    fn a_failed_summary_and_an_all_refused_run_are_findings() {
+        use crate::github::summary::{record_pass, Done, Outcome, Pass, Refusal};
+        let h = home("summary-refused");
+        let db = github::db_path(&h);
+        record(&db, &run(now(), &[])).unwrap();
+        let pass = Pass {
+            done: vec![Done {
+                repo: "example-lab/tool-a".into(),
+                number: 4,
+                body_hash: "h".into(),
+                outcome: Outcome::Refused(Refusal::NotJson),
+                model: Some("local-m".into()),
+            }],
+            failed: vec![(
+                "example-lab/tool-a".into(),
+                5,
+                "the request was rejected".into(),
+            )],
+            ..Pass::default()
+        };
+        record_pass(&db, now(), &pass).unwrap();
+        assert_eq!(
+            summaries(&check_github(&db, now())),
+            [
+                (Severity::Attention, "1 GitHub summary failed".into()),
+                (
+                    Severity::Attention,
+                    "every GitHub summary the last run asked for was refused".into()
+                ),
+            ]
+        );
+        // A run that made one is not all refused; a run with the pass off
+        // (no counts) says nothing about summaries at all.
+        let later = now() + Duration::minutes(10);
+        record(&db, &run(later, &[])).unwrap();
+        assert!(
+            check_github(&db, later).is_empty(),
+            "the pass off is not a finding"
         );
     }
 

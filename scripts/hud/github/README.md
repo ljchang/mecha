@@ -1,11 +1,19 @@
 # The GitHub board — a HUD draft
 
-Steps 2 and 3 of `docs/GITHUB-DASHBOARD-DESIGN.md` §7: views 1 and 2 (failing
-now, and new issues and outside pull requests), with the headline counts. The
-New table's `GitHub` column is the typed reference (§4). On the tailnet board
-it opens the issue, but only for a repository that is in the collector's
-inventory and in `repos.toml`. A published copy shows it as text. No
-summaries (step 4) yet.
+Steps 2, 3 and 4 of `docs/GITHUB-DASHBOARD-DESIGN.md` §7: views 1 and 2
+(failing now, and new issues and outside pull requests), with the headline
+counts. The New table's `GitHub` column is the typed reference (§4): on the
+tailnet board it opens the issue, but only for a repository that is in the
+collector's inventory and in `repos.toml`; a published copy shows it as text.
+Its `about` and `summary` columns are step 4's summaries, which the
+collector's quarantined pass writes and the loader only reads.
+
+**Summaries.** A local model's one or two sentences about each body, and a
+kind from a closed four (bug, question, request, other), made once per body
+revision by `mecha github collect` — never at refresh. They are model prose
+about a stranger's words. Where there is none the column says why: the
+model's answer was refused, the issue has no description, or the collector
+has not reached it yet (it summarises a few dozen a run, newest first).
 
 It reads the collector's store (`mecha github collect`, daily per G10), which
 the owner registers once in `~/.mecha/hud/sources.toml` — third-party,

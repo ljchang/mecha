@@ -653,6 +653,186 @@ fn a_selection_that_does_not_parse_selects_nothing_and_says_so() {
     assert!(calls(&dir).iter().all(|c| !c.contains("graphql")));
 }
 
+// ---- the body: read, hashed, never written ----
+
+/// The listing asks for each body; the store keeps its hash and never the
+/// text, and the serialized shape of an item carries no body either.
+#[test]
+fn a_body_is_hashed_into_the_store_and_never_written() {
+    let dir = scratch("body");
+    select(&dir, LAB_ALL);
+    let body = "Steps: run it on an empty file. It crashes. A marker: example-marker-7.";
+    let issue = node(1, "Crash on empty input", "outside-dev", "NONE").replacen(
+        '{',
+        &format!("{{\"body\":{},", serde_json::json!(body)),
+        1,
+    );
+    let cases = with(vec![ok(
+        "*'api graphql'*'n0=tool-a'*'n1=tool-b'*",
+        &batch(&[repo_data(1, &[issue], &[]), repo_data(1, &[], &[])]),
+    )]);
+    let c = collect_and_record(&dir, &fake(&dir, &cases), now());
+    assert!(
+        calls(&dir)
+            .iter()
+            .any(|l| l.contains("api graphql") && l.contains("title body ")),
+        "the listing does not ask for bodies"
+    );
+    let item = &c.repos[0].items[0];
+    assert_eq!(item.body.as_deref(), Some(body));
+    assert_eq!(item.body_hash, Some(summary::body_hash(body)));
+    assert!(!serde_json::to_string(item)
+        .unwrap()
+        .contains("example-marker-7"));
+    let conn = db(&dir);
+    assert_eq!(
+        strings(&conn, "SELECT body_hash FROM items WHERE number = 1"),
+        [summary::body_hash(body)]
+    );
+    let dump = std::fs::read(db_path(&dir.join("home"))).unwrap();
+    assert!(
+        !String::from_utf8_lossy(&dump).contains("example-marker-7"),
+        "the body was written to the store"
+    );
+}
+
+// ---- the answer's size, capped at the door ----
+
+/// An answer past the cap is refused whole, never parsed cut short — even
+/// where a prefix of it would parse (the first of `--paginate`'s pages).
+#[test]
+fn an_answer_past_the_cap_is_refused_not_read_cut_short() {
+    let dir = scratch("too-large");
+    let big = "x".repeat(8 * 1024);
+    let page_one = format!("[{}]\n", repo_json("example-lab/tool-a", false, false));
+    let page_two = format!(r#"[{{"full_name":"example-lab/{big}"}}]"#);
+    let cases = vec![
+        ok("*'user/repos'*", &format!("{page_one}{page_two}")),
+        ok(
+            "*'api graphql'*",
+            &format!(r#"{{"data":{{"r0":"{big}"}}}}"#),
+        ),
+        ok("*'api rate_limit'*", RATE),
+    ];
+    let gh = fake(&dir, &cases).with_answer_cap(page_one.len() + 16);
+    assert_eq!(
+        gh.rest(&["api", "user/repos", "--paginate"]),
+        Err(GhError::TooLarge(page_one.len() + 16)),
+        "a prefix that parses was taken for the answer"
+    );
+    assert_eq!(
+        gh.graphql("query { x }", &[]),
+        Err(GhError::TooLarge(page_one.len() + 16))
+    );
+    // Under the cap, the same plumbing answers.
+    assert!(gh.rate().is_ok());
+    let p = GhError::TooLarge(ANSWER_BYTES_MAX).problem(Step::Items, None);
+    assert_eq!(p.kind, Kind::Failed);
+    assert!(p.detail.contains("32 MiB"), "{}", p.detail);
+}
+
+#[test]
+fn the_drain_keeps_the_cap_and_reads_the_rest_away() {
+    let text = vec![b'a'; 200_000];
+    let (kept, over) = drain_bounded(&text[..], 1000);
+    assert_eq!((kept.len(), over), (1000, true));
+    let (kept, over) = drain_bounded(&text[..], 200_000);
+    assert_eq!((kept.len(), over), (200_000, false));
+}
+
+/// A listing too large with its bodies is asked again without them: the
+/// items land, unhashed, the repositories count as read in full, and the
+/// summaries' loss is logged — the collection never pays for a long body.
+#[test]
+fn a_listing_too_large_with_bodies_is_read_again_without_them() {
+    let dir = scratch("bodiless");
+    select(&dir, LAB_ALL);
+    let long = "a pasted log line\n".repeat(8_000);
+    let issue = node(1, "Crash on empty input", "lab-member", "MEMBER").replacen(
+        '{',
+        &format!("{{\"body\":{},", serde_json::json!(long)),
+        1,
+    );
+    let bodied = batch(&[repo_data(12, &[issue], &[]), repo_data(1, &[], &[])]);
+    // The bodied query answers too large; the body-less one falls through
+    // to the healthy batch.
+    // A first, ordinary run lands the items; then item 1 has a known hash
+    // and is unchanged since, and item 7 has a known hash but was updated
+    // since (its stored updated_at is older than the listing's).
+    collect_and_record(&dir, &fake(&dir, &healthy()), now() - Duration::hours(1));
+    {
+        let conn = db(&dir);
+        conn.execute("UPDATE items SET body_hash = 'kept' WHERE number = 1", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE items SET body_hash = 'stale', updated_at = '2000-01-01T00:00:00Z' WHERE number = 7",
+            [],
+        )
+        .unwrap();
+    }
+    let _ = std::fs::remove_file(dir.join("calls.log"));
+    let cases = with(vec![ok("*'api graphql'*'title body '*", &bodied)]);
+    let gh = fake(&dir, &cases).with_answer_cap(64 * 1024);
+    let c = collect_and_record(&dir, &gh, now());
+
+    let graphql: Vec<String> = calls(&dir)
+        .into_iter()
+        .filter(|l| l.contains("api graphql"))
+        .collect();
+    assert_eq!(graphql.len(), 2, "{graphql:?}");
+    assert!(graphql[0].contains("title body "));
+    assert!(!graphql[1].contains(" body "), "the retry asked for bodies");
+
+    let items: Vec<i64> = c
+        .repos
+        .iter()
+        .flat_map(|r| &r.items)
+        .map(|i| i.number)
+        .collect();
+    assert_eq!(
+        items,
+        [1, 7, 9],
+        "the body-less listing's items did not land"
+    );
+    assert!(c
+        .repos
+        .iter()
+        .flat_map(|r| &r.items)
+        .all(|i| i.body_hash.is_none()));
+    assert_eq!(
+        summary::unread(&c),
+        3,
+        "unread items are not counted waiting"
+    );
+    assert_eq!(
+        c.collected(),
+        2,
+        "a body-less listing is a listing read in full"
+    );
+    let conn = db(&dir);
+    // Unchanged since: its hash, and so its summary, stands. Updated since:
+    // unknown, never the old body's. Never seen with a body: unknown.
+    assert_eq!(
+        strings(
+            &conn,
+            "SELECT number || ':' || coalesce(body_hash, '-') FROM items ORDER BY number"
+        ),
+        ["1:kept", "7:-", "9:-"]
+    );
+    assert_eq!(
+        kinds(&conn),
+        [
+            "summary_skipped:items:example-lab/tool-a",
+            "summary_skipped:items:example-lab/tool-b"
+        ]
+    );
+    assert!(
+        c.problems.iter().all(|p| p.kind.is_summary()),
+        "{:?}",
+        c.problems
+    );
+}
+
 // ---- retention and closing ----
 
 fn items_run(at: DateTime<Utc>, repo: &str, numbers: &[i64], complete: bool) -> Collected {
@@ -672,6 +852,8 @@ fn items_run(at: DateTime<Utc>, repo: &str, numbers: &[i64], complete: bool) -> 
                 updated_at: None,
                 labels: Vec::new(),
                 comments: None,
+                body: None,
+                body_hash: None,
             })
             .collect(),
         complete,
@@ -989,9 +1171,10 @@ fn a_failure_is_classified_by_what_gh_said() {
 
 /// Every call shares one budget, and it sits inside the unit's start timeout
 /// with a minute left for the write: a bound per call adds up past it, and
-/// systemd would kill the run before it wrote anything.
+/// systemd would kill the run before it wrote anything. The summary pass's
+/// budget comes after the collection's, so both fit, with the minute.
 #[test]
-fn the_run_budget_fits_inside_the_units_start_timeout() {
+fn the_budgets_fit_inside_the_units_start_timeout() {
     let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts");
     let unit = std::fs::read_to_string(scripts.join("mecha-github-collect.service")).unwrap();
     let secs: u64 = unit
@@ -1000,7 +1183,9 @@ fn the_run_budget_fits_inside_the_units_start_timeout() {
         .and_then(|v| v.trim().strip_suffix('s'))
         .and_then(|v| v.parse().ok())
         .expect("the unit states TimeoutStartSec in seconds");
-    assert!(RUN_BUDGET + StdDuration::from_secs(60) <= StdDuration::from_secs(secs));
+    assert!(
+        RUN_BUDGET + summary::BUDGET + StdDuration::from_secs(60) <= StdDuration::from_secs(secs)
+    );
     assert!(
         unit.lines()
             .any(|l| l.trim() == "ExecStart=%h/.cargo/bin/mecha github collect"),
@@ -1328,6 +1513,82 @@ fn the_shipped_board_validates_and_its_loaders_read_the_collector() {
         .iter()
         .map(|r| r[col("repo")].as_str().unwrap().to_string())
         .collect();
+
+    // The New view reads the summary of the body GitHub holds now, says why
+    // where there is none, and never shows an old body's summary.
+    let conn = db(&dir);
+    for (n, hash) in [(99, "h99"), (1, "h1"), (7, "h7-now")] {
+        conn.execute(
+            "UPDATE items SET body_hash = ?2 WHERE repo = 'example-lab/tool-a' AND number = ?1",
+            rusqlite::params![n, hash],
+        )
+        .unwrap();
+    }
+    for (n, hash, outcome, text, kind) in [
+        (
+            99,
+            "h99",
+            "summarised",
+            Some("Asks for a flag to skip the cache."),
+            Some("request"),
+        ),
+        (1, "h1", "refused", None, None),
+        (
+            7,
+            "h7-before",
+            "summarised",
+            Some("The old body's summary."),
+            Some("bug"),
+        ),
+    ] {
+        conn.execute(
+            "INSERT INTO summaries (repo, number, body_hash, outcome, summary, kind, at)
+             VALUES ('example-lab/tool-a', ?1, ?2, ?3, ?4, ?5, '2026-11-20T00:00:00Z')",
+            rusqlite::params![n, hash, outcome, text, kind],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    let new_items = &installed.loaders()["new_items"];
+    let fetched = run_sqlite(&path, new_items.query(), 500, QUERY_TIMEOUT).unwrap();
+    let col = |name: &str| fetched.columns.iter().position(|c| c == name).unwrap();
+    let of = |n: i64| {
+        fetched
+            .rows
+            .iter()
+            .find(|r| r[col("number")] == serde_json::json!(n))
+            .map(|r| (r[col("about")].clone(), r[col("summary")].clone()))
+            .unwrap()
+    };
+    assert_eq!(
+        of(99),
+        (
+            serde_json::json!("request"),
+            serde_json::json!("Asks for a flag to skip the cache.")
+        )
+    );
+    assert_eq!(
+        of(1),
+        (
+            serde_json::Value::Null,
+            serde_json::json!("(no summary: the model's answer was refused)")
+        )
+    );
+    assert_eq!(
+        of(7),
+        (
+            serde_json::Value::Null,
+            serde_json::json!("(not summarised yet)")
+        ),
+        "an edited body showed the old body's summary"
+    );
+    assert_eq!(
+        of(9),
+        (
+            serde_json::Value::Null,
+            serde_json::json!("(not summarised yet)")
+        )
+    );
 
     let headline = &installed.loaders()["headline"];
     let fetched = run_sqlite(&path, headline.query(), 1, QUERY_TIMEOUT).unwrap();

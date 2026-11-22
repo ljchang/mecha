@@ -9,8 +9,9 @@ Description=Collect the GitHub board's tables
 # In the owner's zone, named: the box runs UTC, and a bare time here would
 # fire at 02:00 Eastern. 06:40 so the board is fresh before the 07:00
 # `morning` briefing: the latest start is 06:50 (the spread below), and a run
-# spends at most its 8-minute budget (github::RUN_BUDGET), so it has
-# finished by 06:58.
+# spends at most its 8-minute budget (github::RUN_BUDGET), so its tables are
+# written by 06:58; the summaries trail by at most five minutes more
+# (github::summary::BUDGET), which the briefing does not read.
 OnCalendar=*-*-* 06:40 America/New_York
 # Up to ten minutes later, at random, so the API calls do not land on the
 # same second every day.

@@ -8304,9 +8304,9 @@ was ever deployed.
 
 ## The GitHub collector
 
-`github.rs`, `mecha github collect`, `docs/GITHUB-DASHBOARD-DESIGN.md` (step 1
-built: the collector and its store; the board, links and summaries are later
-steps). `system.rs`'s shape again: a timer runs a command, the command writes
+`github.rs`, `mecha github collect`, `docs/GITHUB-DASHBOARD-DESIGN.md` (steps
+1 to 4 built: the collector and its store, the board, the typed reference,
+the summaries; §7 tracks the rest). `system.rs`'s shape again: a timer runs a command, the command writes
 `~/.mecha/github/github.db`, and the HUD will read it as an ordinary `sqlite`
 source with `content = "third-party"`, because an issue title is a stranger's
 text.
@@ -8346,6 +8346,25 @@ text.
   once a day, the owner's ruling G10, never a constant in code. The doctor's
   staleness window (`GITHUB_STALE_AFTER`, 36 h) is set for it; a shorter
   cadence is a change to the timer alone.
+- **The quick summary is a quarantined pass after the write**
+  (`github/summary.rs`, design §5). A body is read with the listing, held in
+  memory and stored only as `items.body_hash` — bounded at the door, since
+  its length is a stranger's: a `gh` answer past `ANSWER_BYTES_MAX` is
+  refused whole, and an items listing refused so is read again without
+  bodies; once the run is recorded, each
+  body whose hash has no `summaries` row goes to a `QuarantinedPass` one-shot
+  (`local_only`, no tools, one turn) and comes back as a capped one-line
+  summary and a closed kind, or a refusal from a closed set — the model's
+  text around the object is never kept, and a parse retry is told why in our
+  words, never handed the answer. A refusal is final for the model that gave
+  it and only for that one. A seat per call; the command holds the router
+  for the pass alone (not for its life, or a switch would wait behind the
+  `gh` calls), refuses rather than waits on a pending switch, and observes
+  the router after the hold. Whatever stops it is `summary_skipped` and the
+  collection already stands; the counts ride on the run's `finished` row,
+  `NULL` when the pass did not run. The board's loader joins on the current
+  hash, so an edited body never shows its old summary, and no model runs in
+  a refresh.
 
 ## Session records and replay
 
