@@ -7,7 +7,7 @@ contributors, each with a short summary and a way to open it), and how much
 each repository is **used** — fed by a collector that runs with no model
 holding a credential, and drawn by the HUD.
 
-**Not built.** It extends [`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md)
+**Partly built** — steps 1 (the collector, #894) and 2 (the board, #902) are merged, step 3 (the typed reference) is this change, and §7 tracks the rest. It extends [`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md)
 and does not restate it; where the two disagree about the HUD, that file wins
 until a ruling here amends it, and §0 says which do. It is the first
 integration with a service that is neither mail nor documents, and it is
