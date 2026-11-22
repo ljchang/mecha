@@ -1776,7 +1776,17 @@ pub fn record(db: &Path, c: &Collected) -> Result<()> {
                    kind = excluded.kind, title = excluded.title, author = excluded.author,
                    author_association = excluded.author_association, created_at = excluded.created_at,
                    updated_at = excluded.updated_at, labels = excluded.labels, comments = excluded.comments,
-                   last_seen = excluded.last_seen, gone_at = NULL, body_hash = excluded.body_hash",
+                   last_seen = excluded.last_seen, gone_at = NULL,
+                   -- A body-less listing (the size cap's retry) knows nothing
+                   -- new about the body: keep the hash the summaries are keyed
+                   -- by while the item has not been updated since, and only
+                   -- then — an edit bumps updated_at, and a summary must never
+                   -- stand for a body that may have changed (review of #909).
+                   body_hash = CASE
+                     WHEN excluded.body_hash IS NOT NULL THEN excluded.body_hash
+                     WHEN excluded.updated_at IS items.updated_at THEN items.body_hash
+                     ELSE NULL
+                   END",
                 params![
                     r.repo,
                     i.number,

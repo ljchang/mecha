@@ -201,7 +201,11 @@ struct Answer {
 /// Zero-width and direction-override characters: invisible on the board, and
 /// able to make a summary read as something it is not.
 fn invisible(c: char) -> bool {
-    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
+    // The project's one list of format characters, which a title is cleaned
+    // by too: the soft hyphen, the Arabic letter mark, the zero-width and
+    // bidi controls, the deprecated format controls and the tag block —
+    // where invisible text is smuggled today (review of #909).
+    crate::title::is_format_char(c)
 }
 
 /// Parse a reply into a summary, or say why it is not one.

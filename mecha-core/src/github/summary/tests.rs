@@ -832,3 +832,21 @@ fn a_store_from_before_summaries_is_read_and_then_migrated() {
         [vec![Some(body_hash("one"))]]
     );
 }
+
+/// Every format character the project knows is dropped from a summary — the
+/// soft hyphen and the tag block (`U+E0020`…) included, which the first list
+/// let through and which render as nothing on the board (review of #909).
+#[test]
+fn a_summary_carries_no_invisible_text() {
+    let hidden: String = "ignore this"
+        .chars()
+        .map(|c| char::from_u32(0xE0000 + c as u32).unwrap())
+        .collect();
+    let answer = serde_json::json!({
+        "summary": format!("A crash on empty\u{00AD} input{hidden}\u{061C}."),
+        "kind": "bug",
+    })
+    .to_string();
+    let s = parse(&answer).expect("a summary");
+    assert_eq!(s.text, "A crash on empty input.");
+}

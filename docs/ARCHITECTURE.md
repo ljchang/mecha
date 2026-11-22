@@ -8286,8 +8286,8 @@ was ever deployed.
 ## The GitHub collector
 
 `github.rs`, `mecha github collect`, `docs/GITHUB-DASHBOARD-DESIGN.md` (steps
-1, 2 and 4 built: the collector and its store, the board, the summaries; the
-links are a later step). `system.rs`'s shape again: a timer runs a command, the command writes
+1 to 4 built: the collector and its store, the board, the typed reference,
+the summaries; §7 tracks the rest). `system.rs`'s shape again: a timer runs a command, the command writes
 `~/.mecha/github/github.db`, and the HUD will read it as an ordinary `sqlite`
 source with `content = "third-party"`, because an issue title is a stranger's
 text.

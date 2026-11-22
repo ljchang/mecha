@@ -756,6 +756,21 @@ fn a_listing_too_large_with_bodies_is_read_again_without_them() {
     let bodied = batch(&[repo_data(12, &[issue], &[]), repo_data(1, &[], &[])]);
     // The bodied query answers too large; the body-less one falls through
     // to the healthy batch.
+    // A first, ordinary run lands the items; then item 1 has a known hash
+    // and is unchanged since, and item 7 has a known hash but was updated
+    // since (its stored updated_at is older than the listing's).
+    collect_and_record(&dir, &fake(&dir, &healthy()), now() - Duration::hours(1));
+    {
+        let conn = db(&dir);
+        conn.execute("UPDATE items SET body_hash = 'kept' WHERE number = 1", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE items SET body_hash = 'stale', updated_at = '2000-01-01T00:00:00Z' WHERE number = 7",
+            [],
+        )
+        .unwrap();
+    }
+    let _ = std::fs::remove_file(dir.join("calls.log"));
     let cases = with(vec![ok("*'api graphql'*'title body '*", &bodied)]);
     let gh = fake(&dir, &cases).with_answer_cap(64 * 1024);
     let c = collect_and_record(&dir, &gh, now());
@@ -795,12 +810,14 @@ fn a_listing_too_large_with_bodies_is_read_again_without_them() {
         "a body-less listing is a listing read in full"
     );
     let conn = db(&dir);
+    // Unchanged since: its hash, and so its summary, stands. Updated since:
+    // unknown, never the old body's. Never seen with a body: unknown.
     assert_eq!(
         strings(
             &conn,
-            "SELECT CAST(count(*) AS TEXT) FROM items WHERE body_hash IS NULL"
+            "SELECT number || ':' || coalesce(body_hash, '-') FROM items ORDER BY number"
         ),
-        ["3"]
+        ["1:kept", "7:-", "9:-"]
     );
     assert_eq!(
         kinds(&conn),
