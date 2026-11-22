@@ -12186,16 +12186,31 @@ comparison over a chosen set**, with the design written before the run.
   outright, in `levers_on` as in `levers_off`: a
   `forbid` is the operator's standing word, and only eval's fixture
   workspaces justify lifting it.
-- **The manifest is the only door to the model, so `exp` refuses the
-  global model flags.** `-p/--provider`, `-m/--model`, `-e/--effort` and
-  `-s/--system` are refused by every `exp` subcommand
-  (`exp::refuse_model_flags`, called from `dispatch` before the router is
-  held or observed), naming the flag and the arm fields that do the job:
-  `provider` / `model` on `[arms.<arm>]`, `overrides = ["effort=…"]`, the
-  environment's system prompt. Honouring one in `run` alone would plan
-  hashes `status` and `report` do not. `exp run <name> -p <provider>` once
-  parsed and ran every trial on the config's default provider, saying so
-  only in its first line (2026-11-22).
+- **`exp` takes no global option, and refuses one given.** Every global
+  flag set on the command line is refused by every `exp` subcommand
+  (`exp::refuse_global_options`, called from `dispatch` before the router
+  is held or observed), named in the error beside the arm fields that do
+  the job: `provider` / `model` on `[arms.<arm>]`, `overrides =
+  ["effort=…"]`, levers, the environment's harness and system prompt. A
+  trial is a child `mecha run` whose argv and home `exp` builds, so no
+  global reaches it, and `status` and `report` plan their hashes from the
+  same manifest and config — a `-p` there would show the default's rows
+  under the flag's name. The refusal reads clap's value sources rather
+  than a list of fields, so a global added later is refused without
+  anyone remembering it. `exp run <name> -p <provider>` once parsed and
+  ran every trial on the config's default provider, saying so only in its
+  first line (2026-11-22), and the first fix listed four flags and still
+  dropped the rest.
+- **Of the environment overrides, `exp` honours the model and refuses the
+  effort.** `MECHA_PROVIDER` and `MECHA_MODEL` rewrite the operator's
+  default provider — a machine fact a trial home copies, `plan` hashes and
+  `exp run`'s first line names — so an arm naming no provider really runs
+  on them, as it would on an edited `default_provider`. `MECHA_EFFORT`
+  lands in the operator's `[agent]` table, which a trial home never takes
+  (its `[agent]` is the environment's), so it is refused
+  (`exp::DROPPED_ENV`). The premise is held by `trial_env`'s
+  `a_trial_home_takes_the_operators_model_and_never_its_effort`; if that
+  fails, the refusal is refusing a variable that now works.
 - **A lever named on must change the rendered config, and the hash.**
   `child_invocation` sets every *config switch* (`Arm::resolve_forced_on`:
   the seven `[agent]` switches and `[messages] enabled`) true when named in

@@ -16,7 +16,6 @@
 //! session record names the trial back (§4). Nothing in a trial home is
 //! ever copied into the real one.
 
-use crate::GlobalOpts;
 use anyhow::{Context, Result};
 use mecha_core::batch::Prompt;
 use mecha_core::experiment::{
@@ -181,10 +180,10 @@ pub enum Cmd {
     Export { name: String },
 }
 
-pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
-    // `dispatch` refused these already; restated so no other caller of
-    // `execute` can hand a trial a flag it would ignore.
-    refuse_model_flags(global)?;
+/// No `GlobalOpts` parameter on purpose: `exp` honours no global option, and
+/// `dispatch` refuses one given (`refuse_global_options`), so there is
+/// nothing a caller could hand a trial through it.
+pub async fn execute(args: Args) -> Result<()> {
     match args.cmd {
         Cmd::New { manifest } => new(&manifest),
         Cmd::Run {
@@ -448,39 +447,80 @@ fn provider_and_model(cfg: &mecha_core::config::Config) -> Result<(String, Strin
     ))
 }
 
-/// The global options that choose what a run talks to — and that `mecha
-/// exp` does not honour. Its trials run on what each arm names (`provider`,
-/// `model`, an `effort=` override, the arm's or manifest's environment for
-/// the system prompt), and the condition hash every row carries is planned
-/// from the same manifest in `run`, `status` and `report`; a flag here
-/// would steer none of them. Refused rather than ignored, for every
-/// subcommand: `exp run -p <name>` once ran every trial on the config's
-/// default provider and said so only in its first line (2026-11-22).
+/// The environment variable that rewrites a run's effort, which `mecha exp`
+/// would drop: `Config::merge_env` puts it in the operator's `[agent]`
+/// table, and a trial home's `[agent]` is its environment's, never the
+/// operator's (`trial_env`). `MECHA_PROVIDER` and `MECHA_MODEL` are not
+/// here: they rewrite the operator's default provider, which is a machine
+/// fact the trial home copies, which `plan` hashes, and which `exp run`'s
+/// first line names — honoured end to end, as editing `default_provider`
+/// would be.
+pub(crate) const DROPPED_ENV: &str = "MECHA_EFFORT";
+
+/// Refuse every global option `mecha exp` was given on the command line,
+/// and the environment override it would drop. `exp` honours none of them:
+/// a trial is a child `mecha run` whose argv and home it builds from the
+/// manifest (`provider`/`model` on an arm, an `effort=` override, the
+/// environment's harness and system prompt), and `status` and `report` plan
+/// their condition hashes from the same manifest and config — so a `-p` on
+/// `status` would show the default's rows under the flag's name. Refused
+/// rather than ignored, for every subcommand: `exp run -p <name>` once ran
+/// every trial on the config's default provider and said so only in its
+/// first line (2026-11-22).
 ///
-/// Called from `dispatch` before the router is held or observed, so a
-/// refused command takes no hold on the provider it named.
-pub(crate) fn refuse_model_flags(global: &GlobalOpts) -> Result<()> {
-    let named: Vec<&str> = [
-        (global.provider.is_some(), "--provider/-p"),
-        (global.model.is_some(), "--model/-m"),
-        (global.effort.is_some(), "--effort/-e"),
-        (global.system.is_some(), "--system/-s"),
-    ]
-    .into_iter()
-    .filter_map(|(set, flag)| set.then_some(flag))
-    .collect();
-    if named.is_empty() {
+/// Read off clap's value sources, not a list of fields: a global option
+/// added later is refused without anyone remembering this function (the
+/// first cut named four, and every other global — `--max-turns`, `--no-mcp`,
+/// `-w` — was still accepted and dropped). Called from `dispatch` before
+/// the router is held or observed, so a refused command takes no hold on
+/// the provider it named; `execute` takes no `GlobalOpts`, so no other
+/// caller can hand a trial one.
+pub(crate) fn refuse_global_options(
+    cmd: &clap::Command,
+    matches: &clap::ArgMatches,
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<()> {
+    let named: Vec<String> = cmd
+        .get_arguments()
+        .filter(|a| a.is_global_set())
+        .filter(|a| {
+            matches.value_source(a.get_id().as_str())
+                == Some(clap::parser::ValueSource::CommandLine)
+        })
+        .map(|a| match (a.get_long(), a.get_short()) {
+            (Some(l), Some(s)) => format!("--{l}/-{s}"),
+            (Some(l), None) => format!("--{l}"),
+            (None, Some(s)) => format!("-{s}"),
+            (None, None) => a.get_id().to_string(),
+        })
+        .collect();
+    let dropped = env(DROPPED_ENV).is_some();
+    if named.is_empty() && !dropped {
         return Ok(());
     }
-    anyhow::bail!(
-        "`mecha exp` does not take {}: the manifest decides what every trial runs on, and the \
-         flag would be ignored. Name it on each arm instead — `provider = \"<name>\"` (a key in \
-         [providers]) and/or `model = \"<id>\"` under `[arms.<arm>]`, `overrides = \
-         [\"effort=<level>\"]` for effort, the arm's or manifest's `[environment]` for a system \
-         prompt. An arm that names no provider runs on the config's `default_provider`. The \
-         manifest is written once at `exp new`, so a different model is a new experiment.",
-        named.join(", ")
-    );
+    let mut why = Vec::new();
+    if !named.is_empty() {
+        why.push(format!(
+            "`mecha exp` takes no global option, and was given {}: the manifest decides what \
+             every trial runs with, and the option would be ignored. The model is named on each \
+             arm — `provider = \"<name>\"` (a key in [providers]) and/or `model = \"<id>\"` under \
+             `[arms.<arm>]`; an arm that names no provider runs on the config's \
+             `default_provider`. Effort is `overrides = [\"effort=<level>\"]`, a lever is \
+             `levers_off`/`levers_on`, and the system prompt, turn limit and the rest of the \
+             harness are the arm's or manifest's `[environment]`. The manifest is written once \
+             at `exp new`, so a different model is a new experiment.",
+            named.join(", ")
+        ));
+    }
+    if dropped {
+        why.push(format!(
+            "`{DROPPED_ENV}` is set, and a trial would not run at that effort: a trial's \
+             `[agent]` table is its environment's, not your config's. Set effort on an arm \
+             with `overrides = [\"effort=<level>\"]`, and run this as `env -u {DROPPED_ENV} \
+             mecha exp …`."
+        ));
+    }
+    anyhow::bail!(why.join(" "));
 }
 
 /// An experiment names the model it measures. A default provider that
@@ -3334,98 +3374,123 @@ mod tests {
 
     use super::*;
 
-    /// `exp run <name> -p <provider>` parses — the options are global — and
-    /// used to run every trial on the default provider (2026-11-22). Each of
-    /// the four flags `exp` ignores is refused, wherever it sits on the line
-    /// and for every subcommand; the error names the flag and the manifest
-    /// fix; a line with none of them, or with a flag that is not one of the
-    /// four, passes.
-    #[test]
-    fn the_refused_model_flags_are_the_clis_global_options() {
-        // The refusal names its flags as literals; each half must be a global
-        // option the CLI really defines, or a renamed flag would be refused
-        // under a name that does not exist (the blocklist test's lesson).
+    /// What `dispatch` asks: the real CLI's matches for `argv` through the
+    /// refusal, with `env` standing in for the process environment.
+    fn refusal(argv: &[&str], env: &[(&str, &str)]) -> Result<()> {
         use clap::CommandFactory;
         let cmd = crate::Cli::command();
-        let mut names = std::collections::BTreeSet::new();
-        for a in cmd.get_arguments().filter(|a| a.is_global_set()) {
-            if let Some(l) = a.get_long() {
-                names.insert(format!("--{l}"));
+        let matches = cmd.clone().try_get_matches_from(argv).unwrap();
+        refuse_global_options(&cmd, &matches, |k| {
+            env.iter()
+                .find(|(name, _)| *name == k)
+                .map(|(_, v)| v.into())
+        })
+    }
+
+    /// The reverse guard: every global option the CLI defines — today's, and
+    /// any added later — is refused by `exp`, before the subcommand or after
+    /// it, and named by its own spelling. `exp run <name> -p <provider>` once
+    /// parsed and ran every trial on the default provider (2026-11-22), and
+    /// the first fix listed four flags by hand, leaving `--max-turns`,
+    /// `--no-mcp`, `-w` and the rest accepted and dropped.
+    #[test]
+    fn every_global_option_is_refused_by_exp() {
+        use clap::CommandFactory;
+        let cmd = crate::Cli::command();
+        let globals: Vec<_> = cmd.get_arguments().filter(|a| a.is_global_set()).collect();
+        assert!(globals.len() > 20, "non-vacuous: {} globals", globals.len());
+        for a in globals {
+            let long = format!("--{}", a.get_long().expect("a global has a long name"));
+            let mut flag = vec![long.clone()];
+            if a.get_action().takes_values() {
+                // The first value its parser takes: a number, then an effort,
+                // a tool profile, anything.
+                let value = ["1", "low", "research", "x"]
+                    .into_iter()
+                    .find(|v| {
+                        cmd.clone()
+                            .try_get_matches_from(["mecha", &long, v, "exp", "new", "m"])
+                            .is_ok()
+                    })
+                    .unwrap_or_else(|| panic!("no test value parses for {long}"));
+                flag.push(value.into());
             }
-            if let Some(s) = a.get_short() {
-                names.insert(format!("-{s}"));
+            let spelled = match a.get_short() {
+                Some(s) => format!("{long}/-{s}"),
+                None => long.clone(),
+            };
+            for (before, sub) in [(true, "status"), (false, "run"), (false, "report")] {
+                let mut argv: Vec<String> = vec!["mecha".into()];
+                if before {
+                    argv.extend(flag.iter().cloned());
+                }
+                argv.extend(["exp".into(), sub.into(), "x".into()]);
+                if !before {
+                    argv.extend(flag.iter().cloned());
+                }
+                let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+                let e = refusal(&argv, &[])
+                    .expect_err(&format!("{argv:?} must be refused"))
+                    .to_string();
+                assert!(e.contains(&spelled), "{argv:?}: {e}");
             }
-        }
-        for spelled in ["--provider/-p", "--model/-m", "--effort/-e", "--system/-s"] {
-            for half in spelled.split('/') {
-                assert!(names.contains(half), "`{half}` is not a global option");
-            }
-            let err = refuse_model_flags(&GlobalOpts {
-                provider: spelled.starts_with("--provider").then(|| "x".into()),
-                model: spelled.starts_with("--model").then(|| "x".into()),
-                effort: spelled
-                    .starts_with("--effort")
-                    .then_some(mecha_core::message::Effort::Low),
-                system: spelled.starts_with("--system").then(|| "x".into()),
-                ..GlobalOpts::default()
-            })
-            .unwrap_err()
-            .to_string();
-            assert!(err.contains(spelled), "{spelled}: {err}");
         }
     }
 
     #[test]
-    fn a_model_flag_exp_would_ignore_is_refused() {
-        use clap::Parser;
-        let parse = |argv: &[&str]| crate::Cli::try_parse_from(argv).unwrap();
-        for (argv, flag) in [
-            (
-                &["mecha", "exp", "run", "x", "-p", "inkling"][..],
-                "--provider/-p",
-            ),
-            (
-                &["mecha", "-p", "inkling", "exp", "status", "x"],
-                "--provider/-p",
-            ),
-            (&["mecha", "exp", "report", "x", "-m", "qwen"], "--model/-m"),
-            (
-                &["mecha", "exp", "run", "x", "--effort", "high"],
-                "--effort/-e",
-            ),
-            (
-                &["mecha", "exp", "export", "x", "-s", "be brief"],
-                "--system/-s",
-            ),
-            (
-                &["mecha", "exp", "judge", "x", "--provider", "a"],
-                "--provider/-p",
-            ),
-        ] {
-            let cli = parse(argv);
-            assert!(matches!(cli.command, crate::Command::Exp(_)), "{argv:?}");
-            let e = refuse_model_flags(&cli.global)
-                .expect_err(&format!("{argv:?} must be refused"))
-                .to_string();
-            assert!(e.contains(flag), "{argv:?}: {e}");
-            assert!(
-                e.contains("provider = \"<name>\"") && e.contains("[arms.<arm>]"),
-                "the error must name the manifest fix: {e}"
-            );
-            assert!(e.contains("default_provider"), "{e}");
-        }
-        // Every flag set is named in one error, not the first alone.
-        let cli = parse(&["mecha", "exp", "run", "x", "-p", "a", "-m", "b"]);
-        let e = refuse_model_flags(&cli.global).unwrap_err().to_string();
-        assert!(e.contains("--provider/-p, --model/-m"), "{e}");
-        // Nothing to refuse: no flag, or a global `exp` does not read for a
-        // model.
+    fn a_refusal_names_every_option_given_and_the_manifest_fix() {
+        let e = refusal(
+            &["mecha", "exp", "run", "x", "-p", "a", "-m", "b", "--no-mcp"],
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("--provider/-p, --model/-m, --no-mcp"), "{e}");
+        assert!(
+            e.contains("provider = \"<name>\"")
+                && e.contains("[arms.<arm>]")
+                && e.contains("default_provider"),
+            "the error must name the manifest fix: {e}"
+        );
+        // `exp`'s own options are not global ones: nothing to refuse.
         for argv in [
-            &["mecha", "exp", "run", "x", "--dry-run"][..],
-            &["mecha", "exp", "status", "x", "--no-mcp"],
+            &["mecha", "exp", "run", "x", "--dry-run", "--jobs", "2"][..],
+            &["mecha", "exp", "status", "x", "--json"],
+            &["mecha", "exp", "new", "m.toml"],
         ] {
-            assert!(refuse_model_flags(&parse(argv).global).is_ok(), "{argv:?}");
+            assert!(refusal(argv, &[]).is_ok(), "{argv:?}");
         }
+    }
+
+    /// `MECHA_EFFORT` would be dropped, so it is refused, alone or beside a
+    /// flag; `MECHA_PROVIDER` and `MECHA_MODEL` are honoured and hashed, so
+    /// they are not (`DROPPED_ENV`; the premise is
+    /// `trial_env`'s `a_trial_home_takes_the_operators_model_and_never_its_effort`).
+    #[test]
+    fn the_effort_variable_exp_would_drop_is_refused_and_the_model_ones_are_not() {
+        let argv = ["mecha", "exp", "status", "x"];
+        let e = refusal(&argv, &[("MECHA_EFFORT", "high")])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("`MECHA_EFFORT` is set") && e.contains("effort=<level>"),
+            "{e}"
+        );
+        assert!(
+            !e.contains("takes no global option"),
+            "no flag was given: {e}"
+        );
+        assert!(refusal(&argv, &[("MECHA_PROVIDER", "a"), ("MECHA_MODEL", "b")]).is_ok());
+        let e = refusal(
+            &["mecha", "exp", "status", "x", "-e", "high"],
+            &[("MECHA_EFFORT", "high")],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            e.contains("--effort/-e") && e.contains("`MECHA_EFFORT`"),
+            "{e}"
+        );
     }
 
     /// A default provider that would ask its server for its model is refused

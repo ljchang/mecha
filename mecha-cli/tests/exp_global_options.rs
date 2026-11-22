@@ -1,7 +1,8 @@
-//! `mecha exp` through the real binary refuses a global model flag it would
-//! ignore. Its trials run on what each manifest arm names, and on
-//! 2026-11-22 `exp run <name> -p <provider>` parsed — the options are
-//! global — and ran every trial on the config's default provider instead.
+//! `mecha exp` through the real binary refuses every global option it would
+//! ignore, and the one environment override it would drop. Its trials run on
+//! what each manifest arm names, and on 2026-11-22 `exp run <name> -p
+//! <provider>` parsed — the options are global — and ran every trial on the
+//! config's default provider instead.
 //! The refusal comes before anything else: before the store is opened, so
 //! an experiment that does not exist still answers with the refusal, and
 //! before the router is held or observed on the named provider's account.
@@ -17,9 +18,13 @@ impl Drop for Root {
     }
 }
 
-fn mecha(home: &Path, work: &Path, args: &[&str]) -> Output {
+fn mecha(home: &Path, work: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_mecha"))
         .args(args)
+        .env_remove("MECHA_EFFORT")
+        .env_remove("MECHA_PROVIDER")
+        .env_remove("MECHA_MODEL")
+        .envs(env.iter().copied())
         .env("MECHA_HOME", home)
         .env("MECHA_SESSION_KIND", "test")
         .env_remove("MECHA_SESSION_DIR")
@@ -30,10 +35,11 @@ fn mecha(home: &Path, work: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
-const REFUSAL: &str = "`mecha exp` does not take";
+const REFUSAL: &str = "`mecha exp` takes no global option";
+const DROPPED: &str = "`MECHA_EFFORT` is set";
 
 #[test]
-fn exp_refuses_a_model_flag_it_would_ignore_and_only_then() {
+fn exp_refuses_a_global_option_it_would_ignore_and_only_then() {
     let root = Root(std::env::temp_dir().join(format!(
         "mecha-exp-model-flags-{}",
         mecha_core::session::Session::new_id()
@@ -72,8 +78,13 @@ fn exp_refuses_a_model_flag_it_would_ignore_and_only_then() {
             &["exp", "export", "no-such-exp", "-s", "be brief"],
             "--system/-s",
         ),
+        (
+            &["exp", "run", "no-such-exp", "--max-turns", "3"],
+            "--max-turns",
+        ),
+        (&["--no-mcp", "exp", "judge", "no-such-exp"], "--no-mcp"),
     ] {
-        let out = mecha(&home, &work, args);
+        let out = mecha(&home, &work, args, &[]);
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(!out.status.success(), "{args:?} must fail: {err}");
         assert!(
@@ -83,13 +94,30 @@ fn exp_refuses_a_model_flag_it_would_ignore_and_only_then() {
         assert!(err.contains("[arms.<arm>]"), "{args:?}: {err}");
     }
 
-    // The control: the same command without a model flag is not refused —
-    // it fails on the missing experiment, which is the next thing it reads.
-    let out = mecha(&home, &work, &["exp", "status", "no-such-exp"]);
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(!err.contains(REFUSAL), "no flag, no refusal: {err}");
-    assert!(
-        err.contains("no-such-exp"),
-        "the control must fail on the experiment it named, not earlier: {err}"
+    // The effort variable a trial would never see is refused too.
+    let out = mecha(
+        &home,
+        &work,
+        &["exp", "status", "no-such-exp"],
+        &[("MECHA_EFFORT", "high")],
     );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "MECHA_EFFORT must fail: {err}");
+    assert!(err.contains(DROPPED), "refused by name: {err}");
+
+    // The controls: no option, or the model variables `exp` honours and
+    // hashes, is not refused — it fails on the missing experiment, which is
+    // the next thing it reads.
+    for env in [&[][..], &[("MECHA_MODEL", "other-fictional")]] {
+        let out = mecha(&home, &work, &["exp", "status", "no-such-exp"], env);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !err.contains(REFUSAL) && !err.contains(DROPPED),
+            "{env:?}: no refusal: {err}"
+        );
+        assert!(
+            err.contains("no-such-exp"),
+            "{env:?}: the control must fail on the experiment it named, not earlier: {err}"
+        );
+    }
 }
