@@ -63,6 +63,11 @@ pub const CI_KEEP_DAYS: i64 = 90;
 pub const ITEM_KEEP_DAYS: i64 = 30;
 /// The collector's own log.
 pub const LOG_KEEP_DAYS: i64 = 90;
+/// Release download samples: a row per asset per day, and no loader reads
+/// past thirty days, so twice that is kept (review of #912) — `traffic` and
+/// `registry_daily` are kept forever because the board reads their whole
+/// history.
+pub const RELEASE_KEEP_DAYS: i64 = 60;
 
 /// One run's whole allowance for calls to `gh`. A bound per call is not a
 /// bound per run (`ARCHITECTURE.md` §System state): four hundred selected
@@ -643,7 +648,11 @@ impl GhError {
             // a failure of that call; `collect` turns the repository lookups'
             // into `Vanished` itself.
             GhError::NotFound(d) => (Kind::Failed, d.clone()),
-            GhError::NoAccess(d) => (Kind::TrafficNoAccess, d.clone()),
+            // A push-access refusal is the traffic API's answer; from any other
+            // step it is a failure that fails the run, never a traffic finding
+            // the owner is told to read past (review of #912).
+            GhError::NoAccess(d) if step == Step::Traffic => (Kind::TrafficNoAccess, d.clone()),
+            GhError::NoAccess(d) => (Kind::Failed, d.clone()),
             GhError::OutOfTime => (
                 Kind::OutOfTime,
                 format!(
@@ -2053,6 +2062,12 @@ pub fn record(db: &Path, c: &Collected) -> Result<()> {
     tx.execute(
         "DELETE FROM collect_log WHERE run < ?1",
         params![ts(c.started - Duration::days(LOG_KEEP_DAYS))],
+    )?;
+    tx.execute(
+        "DELETE FROM releases WHERE day < ?1",
+        params![(c.started - Duration::days(RELEASE_KEEP_DAYS))
+            .format("%Y-%m-%d")
+            .to_string()],
     )?;
 
     for p in &c.problems {

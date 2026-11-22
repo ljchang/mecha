@@ -245,19 +245,10 @@ pub async fn run(fetch: &dyn Fetch, todo: &[(Registry, String)], budget: Duratio
     let mut asked = 0;
     for (i, (registry, name)) in todo.iter().enumerate() {
         if asked >= PER_RUN || started.elapsed() >= budget {
+            // Out of time is not a failure: nothing was asked and nothing
+            // refused, and `deferred` already says what waits for the next
+            // run (review of #912).
             pass.deferred += todo.len() - i;
-            if started.elapsed() >= budget {
-                pass.problems.push(Problem {
-                    kind: Kind::RegistryFailed,
-                    step: Step::Registry,
-                    repo: None,
-                    detail: format!(
-                        "the pass's {} s budget was spent; {} package(s) wait for the next run",
-                        budget.as_secs(),
-                        todo.len() - i
-                    ),
-                });
-            }
             break;
         }
         if refused.contains(registry) {

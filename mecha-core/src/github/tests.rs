@@ -1217,6 +1217,20 @@ fn a_failure_is_classified_by_what_gh_said() {
         )),
         GhError::Failed(_)
     ));
+    // ...and it is a traffic finding only at the traffic step: from any other
+    // step it is a failure that fails the run (review of #912).
+    let no_access = GhError::NoAccess("Must have push access".into());
+    assert_eq!(
+        no_access
+            .problem(Step::Traffic, Some("example-lab/tool-a"))
+            .kind,
+        Kind::TrafficNoAccess
+    );
+    for step in [Step::Inventory, Step::Ci, Step::Items] {
+        let p = no_access.problem(step, Some("example-lab/tool-a"));
+        assert_eq!(p.kind, Kind::Failed, "{step:?}");
+        assert!(p.kind.fails_collection(), "{step:?}");
+    }
 }
 
 /// Every call shares one budget, and it sits inside the unit's start timeout
