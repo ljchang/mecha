@@ -1,8 +1,17 @@
 # The GitHub board — a HUD draft
 
 Step 2 of `docs/GITHUB-DASHBOARD-DESIGN.md` §7: views 1 and 2 (failing now,
-and new issues and outside pull requests), with the headline counts. No
-summaries (step 4) and no links (step 3) yet.
+and new issues and outside pull requests), with the headline counts; and
+step 4's summaries in the New table (`about` and `summary`), which the
+collector's quarantined pass writes and the loader only reads. No links
+(step 3) yet.
+
+**Summaries.** A local model's one or two sentences about each body, and a
+kind from a closed four (bug, question, request, other), made once per body
+revision by `mecha github collect` — never at refresh. They are model prose
+about a stranger's words. Where there is none the column says why: the
+model's answer was refused, the issue has no description, or the collector
+has not reached it yet (it summarises a few dozen a run, newest first).
 
 It reads the collector's store (`mecha github collect`, daily per G10), which
 the owner registers once in `~/.mecha/hud/sources.toml` — third-party,

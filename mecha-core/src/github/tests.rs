@@ -653,6 +653,49 @@ fn a_selection_that_does_not_parse_selects_nothing_and_says_so() {
     assert!(calls(&dir).iter().all(|c| !c.contains("graphql")));
 }
 
+// ---- the body: read, hashed, never written ----
+
+/// The listing asks for each body; the store keeps its hash and never the
+/// text, and the serialized shape of an item carries no body either.
+#[test]
+fn a_body_is_hashed_into_the_store_and_never_written() {
+    let dir = scratch("body");
+    select(&dir, LAB_ALL);
+    let body = "Steps: run it on an empty file. It crashes. A marker: example-marker-7.";
+    let issue = node(1, "Crash on empty input", "outside-dev", "NONE").replacen(
+        '{',
+        &format!("{{\"body\":{},", serde_json::json!(body)),
+        1,
+    );
+    let cases = with(vec![ok(
+        "*'api graphql'*'n0=tool-a'*'n1=tool-b'*",
+        &batch(&[repo_data(1, &[issue], &[]), repo_data(1, &[], &[])]),
+    )]);
+    let c = collect_and_record(&dir, &fake(&dir, &cases), now());
+    assert!(
+        calls(&dir)
+            .iter()
+            .any(|l| l.contains("api graphql") && l.contains("title body ")),
+        "the listing does not ask for bodies"
+    );
+    let item = &c.repos[0].items[0];
+    assert_eq!(item.body.as_deref(), Some(body));
+    assert_eq!(item.body_hash, Some(summary::body_hash(body)));
+    assert!(!serde_json::to_string(item)
+        .unwrap()
+        .contains("example-marker-7"));
+    let conn = db(&dir);
+    assert_eq!(
+        strings(&conn, "SELECT body_hash FROM items WHERE number = 1"),
+        [summary::body_hash(body)]
+    );
+    let dump = std::fs::read(db_path(&dir.join("home"))).unwrap();
+    assert!(
+        !String::from_utf8_lossy(&dump).contains("example-marker-7"),
+        "the body was written to the store"
+    );
+}
+
 // ---- retention and closing ----
 
 fn items_run(at: DateTime<Utc>, repo: &str, numbers: &[i64], complete: bool) -> Collected {
@@ -672,6 +715,8 @@ fn items_run(at: DateTime<Utc>, repo: &str, numbers: &[i64], complete: bool) -> 
                 updated_at: None,
                 labels: Vec::new(),
                 comments: None,
+                body: None,
+                body_hash: None,
             })
             .collect(),
         complete,
@@ -989,9 +1034,10 @@ fn a_failure_is_classified_by_what_gh_said() {
 
 /// Every call shares one budget, and it sits inside the unit's start timeout
 /// with a minute left for the write: a bound per call adds up past it, and
-/// systemd would kill the run before it wrote anything.
+/// systemd would kill the run before it wrote anything. The summary pass's
+/// budget comes after the collection's, so both fit, with the minute.
 #[test]
-fn the_run_budget_fits_inside_the_units_start_timeout() {
+fn the_budgets_fit_inside_the_units_start_timeout() {
     let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts");
     let unit = std::fs::read_to_string(scripts.join("mecha-github-collect.service")).unwrap();
     let secs: u64 = unit
@@ -1000,7 +1046,9 @@ fn the_run_budget_fits_inside_the_units_start_timeout() {
         .and_then(|v| v.trim().strip_suffix('s'))
         .and_then(|v| v.parse().ok())
         .expect("the unit states TimeoutStartSec in seconds");
-    assert!(RUN_BUDGET + StdDuration::from_secs(60) <= StdDuration::from_secs(secs));
+    assert!(
+        RUN_BUDGET + summary::BUDGET + StdDuration::from_secs(60) <= StdDuration::from_secs(secs)
+    );
     assert!(
         unit.lines()
             .any(|l| l.trim() == "ExecStart=%h/.cargo/bin/mecha github collect"),
@@ -1190,6 +1238,82 @@ fn the_shipped_board_validates_and_its_loaders_read_the_collector() {
         tied[0][col("red_since")],
         serde_json::json!(same),
         "{tied:?}"
+    );
+
+    // The New view reads the summary of the body GitHub holds now, says why
+    // where there is none, and never shows an old body's summary.
+    let conn = db(&dir);
+    for (n, hash) in [(99, "h99"), (1, "h1"), (7, "h7-now")] {
+        conn.execute(
+            "UPDATE items SET body_hash = ?2 WHERE repo = 'example-lab/tool-a' AND number = ?1",
+            rusqlite::params![n, hash],
+        )
+        .unwrap();
+    }
+    for (n, hash, outcome, text, kind) in [
+        (
+            99,
+            "h99",
+            "summarised",
+            Some("Asks for a flag to skip the cache."),
+            Some("request"),
+        ),
+        (1, "h1", "refused", None, None),
+        (
+            7,
+            "h7-before",
+            "summarised",
+            Some("The old body's summary."),
+            Some("bug"),
+        ),
+    ] {
+        conn.execute(
+            "INSERT INTO summaries (repo, number, body_hash, outcome, summary, kind, at)
+             VALUES ('example-lab/tool-a', ?1, ?2, ?3, ?4, ?5, '2026-11-20T00:00:00Z')",
+            rusqlite::params![n, hash, outcome, text, kind],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    let new_items = &installed.loaders()["new_items"];
+    let fetched = run_sqlite(&path, new_items.query(), 500, QUERY_TIMEOUT).unwrap();
+    let col = |name: &str| fetched.columns.iter().position(|c| c == name).unwrap();
+    let of = |n: i64| {
+        fetched
+            .rows
+            .iter()
+            .find(|r| r[col("number")] == serde_json::json!(n))
+            .map(|r| (r[col("about")].clone(), r[col("summary")].clone()))
+            .unwrap()
+    };
+    assert_eq!(
+        of(99),
+        (
+            serde_json::json!("request"),
+            serde_json::json!("Asks for a flag to skip the cache.")
+        )
+    );
+    assert_eq!(
+        of(1),
+        (
+            serde_json::Value::Null,
+            serde_json::json!("(no summary: the model's answer was refused)")
+        )
+    );
+    assert_eq!(
+        of(7),
+        (
+            serde_json::Value::Null,
+            serde_json::json!("(not summarised yet)")
+        ),
+        "an edited body showed the old body's summary"
+    );
+    assert_eq!(
+        of(9),
+        (
+            serde_json::Value::Null,
+            serde_json::json!("(not summarised yet)")
+        )
     );
 
     let headline = &installed.loaders()["headline"];

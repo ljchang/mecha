@@ -1,8 +1,10 @@
 //! The GitHub board's collector (`docs/GITHUB-DASHBOARD-DESIGN.md`, step 1):
 //! `mecha github collect` reads the owner's selection file, asks `gh api`,
 //! and writes `~/.mecha/github/github.db`, which the HUD reads through an
-//! ordinary `sqlite` source. No agent loop and no model call: the fetch is
-//! fixed, and the quick summaries are a later step.
+//! ordinary `sqlite` source. No agent loop: the fetch is fixed, and the one
+//! model call is the quick summary ([`summary`], step 4) — a quarantined
+//! one-shot per new or edited body, made after the collection is written, so
+//! a pass that cannot run never costs the board its tables.
 //!
 //! **mecha never holds the token (G9).** Every call shells out to `gh`, whose
 //! login stays in `gh`'s own store; nothing here reads, passes or prints it.
@@ -24,6 +26,10 @@
 //!
 //! **Unknown is never zero.** A count GitHub did not answer is `NULL`, and an
 //! item listing that could not be read to its end marks nothing closed.
+//!
+//! **A body is never written here.** It is read with the listing, held in
+//! memory for the summary pass, and stored only as its hash — the key that
+//! says whether a summary is of the body GitHub holds now (§5).
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -326,6 +332,16 @@ pub struct Item {
     pub updated_at: Option<String>,
     pub labels: Vec<String>,
     pub comments: Option<i64>,
+    /// The body's head, at most [`summary::BODY_CHARS_MAX`] characters, for
+    /// the summary pass alone: **never written to the store and never
+    /// serialized**, so no `--json` and no table carries a stranger's prose
+    /// beyond the title the board already shows. `None` when GitHub gave none.
+    #[serde(skip)]
+    pub body: Option<String>,
+    /// The hash of the whole body as GitHub gave it ([`summary::body_hash`]),
+    /// which a summary is keyed by: an unchanged body is never summarised
+    /// again, an edited one is. `None` when GitHub gave no body field.
+    pub body_hash: Option<String>,
 }
 
 /// What one selected repository's GraphQL answer held.
@@ -427,10 +443,18 @@ pub enum Kind {
     BadSelection,
     /// Anything else: a transport error, an answer that did not parse.
     Failed,
+    /// The summary pass did not run, or stopped before it was done: no
+    /// model, no seat, a model switch, an outage, its budget spent. The
+    /// detail says which; the items it did not reach wait for the next run.
+    SummarySkipped,
+    /// One item's summary call failed for a reason of its own (a request the
+    /// model server rejected, a body that did not fit). Not a refusal: a
+    /// refusal is an answer, stored, and never asked again for that body.
+    SummaryFailed,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 11] = [
         Kind::Finished,
         Kind::RateLimited,
         Kind::Auth,
@@ -440,6 +464,8 @@ impl Kind {
         Kind::NoSelection,
         Kind::BadSelection,
         Kind::Failed,
+        Kind::SummarySkipped,
+        Kind::SummaryFailed,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -453,6 +479,8 @@ impl Kind {
             Kind::NoSelection => "no_selection",
             Kind::BadSelection => "bad_selection",
             Kind::Failed => "failed",
+            Kind::SummarySkipped => "summary_skipped",
+            Kind::SummaryFailed => "summary_failed",
         }
     }
 
@@ -473,6 +501,8 @@ pub enum Step {
     Inventory,
     Items,
     Ci,
+    /// The quick-summary pass (§5), after the collection is written.
+    Summaries,
 }
 
 impl Step {
@@ -483,6 +513,7 @@ impl Step {
             Step::Inventory => "inventory",
             Step::Items => "items",
             Step::Ci => "ci",
+            Step::Summaries => "summaries",
         }
     }
 }
@@ -796,7 +827,9 @@ fn json_stream(text: &str) -> Result<Vec<Value>, String> {
 
 // ---- the GraphQL ----
 
-const ITEM_FIELDS: &str = "number title createdAt updatedAt authorAssociation \
+/// `body` is a scalar: it adds bytes to the answer and nothing to GitHub's
+/// node count, so the batch's cost bound (`BATCH`) is unchanged by it.
+const ITEM_FIELDS: &str = "number title body createdAt updatedAt authorAssociation \
      author { login } comments { totalCount } labels(first: 20) { nodes { name } }";
 
 fn batch_query(n: usize) -> String {
@@ -833,7 +866,10 @@ fn page_query(connection: &str) -> String {
 
 fn parse_item(v: &Value, kind: ItemKind) -> Option<Item> {
     let text = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+    let body = v.get("body").and_then(Value::as_str);
     Some(Item {
+        body: body.map(summary::body_head),
+        body_hash: body.map(summary::body_hash),
         number: v.get("number")?.as_i64()?,
         kind,
         title: text("title")?,
@@ -1457,8 +1493,12 @@ CREATE TABLE IF NOT EXISTS items (
   repo TEXT NOT NULL, number INTEGER NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL,
   author TEXT, author_association TEXT, created_at TEXT, updated_at TEXT,
   labels TEXT NOT NULL, comments INTEGER,
-  first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, gone_at TEXT,
+  first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, gone_at TEXT, body_hash TEXT,
   PRIMARY KEY (repo, number));
+CREATE TABLE IF NOT EXISTS summaries (
+  repo TEXT NOT NULL, number INTEGER NOT NULL, body_hash TEXT NOT NULL,
+  outcome TEXT NOT NULL, summary TEXT, kind TEXT, refusal TEXT, model TEXT, at TEXT NOT NULL,
+  PRIMARY KEY (repo, number, body_hash));
 CREATE TABLE IF NOT EXISTS counts (
   repo TEXT NOT NULL, day TEXT NOT NULL,
   stars INTEGER, forks INTEGER, watchers INTEGER, open_issues INTEGER, at TEXT NOT NULL,
@@ -1467,24 +1507,55 @@ CREATE TABLE IF NOT EXISTS collect_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT, run TEXT NOT NULL, at TEXT NOT NULL,
   kind TEXT NOT NULL, step TEXT, repo TEXT, detail TEXT,
   selected INTEGER, collected INTEGER,
-  core_used INTEGER, core_remaining INTEGER, graphql_used INTEGER, graphql_remaining INTEGER);
+  core_used INTEGER, core_remaining INTEGER, graphql_used INTEGER, graphql_remaining INTEGER,
+  summarised INTEGER, summary_refused INTEGER, summary_failed INTEGER, summary_deferred INTEGER);
 CREATE INDEX IF NOT EXISTS collect_log_run ON collect_log (run);
 ";
+
+/// Columns added to a table after its first release, as `(table, column,
+/// declaration)`. `SCHEMA`'s `CREATE TABLE IF NOT EXISTS` makes them on a new
+/// store and does nothing to an old one, so [`open_store`] adds each that a
+/// store lacks — and a reader asks [`has_column`] before reading one, because
+/// a store the new collector has not written yet does not have it.
+const ADDED: [(&str, &str, &str); 5] = [
+    ("items", "body_hash", "TEXT"),
+    ("collect_log", "summarised", "INTEGER"),
+    ("collect_log", "summary_refused", "INTEGER"),
+    ("collect_log", "summary_failed", "INTEGER"),
+    ("collect_log", "summary_deferred", "INTEGER"),
+];
+
+pub(crate) fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn.prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2")?;
+    Ok(stmt.exists(params![table, column])?)
+}
+
+/// The store, opened for writing: its directory made, the schema applied and
+/// any column a store from an earlier build lacks added.
+pub(crate) fn open_store(db: &Path) -> Result<Connection> {
+    if let Some(dir) = db.parent() {
+        crate::create_private_dir(dir)?;
+    }
+    let conn = Connection::open(db).with_context(|| format!("opening {}", db.display()))?;
+    // As `system::record`: a board refreshing mid-write makes the writer wait
+    // rather than lose the run, and rollback-journal mode because the HUD's
+    // loaders open read-only and could not recreate WAL's -shm file.
+    conn.busy_timeout(StdDuration::from_secs(5))?;
+    conn.execute_batch(SCHEMA)?;
+    for (table, column, decl) in ADDED {
+        if !has_column(&conn, table, column)? {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))?;
+        }
+    }
+    Ok(conn)
+}
 
 /// Write one run: the inventory (when it was listed), today's counts (once a
 /// day: a row already there is kept), items and workflow runs, what has
 /// closed, retention, and the run's log rows — in one transaction, so a
 /// reader never sees half a run.
 pub fn record(db: &Path, c: &Collected) -> Result<()> {
-    if let Some(dir) = db.parent() {
-        crate::create_private_dir(dir)?;
-    }
-    let mut conn = Connection::open(db).with_context(|| format!("opening {}", db.display()))?;
-    // As `system::record`: a board refreshing mid-write makes the writer wait
-    // rather than lose the run, and rollback-journal mode because the HUD's
-    // loaders open read-only and could not recreate WAL's -shm file.
-    conn.busy_timeout(StdDuration::from_secs(5))?;
-    conn.execute_batch(SCHEMA)?;
+    let mut conn = open_store(db)?;
     let tx = conn.transaction()?;
     let run = ts(c.started);
     let at = ts(c.finished);
@@ -1529,13 +1600,13 @@ pub fn record(db: &Path, c: &Collected) -> Result<()> {
         )?;
         for i in &r.items {
             tx.execute(
-                "INSERT INTO items (repo, number, kind, title, author, author_association, created_at, updated_at, labels, comments, first_seen, last_seen, gone_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, NULL)
+                "INSERT INTO items (repo, number, kind, title, author, author_association, created_at, updated_at, labels, comments, first_seen, last_seen, gone_at, body_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, NULL, ?12)
                  ON CONFLICT (repo, number) DO UPDATE SET
                    kind = excluded.kind, title = excluded.title, author = excluded.author,
                    author_association = excluded.author_association, created_at = excluded.created_at,
                    updated_at = excluded.updated_at, labels = excluded.labels, comments = excluded.comments,
-                   last_seen = excluded.last_seen, gone_at = NULL",
+                   last_seen = excluded.last_seen, gone_at = NULL, body_hash = excluded.body_hash",
                 params![
                     r.repo,
                     i.number,
@@ -1547,7 +1618,8 @@ pub fn record(db: &Path, c: &Collected) -> Result<()> {
                     i.updated_at,
                     serde_json::to_string(&i.labels)?,
                     i.comments,
-                    run
+                    run,
+                    i.body_hash
                 ],
             )?;
         }
@@ -1597,6 +1669,13 @@ pub fn record(db: &Path, c: &Collected) -> Result<()> {
     tx.execute(
         "DELETE FROM items WHERE coalesce(gone_at, last_seen) < ?1",
         params![ts(c.started - Duration::days(ITEM_KEEP_DAYS))],
+    )?;
+    // A summary goes with its item (§3): every revision's row, once the item
+    // itself is pruned.
+    tx.execute(
+        "DELETE FROM summaries WHERE NOT EXISTS
+           (SELECT 1 FROM items i WHERE i.repo = summaries.repo AND i.number = summaries.number)",
+        [],
     )?;
     tx.execute(
         "DELETE FROM collect_log WHERE run < ?1",
@@ -1649,6 +1728,10 @@ pub struct LastRun {
     /// `None` where the run wrote no `finished` row (a newer or older build).
     pub selected: Option<i64>,
     pub collected: Option<i64>,
+    /// What the summary pass did, from the `finished` row. `None` when the
+    /// pass did not run at all — switched off (`--no-summaries`), or a build
+    /// from before it — which is not a pass that summarised nothing.
+    pub summaries: Option<summary::Tally>,
     pub problems: Vec<Logged>,
     /// For each kind in this run: the earliest run of the unbroken streak of
     /// runs that all had it, and how many runs that is.
@@ -1683,6 +1766,33 @@ pub fn read_log(db: &Path, vanished_within: Duration, now: DateTime<Utc>) -> Res
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
+    // A store the summarising collector has not written yet has no such
+    // columns: no tally, never an unreadable store.
+    let summaries = if has_column(&conn, "collect_log", "summarised")? {
+        conn.query_row(
+            "SELECT summarised, summary_refused, summary_failed, summary_deferred FROM collect_log
+             WHERE run = ?1 AND kind = 'finished' ORDER BY id DESC LIMIT 1",
+            params![latest],
+            |r| {
+                let n = |i: usize| -> rusqlite::Result<usize> {
+                    Ok(r.get::<_, Option<i64>>(i)?.unwrap_or(0).max(0) as usize)
+                };
+                Ok(match r.get::<_, Option<i64>>(0)? {
+                    None => None,
+                    Some(_) => Some(summary::Tally {
+                        summarised: n(0)?,
+                        refused: n(1)?,
+                        failed: n(2)?,
+                        deferred: n(3)?,
+                    }),
+                })
+            },
+        )
+        .optional()?
+        .flatten()
+    } else {
+        None
+    };
     let mut stmt = conn.prepare(
         "SELECT kind, step, repo, detail FROM collect_log WHERE run = ?1 AND kind <> 'finished' ORDER BY id",
     )?;
@@ -1742,12 +1852,15 @@ pub fn read_log(db: &Path, vanished_within: Duration, now: DateTime<Utc>) -> Res
             run,
             selected: finished.and_then(|f| f.0),
             collected: finished.and_then(|f| f.1),
+            summaries,
             problems,
             since,
         }),
         vanished,
     })
 }
+
+pub mod summary;
 
 #[cfg(test)]
 mod tests;

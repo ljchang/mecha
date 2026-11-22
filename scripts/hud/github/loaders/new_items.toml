@@ -4,12 +4,29 @@ max_rows = 500
 # Open issues, and pull requests from outside contributors (the collector keeps
 # only those, G5), newest first. Titles are a stranger's text: the source is
 # registered third-party, so a run that reads these rows is armed untrusted.
+#
+# The summary and its kind are the collector's quarantined pass (design §5),
+# read here as a column: no model runs in this refresh. Only the summary of
+# the body GitHub holds now joins (the hash), so an edited body shows "not
+# summarised yet" until the next run, never the old body's summary. Where
+# there is none the column says why, in the loader's own words — no summary
+# is not an empty summary.
 query = """
 SELECT it.repo, i.owner, CASE it.kind WHEN 'pull_request' THEN 'PR' ELSE 'issue' END AS kind,
        it.number, it.title, it.author, it.created_at,
        CAST(julianday('now') - julianday(it.created_at) AS INTEGER) AS age_days,
-       coalesce(it.comments, 0) AS comments
+       coalesce(it.comments, 0) AS comments,
+       CASE WHEN s.outcome = 'summarised' AND s.kind IN ('bug', 'question', 'request', 'other')
+            THEN s.kind END AS about,
+       CASE
+         WHEN s.outcome = 'summarised' AND s.summary IS NOT NULL THEN s.summary
+         WHEN s.outcome = 'refused' THEN '(no summary: the model''s answer was refused)'
+         WHEN s.outcome = 'empty' THEN '(no description)'
+         WHEN s.outcome IS NULL THEN '(not summarised yet)'
+         ELSE '(no summary)'
+       END AS summary
 FROM items it JOIN inventory i ON i.repo = it.repo AND i.selected = 1
+LEFT JOIN summaries s ON s.repo = it.repo AND s.number = it.number AND s.body_hash = it.body_hash
 WHERE it.gone_at IS NULL
 ORDER BY it.created_at DESC
 -- The newest 500: max_rows refuses a larger answer rather than trimming it,
@@ -45,3 +62,9 @@ type = "integer"
 [[column]]
 name = "comments"
 type = "integer"
+[[column]]
+name = "about"
+type = "string"
+[[column]]
+name = "summary"
+type = "string"

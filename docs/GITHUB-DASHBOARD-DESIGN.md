@@ -245,9 +245,42 @@ Each step is useful alone and is its own pull request.
 | 1 | `mecha github collect`, the selection file read, `inventory`, `ci_runs`, `items`, `counts`, `collect_log`; a systemd timer beside `mecha-triggers.service` | a run against the owner's login fills the tables; a revoked login is a `doctor` finding, not an empty table |
 | 2 | The board, installed: views 1 and 2 without summaries or links — `scripts/hud/github/` | the owner opens it and it is right about one known red repository |
 | 3 | The typed reference (§4): spec gate, renderer and serve-side check | the spec gate refuses an unknown `ref` and an unknown key beside the three; a row naming a repository outside inventory ∩ selection, or `..` as a name, renders no anchor; `hud.mjs` fails on a second link sink |
-| 4 | Summaries (§5) | an issue whose body is an instruction to the reader produces a summary and nothing else; unchanged bodies are not re-summarised |
+| 4 | Summaries (§5) — **built** (below) | an issue whose body is an instruction to the reader produces a summary and nothing else; unchanged bodies are not re-summarised |
 | 5 | `traffic`, `releases`, view 3; then the package mapping and registry counts | totals carry their since-date; a repository without push access shows a dash |
 | 6 | The picker page (G3) | select-all on an owner writes the file the collector then obeys |
+
+**Step 4, as built** (`github/summary.rs`, `mecha github collect`). The
+listing asks for each `body` (a scalar: no change to the batch's node
+cost); the body is held in memory, never written, and `items.body_hash` is
+its sha256. After the collection is recorded, the pass asks about each body
+whose hash has no `summaries` row, newest first, at most `PER_RUN` (40) a
+run within `BUDGET` (5 min, seat waits included; the unit's start timeout
+rose to 900 s to hold both budgets). Each is a `QuarantinedPass` one-shot,
+`local_only` and asked not to think, returning `{summary, kind}` and
+nothing else (`deny_unknown_fields`); one line, at most 300 characters
+(asked for 200), a kind from bug/question/request/other. Anything else is a
+refusal from a closed set (`declined`, `tool_call`, `not_json`,
+`malformed`, `unknown_kind`, `empty`, `too_long`, `no_answer`), stored in
+place of a summary; the model's own text is never stored or logged. One
+retry, told why in our words, never for a provider refusal or a tool call.
+A seat per call (`permit.rs`); the command holds the router for the pass
+alone, refusing rather than waiting on a pending switch, and observes the
+router after its hold; "switch now" stops it. No local model, no seat, an
+outage, a switch or a spent budget logs `summary_skipped`; an item's own
+provider failure logs `summary_failed` (by class, never the server's text)
+and is asked again. The run's `finished` row carries summarised / refused /
+failed / deferred counts, `NULL` when the pass did not run
+(`--no-summaries`). `mecha doctor` reports a skipped pass with its streak,
+failed calls, and a run whose every answer was refused. The loader joins
+the summary of the current hash and says why where there is none.
+
+Decisions taken in the build, open to the owner: **a refusal is final for
+the model that gave it** — another model is asked again, so a day on the
+wrong model does not cost those items their summaries for good;
+**this machine's model only**, and the pass reads the global config alone,
+since private repositories' bodies are the owner's; the per-run cap of 40
+and the 5-minute budget; summary problems are logged for the doctor and do
+not make the unit fail, since the collection they follow was written whole.
 
 It is an optional feature, so step 1 starts at `ARCHITECTURE.md` §Features →
 *Adding a feature*. Until step 6 the selection file is edited by hand.

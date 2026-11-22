@@ -7,8 +7,11 @@
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now mecha-github-collect.timer
 #
-# No model runs here, and mecha never holds the GitHub token: every call is
-# `gh api`, through gh's own login (ruling G9). `[features] github` must be on.
+# mecha never holds the GitHub token: every call is `gh api`, through gh's own
+# login (ruling G9). `[features] github` must be on. The one model call is the
+# quick summary (design §5): after the tables are written, new and edited
+# issue bodies go to a quarantined one-shot on this machine's model, a
+# background seat each; `--no-summaries` on ExecStart turns it off.
 #
 # WorkingDirectory is the home directory, not a project, for the same reason
 # as mecha-triggers: the switch is read from ~/.mecha/config.toml only.
@@ -26,8 +29,10 @@ Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 ExecStart=%h/.cargo/bin/mecha github collect
 # Type=oneshot has no start timeout by default, and a run that is still active
 # holds its timer. Every gh call inside a run shares one 480 s budget
-# (github::RUN_BUDGET; a test keeps it a minute under this), so a slow API
-# costs the steps it did not reach, logged as `out_of_time`, never the run's
-# write.
-TimeoutStartSec=600s
+# (github::RUN_BUDGET), and the summary pass after it one of 300 s, seat waits
+# included (github::summary::BUDGET); a test keeps the two a minute under this.
+# A slow API costs the steps it did not reach, logged as `out_of_time`, and a
+# slow model the summaries it did not reach, logged as `summary_skipped` —
+# never the run's write.
+TimeoutStartSec=900s
 Nice=10

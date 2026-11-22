@@ -31,8 +31,8 @@
        }
      }},
     {"type": "table", "title": "New: open issues and outside pull requests", "dataset": "new_items",
-     "columns": ["repo", "kind", "number", "title", "author", "age_days", "comments"], "span": 4},
+     "columns": ["repo", "kind", "number", "title", "about", "summary", "author", "age_days", "comments"], "span": 4},
     {"type": "text", "span": 4,
-     "markdown": "Collected once a day (06:40 Eastern) through your own `gh` login; the headline's dataset carries when the collector last finished. Red means the latest completed run of a workflow on the default branch failed; Dependabot's update runs are not counted. New lists what is open now, newest 500 — an issue opened and closed within a day is never seen. The Owner filter narrows the New table only. Titles are the authors' own text."}
+     "markdown": "Collected once a day (06:40 Eastern) through your own `gh` login; the headline's dataset carries when the collector last finished. Red means the latest completed run of a workflow on the default branch failed; Dependabot's update runs are not counted. New lists what is open now, newest 500 — an issue opened and closed within a day is never seen. The Owner filter narrows the New table only. Titles are the authors' own text. A summary and its kind (about) are a local model's reading of the body, made by the collector in a pass with no tools, never at refresh: model prose about a stranger's words, to be read as that. Where there is none the column says why."}
   ]
 }

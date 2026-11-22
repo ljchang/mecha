@@ -678,6 +678,11 @@ impl Command {
                 harness::Cmd::Ruminate { .. } | harness::Cmd::Null { .. }
             ),
             Command::Exp(a) => matches!(a.cmd, exp::Cmd::Run { .. } | exp::Cmd::Judge { .. }),
+            // The collector's summary pass holds the router for itself, after
+            // the collection, and refuses rather than waits on a switch: held
+            // for the command's life, a switch would wait behind eight minutes
+            // of `gh` calls for a pass that has not started.
+            Command::Github(_) => false,
             // `appraise --probe` and `compare` replay sessions against a model.
             Command::Sessions(a) => matches!(
                 a,
@@ -730,7 +735,6 @@ impl Command {
             | Command::Charter(_)
             | Command::Hud(_)
             | Command::System(_)
-            | Command::Github(_)
             | Command::Config(_)
             | Command::Model(_) => false,
         }
@@ -816,6 +820,9 @@ impl Command {
                     cmd: commands::persona::MemoryCmd::Write { .. }
                 }
             ),
+            // `collect` asks a model for its summaries unless told not to;
+            // the pass observes again after its own hold (`commands::github`).
+            Command::Github(a) => a.cmd.runs_a_model(),
             // Readers of stores, and `mecha model`, which asks the router
             // directly rather than through a snapshot.
             Command::Reflections(_)
@@ -836,7 +843,6 @@ impl Command {
             | Command::Charter(_)
             | Command::Hud(_)
             | Command::System(_)
-            | Command::Github(_)
             | Command::Config(_)
             | Command::Model(_) => false,
         }
@@ -1286,6 +1292,10 @@ mod tests {
         assert!(!cmd(&["mecha", "model", "list"]).runs_a_model());
         assert!(cmd(&["mecha", "run", "hello"]).runs_a_model());
         assert!(cmd(&["mecha", "mail", "classify"]).runs_a_model());
+        // The collector's summary pass asks a model, and holds for itself.
+        assert!(cmd(&["mecha", "github", "collect"]).runs_a_model());
+        assert!(!cmd(&["mecha", "github", "collect"]).is_one_run());
+        assert!(!cmd(&["mecha", "github", "collect", "--no-summaries"]).runs_a_model());
         // A scorecard names its model: eval observes, and never follows.
         assert!(cmd(&["mecha", "eval", "cases.toml"]).runs_a_model());
         // Retirement counts the rows of the model in use, so it must see the
