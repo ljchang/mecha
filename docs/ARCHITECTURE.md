@@ -8329,7 +8329,10 @@ text.
   cadence is a change to the timer alone.
 - **The quick summary is a quarantined pass after the write**
   (`github/summary.rs`, design §5). A body is read with the listing, held in
-  memory and stored only as `items.body_hash`; once the run is recorded, each
+  memory and stored only as `items.body_hash` — bounded at the door, since
+  its length is a stranger's: a `gh` answer past `ANSWER_BYTES_MAX` is
+  refused whole, and an items listing refused so is read again without
+  bodies; once the run is recorded, each
   body whose hash has no `summaries` row goes to a `QuarantinedPass` one-shot
   (`local_only`, no tools, one turn) and comes back as a capped one-line
   summary and a closed kind, or a refusal from a closed set — the model's

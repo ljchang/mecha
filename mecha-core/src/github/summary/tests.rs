@@ -37,6 +37,9 @@ enum Turn {
 struct Scripted {
     turns: Vec<Turn>,
     seen: Mutex<Vec<CompletionRequest>>,
+    /// Reports a schema-enforcing endpoint, as every local provider in a
+    /// `structured_output = "llama_json"` install does.
+    structured: bool,
 }
 
 impl Scripted {
@@ -44,6 +47,13 @@ impl Scripted {
         Scripted {
             turns,
             seen: Mutex::new(Vec::new()),
+            structured: false,
+        }
+    }
+    fn structured(turns: Vec<Turn>) -> Scripted {
+        Scripted {
+            structured: true,
+            ..Scripted::new(turns)
         }
     }
     fn calls(&self) -> usize {
@@ -64,6 +74,9 @@ impl crate::provider::Provider for Scripted {
     }
     fn local(&self) -> bool {
         true
+    }
+    fn structured_output(&self) -> bool {
+        self.structured
     }
     async fn complete(
         &self,
@@ -372,6 +385,35 @@ fn only_a_summary_and_a_known_kind_under_the_cap_parse() {
             .unwrap()
             .kind,
         SummaryKind::Question
+    );
+}
+
+/// With structured output on — the live configuration — the schema sent
+/// bounds the shape and never the length: a length bound becomes a grammar
+/// that clips the answer mid-word, which `parse` would then accept. An
+/// over-cap answer is still a refusal, not a trimmed summary.
+#[tokio::test]
+async fn the_schema_bounds_the_shape_never_the_length() {
+    let dir = scratch("schema");
+    let db = db_path(&dir);
+    let c = run_of(now(), vec![item(1, "2026-11-19T10:00:00Z", Some("one"))]);
+    let long = "word ".repeat(SUMMARY_CHARS_MAX / 4);
+    let p = Scripted::structured(vec![answer(&long, "bug")]);
+    collect_and_summarise(&db, &c, &p, "local-m", &pool(&dir, 1), limits()).await;
+    let reqs = p.requests();
+    assert_eq!(reqs.len(), 2, "one retry for an answer over the cap");
+    for req in &reqs {
+        let schema = req.response_schema.as_ref().expect("no schema was sent");
+        let summary = &schema["properties"]["summary"];
+        assert_eq!(summary["type"], "string");
+        let text = schema.to_string();
+        for bound in ["maxLength", "minLength", "pattern"] {
+            assert!(!text.contains(bound), "the schema carries {bound}: {text}");
+        }
+    }
+    assert_eq!(
+        rows(&db, "SELECT outcome, summary, refusal FROM summaries"),
+        [vec![Some("refused".into()), None, Some("too_long".into())]]
     );
 }
 

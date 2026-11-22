@@ -73,6 +73,16 @@ pub const LOG_KEEP_DAYS: i64 = 90;
 pub const RUN_BUDGET: StdDuration = StdDuration::from_secs(8 * 60);
 /// The most any one call may take.
 pub const CALL_TIMEOUT: StdDuration = StdDuration::from_secs(90);
+/// The most of one `gh` answer this process will hold, capped at the door:
+/// read past it is discarded as it arrives, and the answer is refused
+/// ([`GhError::TooLarge`]), never parsed cut short. Bodies are a stranger's
+/// length — GitHub allows 65,536 characters each, so a batch of ten
+/// repositories' two hundred items could reach ~130 MB on a machine holding
+/// a model resident — and the items listing, refused at this size, is asked
+/// again without them.
+pub const ANSWER_BYTES_MAX: usize = 32 * 1024 * 1024;
+/// What is kept of `gh`'s stderr: only its first line is ever read.
+const STDERR_BYTES_MAX: usize = 64 * 1024;
 /// Repositories per GraphQL query: ten repositories of a hundred issues and
 /// a hundred pull requests with twenty labels each is ~42,000 nodes, well
 /// under GitHub's 500,000.
@@ -484,6 +494,12 @@ impl Kind {
         }
     }
 
+    /// A problem of the summary pass's (§5), not the collection's: it never
+    /// makes a repository "not read in full", and never fails the unit.
+    pub fn is_summary(self) -> bool {
+        matches!(self, Kind::SummarySkipped | Kind::SummaryFailed)
+    }
+
     /// `None` for a kind this build does not know (a newer build's row),
     /// which the doctor reports rather than reading as clean.
     pub fn parse(s: &str) -> Option<Kind> {
@@ -536,6 +552,9 @@ pub enum GhError {
     RateLimited(String),
     NotFound(String),
     OutOfTime,
+    /// The answer passed [`ANSWER_BYTES_MAX`] (the cap it passed): refused
+    /// whole, never read cut short.
+    TooLarge(usize),
     Failed(String),
 }
 
@@ -556,6 +575,7 @@ impl GhError {
                     RUN_BUDGET.as_secs()
                 ),
             ),
+            GhError::TooLarge(cap) => (Kind::Failed, too_large(*cap)),
             GhError::Failed(d) => (Kind::Failed, d.clone()),
         };
         Problem {
@@ -565,6 +585,37 @@ impl GhError {
             detail,
         }
     }
+}
+
+fn too_large(cap: usize) -> String {
+    format!(
+        "gh's answer was larger than {} MiB and was not read",
+        cap / (1024 * 1024)
+    )
+}
+
+/// Read `pipe` to its end, keeping at most `cap` bytes: the rest is read and
+/// dropped, so the child never stalls on a full pipe and this process never
+/// holds more than the cap. `true` when anything was dropped.
+fn drain_bounded(mut pipe: impl Read, cap: usize) -> (Vec<u8>, bool) {
+    let mut kept = Vec::new();
+    let mut over = false;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        match pipe.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let room = cap.saturating_sub(kept.len());
+                if n > room {
+                    over = true;
+                }
+                kept.extend_from_slice(&buf[..n.min(room)]);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    (kept, over)
 }
 
 /// What one finished `gh` process said.
@@ -619,6 +670,7 @@ pub struct Gh {
     bin: OsString,
     deadline: Instant,
     call_timeout: StdDuration,
+    answer_cap: usize,
 }
 
 impl Gh {
@@ -627,6 +679,7 @@ impl Gh {
             bin: bin.into(),
             deadline: Instant::now() + RUN_BUDGET,
             call_timeout: CALL_TIMEOUT,
+            answer_cap: ANSWER_BYTES_MAX,
         }
     }
 
@@ -641,6 +694,12 @@ impl Gh {
     /// A shorter allowance than [`RUN_BUDGET`], for a test.
     pub fn with_budget(mut self, budget: StdDuration) -> Gh {
         self.deadline = Instant::now() + budget;
+        self
+    }
+
+    /// A smaller cap than [`ANSWER_BYTES_MAX`], for a test.
+    pub fn with_answer_cap(mut self, cap: usize) -> Gh {
+        self.answer_cap = cap;
         self
     }
 
@@ -688,13 +747,11 @@ impl Gh {
         };
         // Drained while it runs: an inventory of four hundred repositories is
         // more than a pipe holds, and waiting first would stall the child.
-        let drain = |pipe: Option<Box<dyn Read + Send>>| {
-            std::thread::spawn(move || {
-                let mut text = String::new();
-                if let Some(mut p) = pipe {
-                    let _ = p.read_to_string(&mut text);
-                }
-                text
+        // Bounded as it is read — the cap is at the door, not after the parse.
+        let drain = |pipe: Option<Box<dyn Read + Send>>, cap: usize| {
+            std::thread::spawn(move || match pipe {
+                Some(p) => drain_bounded(p, cap),
+                None => (Vec::new(), false),
             })
         };
         let out = drain(
@@ -702,12 +759,14 @@ impl Gh {
                 .stdout
                 .take()
                 .map(|p| Box::new(p) as Box<dyn Read + Send>),
+            self.answer_cap,
         );
         let err = drain(
             child
                 .stderr
                 .take()
                 .map(|p| Box::new(p) as Box<dyn Read + Send>),
+            STDERR_BYTES_MAX,
         );
         let started = Instant::now();
         let status = loop {
@@ -722,14 +781,19 @@ impl Gh {
                 Err(_) => break None,
             }
         };
-        let stdout = out.join().unwrap_or_default();
-        let stderr = err.join().unwrap_or_default();
+        let (stdout, stdout_over) = out.join().unwrap_or_default();
+        let (stderr, _) = err.join().unwrap_or_default();
+        let stdout = String::from_utf8_lossy(&stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&stderr).into_owned();
         match status {
             None if Instant::now() >= self.deadline => Err(GhError::OutOfTime),
             None => Err(GhError::Failed(format!(
                 "gh did not answer within {} s",
                 timeout.as_secs()
             ))),
+            // Refused whole, whatever the exit: a JSON document cut at the
+            // cap is not the answer, and a prefix of it may still parse.
+            Some(_) if stdout_over => Err(GhError::TooLarge(self.answer_cap)),
             Some(s) => Ok(Ran {
                 code: s.code(),
                 stdout,
@@ -828,11 +892,34 @@ fn json_stream(text: &str) -> Result<Vec<Value>, String> {
 // ---- the GraphQL ----
 
 /// `body` is a scalar: it adds bytes to the answer and nothing to GitHub's
-/// node count, so the batch's cost bound (`BATCH`) is unchanged by it.
+/// node count, so the batch's cost bound (`BATCH`) is unchanged by it. The
+/// bytes are bounded at the door ([`ANSWER_BYTES_MAX`]); an answer refused
+/// for its size is asked again with [`ITEM_FIELDS_NO_BODY`], so the
+/// collection never depends on what strangers wrote at length.
 const ITEM_FIELDS: &str = "number title body createdAt updatedAt authorAssociation \
      author { login } comments { totalCount } labels(first: 20) { nodes { name } }";
+const ITEM_FIELDS_NO_BODY: &str = "number title createdAt updatedAt authorAssociation \
+     author { login } comments { totalCount } labels(first: 20) { nodes { name } }";
 
-fn batch_query(n: usize) -> String {
+fn item_fields(bodies: bool) -> &'static str {
+    if bodies {
+        ITEM_FIELDS
+    } else {
+        ITEM_FIELDS_NO_BODY
+    }
+}
+
+/// Why a listing's items carry no body this run, for the log.
+fn bodies_unread(cap: usize) -> String {
+    format!(
+        "the listing with issue bodies was larger than {} MiB, so it was read again without \
+         them: its items are not summarised this run",
+        cap / (1024 * 1024)
+    )
+}
+
+fn batch_query(n: usize, bodies: bool) -> String {
+    let fields = item_fields(bodies);
     let mut q = String::from("query(");
     for i in 0..n {
         if i > 0 {
@@ -849,18 +936,19 @@ fn batch_query(n: usize) -> String {
     q.push_str(&format!(
         "}}\nfragment R on Repository {{\n  stargazerCount forkCount watchers {{ totalCount }}\n  \
          issues(states: OPEN, first: 100, orderBy: {{field: CREATED_AT, direction: DESC}}) {{\n    \
-         totalCount pageInfo {{ hasNextPage endCursor }} nodes {{ {ITEM_FIELDS} }}\n  }}\n  \
+         totalCount pageInfo {{ hasNextPage endCursor }} nodes {{ {fields} }}\n  }}\n  \
          pullRequests(states: OPEN, first: 100, orderBy: {{field: CREATED_AT, direction: DESC}}) {{\n    \
-         totalCount pageInfo {{ hasNextPage endCursor }} nodes {{ {ITEM_FIELDS} }}\n  }}\n}}\n"
+         totalCount pageInfo {{ hasNextPage endCursor }} nodes {{ {fields} }}\n  }}\n}}\n"
     ));
     q
 }
 
-fn page_query(connection: &str) -> String {
+fn page_query(connection: &str, bodies: bool) -> String {
+    let fields = item_fields(bodies);
     format!(
         "query($o: String!, $n: String!, $after: String!) {{\n  repository(owner: $o, name: $n) {{\n    \
          {connection}(states: OPEN, first: 100, after: $after, orderBy: {{field: CREATED_AT, direction: DESC}}) {{\n      \
-         pageInfo {{ hasNextPage endCursor }} nodes {{ {ITEM_FIELDS} }}\n    }}\n  }}\n}}\n"
+         pageInfo {{ hasNextPage endCursor }} nodes {{ {fields} }}\n    }}\n  }}\n}}\n"
     )
 }
 
@@ -981,6 +1069,7 @@ impl Collected {
         let troubled: BTreeSet<&str> = self
             .problems
             .iter()
+            .filter(|p| !p.kind.is_summary())
             .filter_map(|p| p.repo.as_deref())
             .collect();
         let ci: BTreeSet<&str> = self.ci_read.iter().map(String::as_str).collect();
@@ -1262,7 +1351,23 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
                 ]
             })
             .collect();
-        let answer = match gh.graphql(&batch_query(chunk.len()), &vars) {
+        // Bodies first; a batch refused for its size is asked once more
+        // without them, so the collection is never the price of a long body.
+        let answer = match gh.graphql(&batch_query(chunk.len(), true), &vars) {
+            Err(GhError::TooLarge(cap)) => {
+                for r in chunk {
+                    c.problems.push(Problem {
+                        kind: Kind::SummarySkipped,
+                        step: Step::Items,
+                        repo: Some(r.full_name.clone()),
+                        detail: bodies_unread(cap),
+                    });
+                }
+                gh.graphql(&batch_query(chunk.len(), false), &vars)
+            }
+            other => other,
+        };
+        let answer = match answer {
             Ok(v) => v,
             Err(e) => match e {
                 GhError::Auth(_) | GhError::Missing(_) | GhError::OutOfTime => {
@@ -1288,7 +1393,15 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
             let data = answer.get("data").and_then(|d| d.get(&alias));
             match data {
                 Some(d) if d.is_object() => match repo_items(gh, r, d) {
-                    Ok(items) => {
+                    Ok((items, unread)) => {
+                        if let Some(cap) = unread {
+                            c.problems.push(Problem {
+                                kind: Kind::SummarySkipped,
+                                step: Step::Items,
+                                repo: Some(r.full_name.clone()),
+                                detail: bodies_unread(cap),
+                            });
+                        }
                         // A listing not read to its end marks nothing closed
                         // (`store`), and is said as what it is: unknown is
                         // never clean, so the repo is not "read in full" and
@@ -1414,8 +1527,12 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
 }
 
 /// A repository's GraphQL object, with any further pages of its issues and
-/// pull requests asked for.
-fn repo_items(gh: &Gh, r: &Repo, d: &Value) -> Result<RepoItems, GhError> {
+/// pull requests asked for — with bodies while they fit, and, from the first
+/// page refused for its size, without them. The cap that page passed rides
+/// out beside the items, for the log.
+fn repo_items(gh: &Gh, r: &Repo, d: &Value) -> Result<(RepoItems, Option<usize>), GhError> {
+    let mut bodies = true;
+    let mut unread = None;
     let total = |k: &str| {
         d.get(k)
             .and_then(|v| v.get("totalCount"))
@@ -1451,7 +1568,14 @@ fn repo_items(gh: &Gh, r: &Repo, d: &Value) -> Result<RepoItems, GhError> {
                 ("n".to_string(), r.name.clone()),
                 ("after".to_string(), cursor),
             ];
-            let page = gh.graphql(&page_query(field), &vars)?;
+            let page = match gh.graphql(&page_query(field, bodies), &vars) {
+                Err(GhError::TooLarge(cap)) if bodies => {
+                    bodies = false;
+                    unread = Some(cap);
+                    gh.graphql(&page_query(field, false), &vars)?
+                }
+                other => other?,
+            };
             match page
                 .get("data")
                 .and_then(|d| d.get("repository"))
@@ -1471,12 +1595,15 @@ fn repo_items(gh: &Gh, r: &Repo, d: &Value) -> Result<RepoItems, GhError> {
         }
     }
     items.retain(kept);
-    Ok(RepoItems {
-        repo: r.full_name.clone(),
-        counts,
-        items,
-        complete,
-    })
+    Ok((
+        RepoItems {
+            repo: r.full_name.clone(),
+            counts,
+            items,
+            complete,
+        },
+        unread,
+    ))
 }
 
 /// The default branch's own runs: on that branch, and from this repository —

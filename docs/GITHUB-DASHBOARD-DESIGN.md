@@ -252,13 +252,22 @@ Each step is useful alone and is its own pull request.
 **Step 4, as built** (`github/summary.rs`, `mecha github collect`). The
 listing asks for each `body` (a scalar: no change to the batch's node
 cost); the body is held in memory, never written, and `items.body_hash` is
-its sha256. After the collection is recorded, the pass asks about each body
+its sha256. Its bytes are capped at the door: every `gh` answer is drained
+to at most `ANSWER_BYTES_MAX` (32 MiB) and one past it is refused whole
+(`GhError::TooLarge`), never parsed cut short; an items listing refused for
+its size is asked again without `body`, so its items land unhashed, wait
+for a later run (counted deferred), and the loss is logged
+`summary_skipped` — which never marks a repository not read in full or
+fails the unit. After the collection is recorded, the pass asks about each body
 whose hash has no `summaries` row, newest first, at most `PER_RUN` (40) a
 run within `BUDGET` (5 min, seat waits included; the unit's start timeout
 rose to 900 s to hold both budgets). Each is a `QuarantinedPass` one-shot,
 `local_only` and asked not to think, returning `{summary, kind}` and
 nothing else (`deny_unknown_fields`); one line, at most 300 characters
-(asked for 200), a kind from bug/question/request/other. Anything else is a
+(asked for 200), a kind from bug/question/request/other. The schema sent
+to a structured-output endpoint bounds the shape and never the length:
+llama.cpp compiles `maxLength` into a grammar that clips the answer
+mid-word, which the parse would then accept (review of #909). Anything else is a
 refusal from a closed set (`declined`, `tool_call`, `not_json`,
 `malformed`, `unknown_kind`, `empty`, `too_long`, `no_answer`), stored in
 place of a summary; the model's own text is never stored or logged. One

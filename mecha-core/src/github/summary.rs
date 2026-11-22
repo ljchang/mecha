@@ -307,10 +307,14 @@ pub fn prompt(input: &Input) -> String {
     )
 }
 
+/// The shape, never the length. llama.cpp compiles `maxLength` into a grammar
+/// bound, so a long answer would be clipped mid-word at the cap and `parse`
+/// would take a sentence the model did not write: the cap is enforced by
+/// refusal in [`parse`] alone, and `MAX_TOKENS` bounds generation.
 fn schema() -> serde_json::Value {
     let kinds: Vec<&str> = SummaryKind::ALL.iter().map(|k| k.as_str()).collect();
     serde_json::json!({"type": "object", "additionalProperties": false,
-        "properties": {"summary": {"type": "string", "maxLength": SUMMARY_CHARS_MAX},
+        "properties": {"summary": {"type": "string"},
                        "kind": {"type": "string", "enum": kinds}},
         "required": ["summary", "kind"]})
 }
@@ -494,6 +498,17 @@ impl Pass {
 /// one: a refused body comes back with [`Input::refused_by`] set, and
 /// [`for_model`] drops it for that model alone — so a run on the wrong model
 /// costs those items a day, not their summaries for good.
+/// Items this run listed without a body — the listing was refused for its
+/// size and read again without them (`ANSWER_BYTES_MAX`). They have no hash
+/// to ask about, and wait for a run that reads them: deferred, not lost.
+pub fn unread(c: &Collected) -> usize {
+    c.repos
+        .iter()
+        .flat_map(|r| &r.items)
+        .filter(|i| i.body_hash.is_none())
+        .count()
+}
+
 pub fn pending(db: &Path, c: &Collected) -> Result<(Vec<Input>, Vec<Done>)> {
     let known = known_hashes(db)?;
     let mut todo = Vec::new();

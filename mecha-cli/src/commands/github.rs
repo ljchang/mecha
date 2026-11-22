@@ -78,7 +78,10 @@ async fn collect(global: &GlobalOpts, json: bool, no_summaries: bool) -> Result<
     let pass = if no_summaries {
         None
     } else {
-        let pass = summaries(global, &db, &found).await;
+        let mut pass = summaries(global, &db, &found).await;
+        // Listed without a body (its listing was too large with them): no
+        // hash to ask about this run, so waiting — counted, never dropped.
+        pass.deferred += summary::unread(&found);
         // A pass that cannot be written is said and the run goes on: the
         // collection is already in, and the doctor reads the missing counts.
         match summary::record_pass(&db, found.started, &pass) {
@@ -161,7 +164,9 @@ async fn collect(global: &GlobalOpts, json: bool, no_summaries: bool) -> Result<
         println!("written to {}", db.display());
     }
 
-    if found.problems.is_empty() {
+    // A listing read without bodies is the summaries' loss, logged for the
+    // doctor; the collection it came with is whole.
+    if found.problems.iter().all(|p| p.kind.is_summary()) {
         Ok(())
     } else {
         // Refused or failed: non-zero, so the unit reads failed too. What was

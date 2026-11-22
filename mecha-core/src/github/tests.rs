@@ -696,6 +696,126 @@ fn a_body_is_hashed_into_the_store_and_never_written() {
     );
 }
 
+// ---- the answer's size, capped at the door ----
+
+/// An answer past the cap is refused whole, never parsed cut short — even
+/// where a prefix of it would parse (the first of `--paginate`'s pages).
+#[test]
+fn an_answer_past_the_cap_is_refused_not_read_cut_short() {
+    let dir = scratch("too-large");
+    let big = "x".repeat(8 * 1024);
+    let page_one = format!("[{}]\n", repo_json("example-lab/tool-a", false, false));
+    let page_two = format!(r#"[{{"full_name":"example-lab/{big}"}}]"#);
+    let cases = vec![
+        ok("*'user/repos'*", &format!("{page_one}{page_two}")),
+        ok(
+            "*'api graphql'*",
+            &format!(r#"{{"data":{{"r0":"{big}"}}}}"#),
+        ),
+        ok("*'api rate_limit'*", RATE),
+    ];
+    let gh = fake(&dir, &cases).with_answer_cap(page_one.len() + 16);
+    assert_eq!(
+        gh.rest(&["api", "user/repos", "--paginate"]),
+        Err(GhError::TooLarge(page_one.len() + 16)),
+        "a prefix that parses was taken for the answer"
+    );
+    assert_eq!(
+        gh.graphql("query { x }", &[]),
+        Err(GhError::TooLarge(page_one.len() + 16))
+    );
+    // Under the cap, the same plumbing answers.
+    assert!(gh.rate().is_ok());
+    let p = GhError::TooLarge(ANSWER_BYTES_MAX).problem(Step::Items, None);
+    assert_eq!(p.kind, Kind::Failed);
+    assert!(p.detail.contains("32 MiB"), "{}", p.detail);
+}
+
+#[test]
+fn the_drain_keeps_the_cap_and_reads_the_rest_away() {
+    let text = vec![b'a'; 200_000];
+    let (kept, over) = drain_bounded(&text[..], 1000);
+    assert_eq!((kept.len(), over), (1000, true));
+    let (kept, over) = drain_bounded(&text[..], 200_000);
+    assert_eq!((kept.len(), over), (200_000, false));
+}
+
+/// A listing too large with its bodies is asked again without them: the
+/// items land, unhashed, the repositories count as read in full, and the
+/// summaries' loss is logged — the collection never pays for a long body.
+#[test]
+fn a_listing_too_large_with_bodies_is_read_again_without_them() {
+    let dir = scratch("bodiless");
+    select(&dir, LAB_ALL);
+    let long = "a pasted log line\n".repeat(8_000);
+    let issue = node(1, "Crash on empty input", "lab-member", "MEMBER").replacen(
+        '{',
+        &format!("{{\"body\":{},", serde_json::json!(long)),
+        1,
+    );
+    let bodied = batch(&[repo_data(12, &[issue], &[]), repo_data(1, &[], &[])]);
+    // The bodied query answers too large; the body-less one falls through
+    // to the healthy batch.
+    let cases = with(vec![ok("*'api graphql'*'title body '*", &bodied)]);
+    let gh = fake(&dir, &cases).with_answer_cap(64 * 1024);
+    let c = collect_and_record(&dir, &gh, now());
+
+    let graphql: Vec<String> = calls(&dir)
+        .into_iter()
+        .filter(|l| l.contains("api graphql"))
+        .collect();
+    assert_eq!(graphql.len(), 2, "{graphql:?}");
+    assert!(graphql[0].contains("title body "));
+    assert!(!graphql[1].contains(" body "), "the retry asked for bodies");
+
+    let items: Vec<i64> = c
+        .repos
+        .iter()
+        .flat_map(|r| &r.items)
+        .map(|i| i.number)
+        .collect();
+    assert_eq!(
+        items,
+        [1, 7, 9],
+        "the body-less listing's items did not land"
+    );
+    assert!(c
+        .repos
+        .iter()
+        .flat_map(|r| &r.items)
+        .all(|i| i.body_hash.is_none()));
+    assert_eq!(
+        summary::unread(&c),
+        3,
+        "unread items are not counted waiting"
+    );
+    assert_eq!(
+        c.collected(),
+        2,
+        "a body-less listing is a listing read in full"
+    );
+    let conn = db(&dir);
+    assert_eq!(
+        strings(
+            &conn,
+            "SELECT CAST(count(*) AS TEXT) FROM items WHERE body_hash IS NULL"
+        ),
+        ["3"]
+    );
+    assert_eq!(
+        kinds(&conn),
+        [
+            "summary_skipped:items:example-lab/tool-a",
+            "summary_skipped:items:example-lab/tool-b"
+        ]
+    );
+    assert!(
+        c.problems.iter().all(|p| p.kind.is_summary()),
+        "{:?}",
+        c.problems
+    );
+}
+
 // ---- retention and closing ----
 
 fn items_run(at: DateTime<Utc>, repo: &str, numbers: &[i64], complete: bool) -> Collected {
