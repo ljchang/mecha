@@ -1,0 +1,68 @@
+source = "github"
+schedule = "15 * * * *"
+max_rows = 500
+# The package mapping, per selected repository and registry: the name counted,
+# where it came from (a manifest the collector read, or the owner's
+# packages.toml, which wins), and what the registry last said. Until the picker
+# (step 6) shows it, this table is where a wrong mapping is seen; the fix is a
+# line in ~/.mecha/github/packages.toml.
+#
+# Downloads are the registry's own daily counts over the last thirty days, and
+# `downloads_since` is the oldest day the store holds for the name. A name
+# detected in a private repository is never sent to a registry, and says so.
+query = """
+WITH sel AS (SELECT repo, private FROM inventory WHERE selected = 1),
+pd AS (SELECT registry, name,
+         sum(CASE WHEN day > date('now', '-30 days') THEN downloads END) AS n30,
+         min(day) AS since
+       FROM registry_daily GROUP BY registry, name)
+SELECT p.repo, p.registry, p.name,
+       CASE p.source
+         WHEN 'owner' THEN 'set in packages.toml'
+         ELSE 'detected in ' || p.manifest
+       END AS source,
+       p.detected_name,
+       CASE
+         WHEN p.name IS NULL THEN 'not published here (packages.toml)'
+         WHEN p.registry = 'conda' THEN 'not counted yet (conda)'
+         WHEN s.private AND p.source <> 'owner' THEN 'not asked: a private repository''s name'
+         WHEN k.status = 'counted' THEN 'counted ' || substr(k.at, 1, 10)
+         WHEN k.status = 'not_found' THEN 'not found on ' || p.registry
+         WHEN k.status = 'refused' THEN 'refused ' || substr(k.at, 1, 10)
+         WHEN k.status = 'failed' THEN 'failed ' || substr(k.at, 1, 10)
+         ELSE 'not asked yet'
+       END AS status,
+       pd.n30 AS downloads_30d,
+       pd.since AS downloads_since
+FROM packages p
+JOIN sel s ON s.repo = p.repo
+LEFT JOIN registry_checks k ON k.registry = p.registry AND k.name = p.name
+LEFT JOIN pd ON pd.registry = p.registry AND pd.name = p.name
+ORDER BY p.repo, p.registry
+LIMIT 500
+"""
+
+[[column]]
+name = "repo"
+type = "string"
+[[column]]
+name = "registry"
+type = "string"
+[[column]]
+name = "name"
+type = "string"
+[[column]]
+name = "source"
+type = "string"
+[[column]]
+name = "detected_name"
+type = "string"
+[[column]]
+name = "status"
+type = "string"
+[[column]]
+name = "downloads_30d"
+type = "integer"
+[[column]]
+name = "downloads_since"
+type = "date"

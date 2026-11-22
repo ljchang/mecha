@@ -2,6 +2,12 @@
 //! (`docs/GITHUB-DASHBOARD-DESIGN.md`). mecha never holds the GitHub token:
 //! every call is `gh api`, through `gh`'s own login.
 //!
+//! Usage (step 5) rides the same calls: traffic and package manifests
+//! through `gh api`, release downloads in the batch's GraphQL; and, after the
+//! write, a pass over the package registries (`github::registry`) — a fixed
+//! fetch with no model and no credential, of names a private repository's
+//! manifest never supplies. `--no-registries` runs the collector without it.
+//!
 //! The one model call is the quick summary (§5, step 4): after the
 //! collection is written, each new or edited body goes to a quarantined
 //! one-shot (`github::summary`) on this machine's model, a background seat
@@ -18,7 +24,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use mecha_core::feature::Feature;
-use mecha_core::github::{self, summary};
+use mecha_core::github::{self, registry, summary, usage};
 
 use crate::GlobalOpts;
 
@@ -34,12 +40,16 @@ pub enum Cmd {
     /// ~/.mecha/github/repos.toml selects, and write
     /// ~/.mecha/github/github.db: the inventory, default-branch CI runs, open
     /// issues and outside pull requests, today's counts, and a log of every
-    /// refusal and failure, which `mecha doctor` reads. Then summarise new
-    /// and edited issue bodies on this machine's model, a few dozen a run.
+    /// refusal and failure, which `mecha doctor` reads; and usage — traffic,
+    /// release downloads, package names from each repository's own
+    /// manifests (corrected by ~/.mecha/github/packages.toml). Then ask PyPI's
+    /// and npm's download counts for those names, and summarise new and
+    /// edited issue bodies on this machine's model, a few dozen a run.
     /// Exits non-zero when the collection was refused or failed anywhere —
-    /// after writing what it found. A summary pass that was skipped or failed
-    /// is logged for `mecha doctor` and leaves the exit alone: the collection
-    /// it follows was written whole.
+    /// after writing what it found. A registry or summary pass that was
+    /// refused, skipped or failed is logged for `mecha doctor` and leaves the
+    /// exit alone, as does traffic GitHub refused for want of push access: the
+    /// collection they follow was written whole.
     Collect {
         #[arg(long)]
         json: bool,
@@ -47,6 +57,10 @@ pub enum Cmd {
         /// log says the pass did not run (never that it summarised nothing).
         #[arg(long)]
         no_summaries: bool,
+        /// Collect without asking the package registries for download
+        /// counts: the board keeps the counts it has.
+        #[arg(long)]
+        no_registries: bool,
     },
 }
 
@@ -61,11 +75,20 @@ impl Cmd {
 
 pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
     match args.cmd {
-        Cmd::Collect { json, no_summaries } => collect(global, json, no_summaries).await,
+        Cmd::Collect {
+            json,
+            no_summaries,
+            no_registries,
+        } => collect(global, json, no_summaries, no_registries).await,
     }
 }
 
-async fn collect(global: &GlobalOpts, json: bool, no_summaries: bool) -> Result<()> {
+async fn collect(
+    global: &GlobalOpts,
+    json: bool,
+    no_summaries: bool,
+    no_registries: bool,
+) -> Result<()> {
     crate::commands::features::require(Feature::Github)?;
     let home = mecha_core::work::mecha_home()?;
     let gh = github::Gh::from_env();
@@ -74,6 +97,21 @@ async fn collect(global: &GlobalOpts, json: bool, no_summaries: bool) -> Result<
     // Written before any model is asked: the pass cannot cost the board the
     // collection, however it ends.
     github::record(&db, &found)?;
+
+    // The registries, after the write and before the model: a fixed fetch of
+    // the mapping's names, bounded by its own budget.
+    let counted = if no_registries {
+        None
+    } else {
+        let pass = registries(&db).await;
+        match registry::record_pass(&db, found.started, &pass) {
+            Ok(()) => Some(pass),
+            Err(e) => {
+                eprintln!("mecha: the registry counts could not be written: {e:#}");
+                None
+            }
+        }
+    };
 
     let pass = if no_summaries {
         None
@@ -104,6 +142,17 @@ async fn collect(global: &GlobalOpts, json: bool, no_summaries: bool) -> Result<
             "items": found.repos.iter().map(|r| r.items.len()).sum::<usize>(),
             "ci_runs": found.ci.len(),
             "problems": found.problems,
+            "traffic": {
+                "read": found.traffic.iter().filter(|t| matches!(t.read, usage::TrafficRead::Read { .. })).count(),
+                "no_access": found.traffic.iter().filter(|t| matches!(t.read, usage::TrafficRead::NoAccess { .. })).count(),
+            },
+            "releases_read": found.repos.iter().filter(|r| r.releases.is_some()).count(),
+            "manifests_read": found.scans.len(),
+            "registries": counted.as_ref().map(|p| serde_json::json!({
+                "checked": p.checked.len(),
+                "problems": p.problems,
+                "deferred": p.deferred,
+            })),
             "rate_before": found.rate_before,
             "rate_after": found.rate_after,
             // Counts and the reason it stopped, never a summary: the store is
@@ -129,6 +178,19 @@ async fn collect(global: &GlobalOpts, json: bool, no_summaries: bool) -> Result<
             found.repos.iter().map(|r| r.items.len()).sum::<usize>(),
             found.ci.len()
         );
+        let no_access = found
+            .traffic
+            .iter()
+            .filter(|t| matches!(t.read, usage::TrafficRead::NoAccess { .. }))
+            .count();
+        println!(
+            "usage: traffic read for {}, {} without push access (a dash); releases read for {}; \
+             manifests read for {}",
+            found.traffic.len() - no_access,
+            no_access,
+            found.repos.iter().filter(|r| r.releases.is_some()).count(),
+            found.scans.len()
+        );
         if let (Some(b), Some(a)) = (found.rate_before, found.rate_after) {
             println!(
                 "quota: REST {} → {} left, GraphQL {} → {} left",
@@ -147,6 +209,20 @@ async fn collect(global: &GlobalOpts, json: bool, no_summaries: bool) -> Result<
                 p.detail
             );
         }
+        match &counted {
+            None if no_registries => println!("registries: not asked (--no-registries)"),
+            None => {}
+            Some(p) => {
+                println!(
+                    "registries: {} package(s) asked, {} left for the next run",
+                    p.checked.len(),
+                    p.deferred
+                );
+                for prob in &p.problems {
+                    eprintln!("{}: {}", prob.kind.as_str(), prob.detail);
+                }
+            }
+        }
         match &pass {
             None if no_summaries => println!("summaries: not made (--no-summaries)"),
             None => {}
@@ -164,9 +240,10 @@ async fn collect(global: &GlobalOpts, json: bool, no_summaries: bool) -> Result<
         println!("written to {}", db.display());
     }
 
-    // A listing read without bodies is the summaries' loss, logged for the
-    // doctor; the collection it came with is whole.
-    if found.problems.iter().all(|p| p.kind.is_summary()) {
+    // A listing read without bodies is the summaries' loss, and traffic
+    // refused for push access a standing fact the board's dash says, both
+    // logged for the doctor; the collection they came with is whole.
+    if found.problems.iter().all(|p| !p.kind.fails_collection()) {
         Ok(())
     } else {
         // Refused or failed: non-zero, so the unit reads failed too. What was
@@ -302,6 +379,33 @@ async fn summaries(global: &GlobalOpts, db: &Path, found: &github::Collected) ->
     .await;
     drop(held);
     pass
+}
+
+/// The registry pass: the names due, asked over a client that carries no
+/// credential. A pass that cannot start is itself logged, never silent — no
+/// counts is not "no downloads".
+async fn registries(db: &Path) -> registry::Pass {
+    let failed = |why: String| registry::Pass {
+        problems: vec![github::Problem {
+            kind: github::Kind::RegistryFailed,
+            step: github::Step::Registry,
+            repo: None,
+            detail: why,
+        }],
+        ..registry::Pass::default()
+    };
+    let todo = match registry::due(db) {
+        Ok(t) => t,
+        Err(e) => return failed(format!("the package mapping could not be read: {e:#}")),
+    };
+    if todo.is_empty() {
+        return registry::Pass::default();
+    }
+    let http = match registry::Http::new() {
+        Ok(h) => h,
+        Err(e) => return failed(format!("no HTTP client could be built: {e:#}")),
+    };
+    registry::run(&http, &todo, registry::BUDGET).await
 }
 
 /// The router `provider` (the default when `None`) is served from, when it

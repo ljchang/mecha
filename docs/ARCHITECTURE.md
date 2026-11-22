@@ -8305,8 +8305,8 @@ was ever deployed.
 ## The GitHub collector
 
 `github.rs`, `mecha github collect`, `docs/GITHUB-DASHBOARD-DESIGN.md` (steps
-1 to 4 built: the collector and its store, the board, the typed reference,
-the summaries; §7 tracks the rest). `system.rs`'s shape again: a timer runs a command, the command writes
+1 to 5 built: the collector and its store, the board, the typed reference,
+the summaries, usage; §7 tracks the rest). `system.rs`'s shape again: a timer runs a command, the command writes
 `~/.mecha/github/github.db`, and the HUD will read it as an ordinary `sqlite`
 source with `content = "third-party"`, because an issue title is a stranger's
 text.
@@ -8365,6 +8365,17 @@ text.
   `NULL` when the pass did not run. The board's loader joins on the current
   hash, so an edited body never shows its old summary, and no model runs in
   a refresh.
+- **Usage is history the collector keeps, with a dash where it has none**
+  (`github/usage.rs`, `github/registry.rs`, design §7.2). Traffic is upserted
+  per day, so GitHub's fourteen days accumulate from the first read; a total
+  carries the day it runs from, and uncovered days are counted missing,
+  never zero. A login that cannot push (`inventory.push`, or GitHub's 403) is
+  `traffic_no_access`, a refusal that fails nothing, and a dash. Package
+  names come from the repository's own manifests, corrected by the owner's
+  `packages.toml`. The registries (pypistats, npm) are a fixed fetch after
+  the write, with no model and no credential, and never of a name detected
+  in a private repository; `registry_refused` and `registry_failed` are kept
+  apart, and neither fails the unit.
 
 ## Session records and replay
 

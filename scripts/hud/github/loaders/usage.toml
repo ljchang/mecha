@@ -1,0 +1,178 @@
+source = "github"
+schedule = "15 * * * *"
+max_rows = 500
+# View 3, "Use" (GITHUB-DASHBOARD-DESIGN.md §6): one row per selected
+# repository — clones, views, release downloads, stars and package downloads,
+# each with a strip of its last thirty days.
+#
+# - Traffic totals are over the history the collector has kept, which starts
+#   the day it first read the repository: `clones_since` is that day, and
+#   `missing_days` counts the days since then no read covered (a gap of more
+#   than GitHub's fourteen-day window), which are not in the total and are
+#   never counted as zero.
+# - A repository the login cannot push to has no traffic: its clones are NULL,
+#   drawn as a dash, never 0, and `traffic` says why.
+# - `unique_cloner_days` is each day's unique cloners summed — one person
+#   cloning on three days is three — because GitHub gives unique cloners per
+#   day and per fourteen days, never over a longer history. `cloners_14d` is
+#   GitHub's own figure for its window.
+# - Release downloads are GitHub's per-asset all-time counts on the latest day
+#   sampled, for the newest twenty releases; `release_note` says when that is
+#   not all of them, and NULL (a dash) is a repository with no asset to count.
+# - A strip is one character a day, oldest on the left: its height is the
+#   day's place between the window's lowest and highest, and `·` a day with no
+#   reading. Clones are scaled from zero; stars and the all-time download
+#   counts, which only grow, from their lowest.
+#
+# Days are `YYYY-MM-DD` throughout (`date('now', …)`), which is the form the
+# collector writes them in.
+query = """
+WITH RECURSIVE days(d) AS (
+  SELECT date('now', '-29 days') UNION ALL SELECT date(d, '+1 day') FROM days WHERE d < date('now')),
+sel AS (SELECT repo, owner FROM inventory WHERE selected = 1),
+t AS (SELECT repo, sum(clones) AS clones, sum(clone_uniques) AS cloner_days, sum(views) AS views,
+        min(day) AS since,
+        CAST(julianday(max(day)) - julianday(min(day)) AS INTEGER) + 1 - count(*) AS missing
+      FROM traffic GROUP BY repo),
+-- One reading per repository per day of the window, NULL where there is none.
+grid AS (SELECT s.repo, days.d,
+           tr.clones,
+           (SELECT sum(x.downloads) FROM releases x WHERE x.repo = s.repo AND x.day = days.d) AS released,
+           (SELECT c.stars FROM counts c WHERE c.repo = s.repo AND c.day = days.d) AS stars,
+           (SELECT sum(rd.downloads) FROM packages p JOIN registry_daily rd
+              ON rd.registry = p.registry AND rd.name = p.name AND rd.day = days.d
+            WHERE p.repo = s.repo AND p.name IS NOT NULL) AS installed
+         FROM sel s CROSS JOIN days
+         LEFT JOIN traffic tr ON tr.repo = s.repo AND tr.day = days.d),
+span AS (SELECT repo, max(clones) AS c_hi,
+           min(released) AS r_lo, max(released) AS r_hi,
+           min(stars) AS s_lo, max(stars) AS s_hi,
+           max(installed) AS i_hi
+         FROM grid GROUP BY repo),
+strips AS (SELECT g.repo,
+  group_concat(CASE WHEN g.clones IS NULL THEN '·' WHEN sp.c_hi = 0 THEN '▁'
+    ELSE substr('▁▂▃▄▅▆▇█', 1 + CAST(7.0 * g.clones / sp.c_hi AS INTEGER), 1) END, '' ORDER BY g.d) AS clones,
+  group_concat(CASE WHEN g.released IS NULL THEN '·' WHEN sp.r_hi = sp.r_lo THEN '▁'
+    ELSE substr('▁▂▃▄▅▆▇█', 1 + CAST(7.0 * (g.released - sp.r_lo) / (sp.r_hi - sp.r_lo) AS INTEGER), 1) END, '' ORDER BY g.d) AS released,
+  group_concat(CASE WHEN g.stars IS NULL THEN '·' WHEN sp.s_hi = sp.s_lo THEN '▁'
+    ELSE substr('▁▂▃▄▅▆▇█', 1 + CAST(7.0 * (g.stars - sp.s_lo) / (sp.s_hi - sp.s_lo) AS INTEGER), 1) END, '' ORDER BY g.d) AS stars,
+  group_concat(CASE WHEN g.installed IS NULL THEN '·' WHEN sp.i_hi = 0 THEN '▁'
+    ELSE substr('▁▂▃▄▅▆▇█', 1 + CAST(7.0 * g.installed / sp.i_hi AS INTEGER), 1) END, '' ORDER BY g.d) AS installed,
+  max(g.released IS NOT NULL) AS any_released,
+  max(g.stars IS NOT NULL) AS any_stars,
+  max(g.installed IS NOT NULL) AS any_installed
+  FROM grid g JOIN span sp USING (repo) GROUP BY g.repo),
+rlast AS (SELECT repo, max(day) AS day FROM release_reads GROUP BY repo),
+rel AS (SELECT rr.repo, rr.assets, rr.complete,
+          (SELECT sum(x.downloads) FROM releases x WHERE x.repo = rr.repo AND x.day = rr.day) AS downloads
+        FROM release_reads rr JOIN rlast USING (repo, day)),
+slast AS (SELECT repo, max(day) AS day FROM counts WHERE stars IS NOT NULL GROUP BY repo),
+st AS (SELECT c.repo, c.stars FROM counts c JOIN slast USING (repo, day)),
+-- Stars thirty days ago: the newest sample at least that old, or none.
+st30 AS (SELECT c.repo, c.stars FROM counts c
+         WHERE c.stars IS NOT NULL AND c.day = (SELECT max(c2.day) FROM counts c2
+           WHERE c2.repo = c.repo AND c2.stars IS NOT NULL AND c2.day <= date('now', '-30 days'))),
+pk AS (SELECT repo, group_concat(registry || ':' || name, ' ' ORDER BY registry) AS names
+       FROM packages WHERE name IS NOT NULL GROUP BY repo),
+pd AS (SELECT p.repo, sum(rd.downloads) AS n FROM packages p JOIN registry_daily rd
+         ON rd.registry = p.registry AND rd.name = p.name AND rd.day > date('now', '-30 days')
+       WHERE p.name IS NOT NULL GROUP BY p.repo)
+SELECT s.repo, s.owner,
+       t.clones, t.since AS clones_since,
+       CASE WHEN t.repo IS NULL THEN NULL ELSE strips.clones END AS clones_trend,
+       t.cloner_days AS unique_cloner_days,
+       ta.window_clone_uniques AS cloners_14d,
+       t.views,
+       t.missing AS missing_days,
+       CASE ta.state
+         WHEN 'no_access' THEN 'no push access'
+         WHEN 'read' THEN 'read ' || substr(ta.checked_at, 1, 10)
+       END AS traffic,
+       CASE WHEN rel.assets > 0 THEN rel.downloads END AS release_downloads,
+       CASE WHEN strips.any_released THEN strips.released END AS releases_trend,
+       CASE
+         WHEN rel.repo IS NULL THEN NULL
+         WHEN rel.assets = 0 THEN 'no release assets'
+         WHEN rel.complete THEN 'every release'
+         ELSE 'newest releases only'
+       END AS release_note,
+       st.stars,
+       st.stars - st30.stars AS stars_30d,
+       CASE WHEN strips.any_stars THEN strips.stars END AS stars_trend,
+       CASE
+         WHEN pk.names IS NOT NULL THEN pk.names
+         WHEN ps.repo IS NOT NULL AND ps.found = 0 THEN 'none found'
+       END AS packages,
+       pd.n AS package_downloads_30d,
+       CASE WHEN strips.any_installed THEN strips.installed END AS package_trend
+FROM sel s
+LEFT JOIN t USING (repo)
+LEFT JOIN traffic_access ta USING (repo)
+LEFT JOIN strips USING (repo)
+LEFT JOIN rel USING (repo)
+LEFT JOIN st USING (repo)
+LEFT JOIN st30 USING (repo)
+LEFT JOIN pk USING (repo)
+LEFT JOIN package_scans ps USING (repo)
+LEFT JOIN pd USING (repo)
+ORDER BY t.clones IS NULL, t.clones DESC, s.repo
+LIMIT 500
+"""
+
+[[column]]
+name = "repo"
+type = "string"
+[[column]]
+name = "owner"
+type = "string"
+[[column]]
+name = "clones"
+type = "integer"
+[[column]]
+name = "clones_since"
+type = "date"
+[[column]]
+name = "clones_trend"
+type = "string"
+[[column]]
+name = "unique_cloner_days"
+type = "integer"
+[[column]]
+name = "cloners_14d"
+type = "integer"
+[[column]]
+name = "views"
+type = "integer"
+[[column]]
+name = "missing_days"
+type = "integer"
+[[column]]
+name = "traffic"
+type = "string"
+[[column]]
+name = "release_downloads"
+type = "integer"
+[[column]]
+name = "releases_trend"
+type = "string"
+[[column]]
+name = "release_note"
+type = "string"
+[[column]]
+name = "stars"
+type = "integer"
+[[column]]
+name = "stars_30d"
+type = "integer"
+[[column]]
+name = "stars_trend"
+type = "string"
+[[column]]
+name = "packages"
+type = "string"
+[[column]]
+name = "package_downloads_30d"
+type = "integer"
+[[column]]
+name = "package_trend"
+type = "string"

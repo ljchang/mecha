@@ -199,6 +199,79 @@ pub fn check_github(db: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             ),
         ));
     }
+    // Usage (step 5). Traffic refused for push access is a refusal and not
+    // a failure: the board's dash says it, and this says why there is a dash
+    // where the owner may expect a number. A traffic call that failed is in
+    // the failed finding above, under its step.
+    let no_access: Vec<&str> = of(Kind::TrafficNoAccess)
+        .filter_map(|p| p.repo.as_deref())
+        .collect();
+    if !no_access.is_empty() {
+        out.push(finding(
+            Severity::Attention,
+            format!(
+                "GitHub refused traffic for {} watched repositor{}: the login cannot push to {}",
+                no_access.len(),
+                if no_access.len() == 1 { "y" } else { "ies" },
+                if no_access.len() == 1 { "it" } else { "them" }
+            ),
+            format!(
+                "in {}: {}. GitHub shows clones and views only to accounts with push access, so                  the board shows a dash for {} — never a zero. If the login should be able to                  push, `gh auth status` says which scopes its token holds.",
+                lasted(last, Kind::TrafficNoAccess),
+                no_access
+                    .iter()
+                    .take(5)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if no_access.len() == 1 { "it" } else { "them" }
+            ),
+        ));
+    }
+    if let Some(p) = of(Kind::BadPackages).next() {
+        out.push(finding(
+            Severity::Broken,
+            "the GitHub board's packages.toml cannot be used, so the package mapping is kept as it was",
+            p.detail.clone().unwrap_or_default(),
+        ));
+    }
+    let registry_refused: Vec<&str> = of(Kind::RegistryRefused)
+        .filter_map(|p| p.detail.as_deref())
+        .collect();
+    if !registry_refused.is_empty() {
+        out.push(finding(
+            Severity::Attention,
+            "a package registry refused the GitHub collector",
+            format!(
+                "in {}: {}. The download counts it did not give keep their earlier days.",
+                lasted(last, Kind::RegistryRefused),
+                registry_refused.join("; ")
+            ),
+        ));
+    }
+    let registry_failed: Vec<&str> = of(Kind::RegistryFailed)
+        .filter_map(|p| p.detail.as_deref())
+        .collect();
+    if !registry_failed.is_empty() {
+        out.push(finding(
+            Severity::Attention,
+            format!(
+                "{} package registry count{} failed",
+                registry_failed.len(),
+                if registry_failed.len() == 1 { "" } else { "s" }
+            ),
+            format!(
+                "in {}: {}; each is asked again next run",
+                lasted(last, Kind::RegistryFailed),
+                registry_failed
+                    .iter()
+                    .take(3)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        ));
+    }
     // The summary pass (§5). The collection is written before it runs, so
     // these never say the board is stale — they say its New view shows
     // titles alone, which reads the same as summaries nobody needed.
@@ -516,6 +589,55 @@ mod tests {
                 (
                     Severity::Attention,
                     "1 watched GitHub repository vanished".into()
+                ),
+            ]
+        );
+    }
+
+    /// Step 5's kinds: traffic refused for push access, a registry's refusal
+    /// and a registry's failure, and an owner's package file that cannot be
+    /// used — each its own finding, and none of them read as a failed
+    /// collection step.
+    #[test]
+    fn usage_refusals_and_failures_are_each_their_own_finding() {
+        let h = home("usage-kinds");
+        let db = github::db_path(&h);
+        record(
+            &db,
+            &run(
+                now(),
+                &[
+                    (Kind::TrafficNoAccess, Some("example-lab/tool-a")),
+                    (Kind::TrafficNoAccess, Some("example-lab/tool-b")),
+                    (Kind::BadPackages, None),
+                    (Kind::RegistryRefused, None),
+                    (Kind::RegistryFailed, None),
+                    (Kind::RegistryFailed, None),
+                ],
+            ),
+        )
+        .unwrap();
+        let got = summaries(&check_github(&db, now()));
+        assert_eq!(
+            got,
+            [
+                (
+                    Severity::Attention,
+                    "GitHub refused traffic for 2 watched repositories: the login cannot push to them"
+                        .into()
+                ),
+                (
+                    Severity::Broken,
+                    "the GitHub board's packages.toml cannot be used, so the package mapping is kept as it was"
+                        .into()
+                ),
+                (
+                    Severity::Attention,
+                    "a package registry refused the GitHub collector".into()
+                ),
+                (
+                    Severity::Attention,
+                    "2 package registry counts failed".into()
                 ),
             ]
         );
