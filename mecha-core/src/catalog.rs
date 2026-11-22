@@ -154,6 +154,11 @@ pub struct Entry {
     pub kv_kib_per_token: u32,
     /// Constant state per slot, MiB (Qwen3.6's recurrent layers).
     pub state_mb_per_slot: u32,
+    /// The oldest llama.cpp build that loads it, where that is newer than
+    /// some engine mecha has shipped: `add` asks the router's engine before
+    /// anything is fetched (`engine_refusal`). `None` is any engine mecha
+    /// has pinned since the catalog began.
+    pub min_engine_build: Option<u32>,
 }
 
 /// Qwen's thinking-mode sampling past `temp`, as the GB10 serves every Qwen
@@ -220,6 +225,7 @@ pub const CATALOG: &[Entry] = &[
         temperature: Some(0.6),
         kv_kib_per_token: 22,
         state_mb_per_slot: 64,
+        min_engine_build: None,
     },
     Entry {
         id: "qwen3.8-27b",
@@ -261,6 +267,7 @@ pub const CATALOG: &[Entry] = &[
         temperature: Some(1.0),
         kv_kib_per_token: 64,
         state_mb_per_slot: 0,
+        min_engine_build: None,
     },
     Entry {
         id: "qwen3.8-27b-uncensored",
@@ -300,6 +307,7 @@ pub const CATALOG: &[Entry] = &[
         temperature: Some(1.0),
         kv_kib_per_token: 64,
         state_mb_per_slot: 0,
+        min_engine_build: None,
     },
     Entry {
         id: "qwen3.8-27b-abliterated",
@@ -339,6 +347,7 @@ pub const CATALOG: &[Entry] = &[
         temperature: Some(1.0),
         kv_kib_per_token: 64,
         state_mb_per_slot: 0,
+        min_engine_build: None,
     },
     Entry {
         id: "gemma-4-26b-a4b",
@@ -389,6 +398,7 @@ pub const CATALOG: &[Entry] = &[
         // 256k — 4,928 MiB for 229,376 more tokens. Was 64, an estimate.
         kv_kib_per_token: 22,
         state_mb_per_slot: 0,
+        min_engine_build: None,
     },
     // Measured on the GB10 only (2026-11-21/22), not on a Mac: the
     // `inkling2_loop` architecture is in llama.cpp from b12611, so the pinned
@@ -397,7 +407,7 @@ pub const CATALOG: &[Entry] = &[
         id: "inkling-2-mini",
         provider: "inkling2",
         label: "Inkling 2 Mini UD-Q4_K_XL (MoE, 3.4B active), with its vision projector",
-        note: "Thinking Machines' MoE, undrafted: about two-thirds of the production model's speed with its draft off, and a shorter window at each tier, since its context costs six times as much per token",
+        note: "Thinking Machines' MoE, with no draft: about half the production model's speed with its draft off, and a shorter window at each tier, since its context costs six times as much per token",
         // unsloth's mainline-layout file: the repository's root GGUFs are in
         // unsloth's own fork's layout, which mainline llama.cpp refuses.
         // `.gguf_file` is the upload's name; llama-server reads it as is.
@@ -458,8 +468,46 @@ pub const CATALOG: &[Entry] = &[
         // 229,376 more tokens.
         kv_kib_per_token: 131,
         state_mb_per_slot: 0,
+        // b12611: the first release with #32704.
+        min_engine_build: Some(12_611),
     },
 ];
+
+/// Why the router's engine here cannot load `entry`, or `None`. Asked of the
+/// engine itself, by its `--version`, before anything is fetched: an entry
+/// newer than the engine would otherwise download, restart the router, pass
+/// its health check on the base model, and fail only when the owner picks it.
+/// A version that cannot be read is a refusal, never a pass — and a build
+/// from source counts its own commits, not the release's number, so it reads
+/// low and is sent to `--adopt` rather than trusted.
+pub fn engine_refusal(entry: &Entry, m: &crate::sidecar::Machinery) -> Option<String> {
+    use crate::llama_units::Engine;
+    let min = entry.min_engine_build?;
+    let engine = match Engine::resolve(m) {
+        Ok(e) => e,
+        Err(e) => return Some(format!("{e:#}")),
+    };
+    let remedy = match engine {
+        Engine::Mecha(_) => "`mecha setup engine --upgrade` moves it to a newer release",
+        Engine::Provided(_) => {
+            "`mecha setup engine --adopt` moves the router onto mecha's pinned engine"
+        }
+    };
+    let needs = format!("{} needs llama.cpp b{min} or newer", entry.id);
+    let at = engine.path().display();
+    match crate::engine::build_of(engine.path()) {
+        Ok(Some(b)) if b >= min => None,
+        Ok(Some(b)) => Some(format!(
+            "{needs}, and the router's engine ({at}) is build {b} — {remedy}"
+        )),
+        Ok(None) => Some(format!(
+            "{needs}, and the router's engine ({at}) names no build in its --version — {remedy}"
+        )),
+        Err(e) => Some(format!(
+            "{needs}, and the router's engine could not be asked: {e:#} — {remedy}"
+        )),
+    }
+}
 
 /// The entry `id` names.
 pub fn entry(id: &str) -> Option<&'static Entry> {
@@ -884,6 +932,91 @@ mod tests {
                 e.id
             );
         }
+    }
+
+    /// mecha's own engine loads every entry: an entry may ask more than an
+    /// older install's engine, never more than the one mecha ships.
+    #[test]
+    fn the_pinned_engine_loads_every_entry() {
+        for e in CATALOG {
+            if let Some(min) = e.min_engine_build {
+                assert!(crate::engine::PIN.build >= min, "{} needs b{min}", e.id);
+            }
+        }
+        assert!(
+            CATALOG.iter().any(|e| e.min_engine_build.is_some()),
+            "the comparison is not vacuous"
+        );
+    }
+
+    #[cfg(unix)]
+    fn scratch() -> PathBuf {
+        std::env::temp_dir().join(format!("mecha-catalog-engine-{}", uuid::Uuid::new_v4()))
+    }
+
+    /// A machine whose router engine answers `--version` with `text`.
+    #[cfg(unix)]
+    fn machine_whose_engine_says(dir: &Path, text: &str) -> crate::sidecar::Machinery {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let server = bin.join("llama-server");
+        std::fs::write(&server, format!("#!/bin/sh\nprintf '%s\\n' '{text}' >&2\n")).unwrap();
+        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::sidecar::Machinery {
+            home: dir.join("home"),
+            mecha_home: dir.join("home/.mecha"),
+            unit_dirs: vec![],
+            path: vec![bin],
+            docker: Box::new(|_| crate::sidecar::Lookup::Absent),
+        }
+    }
+
+    /// `add` refuses an entry newer than the router's engine before it
+    /// fetches anything, and refuses one whose engine's build it cannot read.
+    #[cfg(unix)]
+    #[test]
+    fn an_engine_older_than_the_entry_is_refused_before_the_download() {
+        let ink = entry("inkling-2-mini").unwrap();
+        let gemma = entry("gemma-4-26b-a4b").unwrap();
+        for (said, refused) in [
+            ("version: 1.0.0-dev (build 12627, commit 225a5345b)", None),
+            ("version: 1.0.0-dev (build 12611, commit 0123456)", None),
+            (
+                "version: 1.0.0-dev (build 12608, commit 93cb37ea)",
+                Some("is build 12608"),
+            ),
+            // A build from source counts its own commits: it reads low.
+            (
+                "version: 1.0.0-dev (build 2371, commit c56be864)",
+                Some("is build 2371"),
+            ),
+            ("version: 11205 (95887577)", Some("names no build")),
+            ("", Some("names no build")),
+        ] {
+            let dir = scratch();
+            let m = machine_whose_engine_says(&dir, said);
+            let got = engine_refusal(ink, &m);
+            match refused {
+                None => assert_eq!(got, None, "{said}"),
+                Some(why) => {
+                    let got = got.unwrap_or_else(|| panic!("{said} passed"));
+                    assert!(got.contains(why), "{said}: {got}");
+                    assert!(got.contains("b12611"), "{got}");
+                    // Found on the PATH, not mecha's: the remedy is --adopt.
+                    assert!(got.contains("--adopt"), "{got}");
+                }
+            }
+            // An entry with no minimum never asks the engine.
+            assert_eq!(engine_refusal(gemma, &m), None);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // No engine at all is said, not passed.
+        let dir = scratch();
+        let mut m = machine_whose_engine_says(&dir, "");
+        m.path.clear();
+        assert!(engine_refusal(ink, &m).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Exactly one weights file per entry, at most one projector and draft;

@@ -1465,6 +1465,23 @@ pub fn reports(text: &str, build: u32, commit: &str) -> bool {
     line.contains(&wanted) && short.len() >= 7 && commit.starts_with(&short)
 }
 
+/// The build number `--version` names — `(build 12627, commit 225a5345b)`
+/// from a release — or `None` where it names none, as older builds from
+/// source printed `version: 11205 (95887577)`. A build from source counts
+/// its own clone's commits, so its number is not a release's; a comparison
+/// against a release number reads it low and fails closed.
+pub fn build_number(text: &str) -> Option<u32> {
+    let line = text.lines().find(|l| l.contains("version:"))?;
+    let rest = line.split_once("(build ")?.1;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// The build `server --version` reports, run as the install checks run it.
+pub(crate) fn build_of(server: &Path) -> Result<Option<u32>> {
+    Ok(build_number(&engine_output(server, "--version")?))
+}
+
 /// The pin's own version check.
 #[cfg(test)]
 fn reports_the_pin(text: &str) -> bool {

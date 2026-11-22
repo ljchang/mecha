@@ -147,6 +147,19 @@ class Graft(unittest.TestCase):
         r = run(self.base, self.edited({1: bf16_exact(99)}, dtype="F16"), self.out)
         self.refused(r, "expected BF16")
 
+    def test_the_pins_here_are_the_scripts_pins(self):
+        # The script runs under *this* file's interpreter (sys.executable), so
+        # a drifted header would test one gguf and graft with another — and
+        # the byte-for-byte claim is exactly what a gguf version decides. The
+        # whole PEP 723 block, as test_mtp_graft.py holds its own.
+        def block(p):
+            lines = p.read_text().splitlines()
+            start = lines.index("# /// script")
+            return lines[start:lines.index("# ///", start) + 1]
+        self.assertEqual(block(Path(__file__)), block(GRAFT))
+        self.assertTrue(any(l.startswith("# dependencies") and "==" in l for l in block(GRAFT)),
+                        "the script must pin its dependencies")
+
     def test_refuses_an_edited_file_without_wo_ud(self):
         r = run(self.base, self.edited({}), self.out)
         self.refused(r, "no model.llm.layers.<n>.attn.wo_ud.weight tensors")

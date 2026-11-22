@@ -330,6 +330,11 @@ pub(super) async fn add(
         }
         bail!("nothing was installed: {why}");
     }
+    // Before the plan and the download: an engine too old for the entry
+    // would take the whole fetch and fail only at the first pick.
+    if let Some(why) = catalog::engine_refusal(e, &here.m) {
+        bail!("nothing was installed: {why}");
+    }
     if let Some(why) = table_conflict(cfg, e, here.naming.port) {
         bail!("nothing was installed: {why}");
     }
