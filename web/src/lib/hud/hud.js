@@ -116,6 +116,92 @@ export function formatCell(v) {
   return String(v);
 }
 
+// ---- the typed reference (`GITHUB-DASHBOARD-DESIGN.md` §4) ----
+//
+// A table column is a field name, or `{ref: 'github', owner, repo, number}`
+// naming three fields of the row. The address is built here, from one fixed
+// template, and only when every check passes:
+//
+// - the page is a tailnet board (`links`, which only the app's installed
+//   route sets: a published page and a proposal never do);
+// - owner and repository match GitHub's name grammar and the number is a
+//   positive integer — the same rules `github.rs` holds, checked again here
+//   because the server's check is the control and this one the convenience;
+// - the serve route vouched for this exact [owner, repo, number] in the
+//   dataset's `linkable` list (inventory ∩ selection). No list, no link: a
+//   dataset that reached the page any other way fails closed.
+//
+// Anything else is the reference's text, never an anchor.
+
+/** GitHub's owner-login grammar, as `github::valid_owner`. */
+export function validOwner(s) {
+  return typeof s === 'string' && /^[A-Za-z0-9_-]{1,39}$/.test(s);
+}
+
+/** GitHub's repository-name grammar, as `github::valid_repo_name`: never `.` or `..`, never `%` or `/`. */
+export function validRepoName(s) {
+  return typeof s === 'string' && s !== '.' && s !== '..' && /^[A-Za-z0-9._-]{1,100}$/.test(s);
+}
+
+/** An issue number: a positive integer, never a string that looks like one. */
+export function issueNumber(v) {
+  return Number.isSafeInteger(v) && v > 0 ? v : null;
+}
+
+const REF_KEYS = ['number', 'owner', 'ref', 'repo'];
+
+/**
+ * A table column as the renderer draws it: `{kind: 'field', field}`,
+ * `{kind: 'github', ref}`, or `{kind: 'unknown'}` for any shape the spec gate
+ * would have refused — drawn as a dash, never guessed at.
+ */
+export function columnKind(col) {
+  if (typeof col === 'string') return { kind: 'field', field: col };
+  if (
+    col &&
+    typeof col === 'object' &&
+    !Array.isArray(col) &&
+    col.ref === 'github' &&
+    Object.keys(col).sort().join() === REF_KEYS.join() &&
+    ['owner', 'repo', 'number'].every((k) => typeof col[k] === 'string')
+  ) {
+    return { kind: 'github', ref: col };
+  }
+  return { kind: 'unknown' };
+}
+
+/** A column's header: its field name, or what a reference opens. */
+export function columnHeader(col) {
+  const c = columnKind(col);
+  return c.kind === 'field' ? c.field : c.kind === 'github' ? 'GitHub' : '—';
+}
+
+/** What a reference reads as, linked or not: `#12`, or the cell's own text. */
+export function refText(ref, row) {
+  const n = issueNumber(row?.[ref.number]);
+  return n === null ? formatCell(row?.[ref.number]) : `#${n}`;
+}
+
+/**
+ * The address a GitHub reference opens, or null for text. The one place the
+ * renderer builds a destination; `IssueLink.svelte` is the one place it lands.
+ */
+export function githubHref(ref, row, linkable, links) {
+  if (links !== true || columnKind(ref).kind !== 'github' || !row) return null;
+  const owner = row[ref.owner];
+  const repo = row[ref.repo];
+  const number = issueNumber(row[ref.number]);
+  if (!validOwner(owner) || !validRepoName(repo) || number === null) return null;
+  const entry = (Array.isArray(linkable) ? linkable : []).find(
+    (l) => l && l.ref === 'github' && l.owner === ref.owner && l.repo === ref.repo && l.number === ref.number,
+  );
+  const vouched =
+    Array.isArray(entry?.allowed) &&
+    entry.allowed.some((t) => Array.isArray(t) && t[0] === owner && t[1] === repo && t[2] === number);
+  if (!vouched) return null;
+  return `https://github.com/${owner}/${repo}/issues/${number}`;
+}
+
 /** Every dataset a Vega-Lite view names, at any depth (layer, concat, facet). */
 export function datasetsNamed(view) {
   const out = new Set();

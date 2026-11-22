@@ -987,6 +987,49 @@ fn prior_inventory(db: &Path) -> Vec<(Repo, bool)> {
     .unwrap_or_default()
 }
 
+/// The repositories a board may link an issue to (§4): rows of the
+/// collector's `inventory` — repositories the login was seen to reach — that
+/// the selection file includes **now**. Both halves, because neither is
+/// enough alone: an owner line with `include = "all"` (G6's default) names no
+/// repositories, so the file alone leaves the repository unconstrained; and
+/// the inventory alone holds every repository the login can see, selected or
+/// not.
+///
+/// Read where a dataset is served, never by a board's loader — the board's
+/// own rows are what is being checked, so they cannot also be the list they
+/// are checked against. **Fail closed**: no store, no inventory table, an
+/// absent or unusable selection file — each is an empty set, and a board
+/// over an empty set renders every reference as text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Watched(BTreeSet<(String, String)>);
+
+impl Watched {
+    pub fn read(home: &Path) -> Watched {
+        let SelectionRead::Read(selection) = read_selection(&selection_path(home)) else {
+            return Watched::default();
+        };
+        Watched(
+            prior_inventory(&db_path(home))
+                .into_iter()
+                .filter(|(r, _)| selection.selects(r))
+                .map(|(r, _)| (r.owner.to_ascii_lowercase(), r.name.to_ascii_lowercase()))
+                .collect(),
+        )
+    }
+
+    /// GitHub's names are case-insensitive, so the comparison is too; the
+    /// link is built from the row's own spelling, which reaches the same
+    /// repository.
+    pub fn contains(&self, owner: &str, repo: &str) -> bool {
+        self.0
+            .contains(&(owner.to_ascii_lowercase(), repo.to_ascii_lowercase()))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 /// One collection: read the selection, ask `gh`, and say what was found.
 /// Writes nothing — [`record`] does, in one transaction.
 pub fn collect(gh: &Gh, home: &Path, now: DateTime<Utc>) -> Collected {

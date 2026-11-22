@@ -230,7 +230,10 @@
       <p class="muted">Loading…</p>
     {:else}
       {#await import('./hud/Dashboard.svelte') then m}
-        <m.default spec={board.spec} {source} {stale} mode="dark" />
+        <!-- An installed board on the tailnet: the one place a typed GitHub
+             reference may be an anchor (GITHUB-DASHBOARD-DESIGN §4). A
+             proposal above is drawn without it. -->
+        <m.default spec={board.spec} {source} {stale} mode="dark" links={true} />
       {:catch e}
         <p class="bad">The dashboard renderer did not load: {e?.message ?? e}</p>
       {/await}
