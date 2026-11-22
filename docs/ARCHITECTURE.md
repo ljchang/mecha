@@ -8305,8 +8305,8 @@ was ever deployed.
 ## The GitHub collector
 
 `github.rs`, `mecha github collect`, `docs/GITHUB-DASHBOARD-DESIGN.md` (steps
-1 to 5 built: the collector and its store, the board, the typed reference,
-the summaries, usage; §7 tracks the rest). `system.rs`'s shape again: a timer runs a command, the command writes
+1 to 6 built: the collector and its store, the board, the typed reference,
+the summaries, usage, the picker; §7 tracks the rest). `system.rs`'s shape again: a timer runs a command, the command writes
 `~/.mecha/github/github.db`, and the HUD will read it as an ordinary `sqlite`
 source with `content = "third-party"`, because an issue title is a stranger's
 text.
@@ -8376,6 +8376,19 @@ text.
   the write, with no model and no credential, and never of a name detected
   in a private repository; `registry_refused` and `registry_failed` are kept
   apart, and neither fails the unit.
+- **The picker edits the owner's files and nothing else**
+  (`github/picker.rs`, `serve/github.rs`, Settings → GitHub; design §7.3).
+  It lists from the inventory the collector last wrote, never from GitHub,
+  and says an absent or unreadable store or file rather than drawing an
+  empty list. A save is a closed set of changes set in place with
+  `toml_edit` (the owner's comments survive), against the digest of the file
+  the page read, under one lock — a hand edit since is a 409 and nothing is
+  written — and the result must pass the collector's own reader
+  (`parse_selection`, `parse_packages`) before it lands, atomically. Whether
+  a repository is selected is `Selection::selects`, and what its owner's line
+  alone gives it `Selection::by_owner`: one definition for the collector and
+  the page. Owner-only through `owner_guard` and the `github` gate; no tool
+  or agent path reaches either file.
 
 ## Session records and replay
 

@@ -47,6 +47,7 @@ mod features;
 mod files;
 mod frontdoor;
 mod gate;
+mod github;
 mod hud;
 pub(crate) mod incognito;
 mod late;
@@ -1205,6 +1206,24 @@ fn api() -> gate::Owned {
             "/api/settings/charter",
             Owner::Core,
             get(settings::charter).post(settings::charter_save),
+        )
+        // Settings → GitHub, the picker (GITHUB-DASHBOARD-DESIGN.md step 6):
+        // the owner's two files under ~/.mecha/github/, written on the
+        // owner's click alone, each save against the digest its page read.
+        .at(
+            "/api/github/picker",
+            Owner::Of(Feature::Github),
+            get(github::read),
+        )
+        .at(
+            "/api/github/picker/selection",
+            Owner::Of(Feature::Github),
+            axum::routing::post(github::save_selection),
+        )
+        .at(
+            "/api/github/picker/packages",
+            Owner::Of(Feature::Github),
+            axum::routing::post(github::save_packages),
         )
         .at("/api/settings/rules", Owner::Core, get(settings::rules))
         .at(
@@ -2585,6 +2604,11 @@ mod tests {
             ("POST", "/api/chat/k/auto", "followups"),
             ("POST", "/api/offer", "calls"),
             ("GET", "/api/frontdoor", "frontdoor"),
+            // The picker writes the owner's ~/.mecha/github files: off, it
+            // reads and writes nothing.
+            ("GET", "/api/github/picker", "github"),
+            ("POST", "/api/github/picker/selection", "github"),
+            ("POST", "/api/github/picker/packages", "github"),
         ] {
             let response = test_router_gated(gate::Gate::refusing(every_gated.clone()))
                 .oneshot(

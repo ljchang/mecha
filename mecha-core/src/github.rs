@@ -244,9 +244,21 @@ impl Selection {
     /// and over the fork and archive filters; then its owner's line; a
     /// repository of an owner the file does not name is not watched.
     pub fn selects(&self, repo: &Repo) -> bool {
-        if let Some(rule) = self.rule_for(&repo.full_name) {
-            return rule.include;
+        match self.line_for(&repo.full_name) {
+            Some(include) => include,
+            None => self.by_owner(repo),
         }
+    }
+
+    /// What `repo`'s own `[[repo]]` line says, if the file has one.
+    pub fn line_for(&self, full_name: &str) -> Option<bool> {
+        self.rule_for(full_name).map(|r| r.include)
+    }
+
+    /// What `repo`'s owner's line alone gives it, before any `[[repo]]`
+    /// line: the picker shows it, so a checkbox that agrees with the owner's
+    /// line removes the exception rather than writing a redundant one.
+    pub fn by_owner(&self, repo: &Repo) -> bool {
         let Some(owner) = self
             .owners
             .iter()
@@ -2221,6 +2233,7 @@ pub fn read_log(db: &Path, vanished_within: Duration, now: DateTime<Utc>) -> Res
     })
 }
 
+pub mod picker;
 pub mod registry;
 pub mod summary;
 pub mod usage;
