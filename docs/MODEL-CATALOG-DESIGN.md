@@ -158,3 +158,25 @@ answered and drafted on the owner's M-series Mac the same day:
 Three of the five are uncensored or abliterated builds. They are in the
 catalog because the owner runs them; the catalog says so in each entry's
 note, and nothing installs one without its name on the confirmation.
+
+### Later entries
+
+Measured on the GB10 only, not on a Mac:
+
+| id | files | tiers | ctx × slots | draft |
+|---|---|---|---|---|
+| `inkling-2-mini` (2026-11-22) | unsloth's `Mainline_Support` UD-Q4_K_XL + F16 projector, one revision | 32, 64, 128 | 65536 × 1 at 32 and 64, 196608 × 1 at 128 | none |
+
+**Inkling 2 Mini** needs engine b12611 or newer: that is the first release
+with the `inkling2_loop` fix (llama.cpp #32704; without it the output is
+gibberish), and `engine::PIN` moved to b12627 with this entry. Its window is
+short for its size because llama.cpp gives each of its 48 layer passes a
+full-length cache: 131 KiB a token, against Gemma's 22. Its own drafter
+(DSpark) is not in llama.cpp yet.
+
+Its uncensored twin is **not** in the catalog. OpenUncensored's checkpoint
+changes only the 20 attention-output tensors of layers 4–23. On the GB10,
+`scripts/inkling-uncensor-graft.py` grafts them onto unsloth's file, and
+`start-router.sh` serves the result as `inkling-2-mini-uncensored`. It
+becomes a catalog entry only if it is published, like the Qwen3.6 graft. The
+owner ruled on 2026-11-22 that it is used here first.

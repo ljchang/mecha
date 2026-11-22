@@ -40,11 +40,12 @@ class Cache:
         snap = self.root / f"models--{repo}" / "snapshots" / rev
         blobs.mkdir(parents=True, exist_ok=True)
         snap.mkdir(parents=True, exist_ok=True)
-        blob = blobs / f"{rev}-{name}"
+        blob = blobs / f"{rev}-{name.replace('/', '-')}"
         if not dangling:
             blob.write_bytes(b"")
         link = snap / name
-        link.symlink_to(os.path.relpath(blob, snap))
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(os.path.relpath(blob, link.parent))
         stamp = time.time() - age
         os.utime(link, (stamp, stamp), follow_symlinks=False)
         return link
@@ -292,6 +293,53 @@ class StartRouter(unittest.TestCase):
         self.assertTrue(preset.get("model", "").endswith(f"/new/{self.HH36_FILE}"), err)
         self.assertNotIn("spec-type", preset, err)
         self.assertIn(str(self.graft_for("new")), err)
+
+    INK = "unsloth--Inkling-2-Mini-GGUF"
+    INK_FILE = "Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file"
+
+    def inkling_graft_for(self, rev):
+        """The name start-router.sh expects for an uncensored graft of this base blob."""
+        b = f"{rev}-{self.INK_FILE.replace('/', '-')}"[:12]
+        g = hashlib.sha256(SCRIPT.with_name("inkling-uncensor-graft.py").read_bytes()).hexdigest()[:8]
+        return self.grafts / f"Inkling-2-Mini-Uncensored-UD-Q4_K_XL-{b}-ou4e5f06d7-g{g}.gguf"
+
+    def test_inkling_is_served_from_the_mainline_file_and_its_twin_only_from_a_graft(self):
+        self.cache.production()
+        self.cache.put(self.INK, "r", self.INK_FILE)
+        self.cache.put(self.INK, "r", "mmproj-F16.gguf")
+        _, _, err, ini = self.run_script()
+        preset = self.section(ini, "inkling-2-mini")
+        self.assertTrue(preset.get("model", "").endswith(f"/r/{self.INK_FILE}"), err)
+        self.assertTrue(preset.get("mmproj", "").endswith("/r/mmproj-F16.gguf"), err)
+        self.assertEqual(preset.get("ctx-size"), "196608", err)
+        self.assertEqual(preset.get("top-k"), "0", err)
+        self.assertNotIn("spec-type", preset, "no drafter is in llama.cpp yet")
+        self.assertNoBlankInside(ini, "inkling-2-mini", err)
+        # The graft is the weights: none, or an empty placeholder, is no preset.
+        self.assertNotIn("[inkling-2-mini-uncensored]", ini)
+        self.assertIn(str(self.inkling_graft_for("r")), err, "the build line must write the name that will be looked up")
+        self.inkling_graft_for("r").write_bytes(b"")
+        _, _, err, ini = self.run_script()
+        self.assertNotIn("[inkling-2-mini-uncensored]", ini, err)
+
+        self.inkling_graft_for("r").write_bytes(b"GGUF")
+        _, _, err, ini = self.run_script()
+        twin = self.section(ini, "inkling-2-mini-uncensored")
+        self.assertEqual(twin.get("model"), str(self.inkling_graft_for("r")), err)
+        self.assertEqual({k: v for k, v in twin.items() if k != "model"},
+                         {k: v for k, v in self.section(ini, "inkling-2-mini").items() if k != "model"})
+        self.assertNotIn("skipping inkling", err)
+
+    def test_an_inkling_graft_of_a_superseded_base_is_not_served(self):
+        self.cache.production()
+        self.cache.put(self.INK, "old", self.INK_FILE, age=100)
+        self.cache.put(self.INK, "old", "mmproj-F16.gguf", age=100)
+        self.inkling_graft_for("old").write_bytes(b"GGUF")
+        self.cache.put(self.INK, "new", self.INK_FILE)
+        _, _, err, ini = self.run_script()
+        self.assertTrue(self.section(ini, "inkling-2-mini").get("model", "").endswith(f"/new/{self.INK_FILE}"), err)
+        self.assertNotIn("[inkling-2-mini-uncensored]", ini, err)
+        self.assertIn(str(self.inkling_graft_for("new")), err)
 
     def test_the_two_uncensored_qwen38_builds_get_their_own_presets(self):
         hh = "HauhauCS--Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF"

@@ -343,6 +343,55 @@ else
   warn "skipping gemma-4-26b-a4b: weights, MTP draft or projector not on disk"
 fi
 
+# Inkling 2 Mini, the catalog's `inkling-2-mini` (catalog.rs says why each
+# line): unsloth's mainline-layout file — the repository's root GGUFs are in
+# unsloth's fork's layout — and the model card's sampling. 192k in one slot:
+# its KV is 131 KiB a token. No draft: its DSpark drafter is not in
+# llama.cpp yet. Needs b12611 or newer; on an older engine the child fails
+# its start when the model is picked, and only then.
+#
+# Its uncensored twin is OpenUncensored's checkpoint, whose only change is
+# the 20 attention-output tensors of layers 4-23, grafted onto this file by
+# scripts/inkling-uncensor-graft.py — the graft is the weights, so with no
+# graft there is no preset. The graft is named for the base blob, the
+# checkpoint's revision and the script, as graft_path names the Qwen one.
+INKLING_GRAFT_SCRIPT="$(cd "$(dirname "$0")" && pwd)/inkling-uncensor-graft.py"
+INKLING_UNC_REV=4e5f06d72b5a70c9dcd5e8046aea576eb3ee8487
+inkling() {
+  cat >>"$OUT" <<EOF
+
+[$1]
+model = $2
+mmproj = $3
+ctx-size = 196608
+parallel = 1
+temp = 1.0
+top-p = 1.0
+top-k = 0
+min-p = 0.0
+EOF
+}
+R=unsloth--Inkling-2-Mini-GGUF
+F=$(hub_file "$R" Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file)
+if [ -n "$F" ] && MP=$(hub_mmproj "$R"); then
+  inkling inkling-2-mini "$F" "$MP"
+  b=$(readlink "$F" 2>/dev/null || true)
+  s=$(sha256sum "$INKLING_GRAFT_SCRIPT" 2>/dev/null || shasum -a 256 "$INKLING_GRAFT_SCRIPT" 2>/dev/null || true)
+  case "$b" in */blobs/*) b=$(basename "$b") ;; *) b="" ;; esac
+  if [ -n "$b" ] && [ -n "$s" ]; then
+    G="${MECHA_GRAFT_DIR:-$HOME/models/inkling-graft}/Inkling-2-Mini-Uncensored-UD-Q4_K_XL-${b:0:12}-ou${INKLING_UNC_REV:0:8}-g${s:0:8}.gguf"
+    if [ -s "$G" ]; then
+      inkling inkling-2-mini-uncensored "$G" "$MP"
+    else
+      warn "skipping inkling-2-mini-uncensored: no graft at $G; to build it: hf download OpenUncensored/Inkling-2-Mini-Uncensored model-00001-of-00001.safetensors --revision $INKLING_UNC_REV, then mkdir -p '$(dirname "$G")' && uv run '$INKLING_GRAFT_SCRIPT' '$F' <that file> '$G'"
+    fi
+  else
+    warn "skipping inkling-2-mini-uncensored: no graft can be pinned — its base is not a blob symlink, or $INKLING_GRAFT_SCRIPT is missing"
+  fi
+else
+  warn "skipping inkling-2-mini: weights or projector not on disk"
+fi
+
 # **An empty cache, or the router offers every GGUF on the machine.** Presets
 # are one of three sources; the Hugging Face cache is another and is always
 # on. Measured 2026-09-26: without this, GET /models listed sixteen models —

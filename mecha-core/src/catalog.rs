@@ -106,6 +106,31 @@ const GEMMA_GEOMETRY: &[TierGeometry] = &[
     },
 ];
 
+/// Inkling 2 Mini's: 192k at 128 GB and 64k at 64 and 32 GB, the largest
+/// windows within the fit rule. The window is dear for an MoE this size:
+/// llama.cpp gives each of the 48 layer passes (24 layers, the middle 13 run
+/// three times) a full-length cache, its sliding-window layers included —
+/// `kv_kib_per_token` — so 256k at 128 GB would ask 50,958 MiB against a
+/// budget of 48,765. Trained to 1M; the window grows if llama.cpp windows
+/// those layers.
+const INKLING_GEOMETRY: &[TierGeometry] = &[
+    TierGeometry {
+        tier_gb: 32,
+        ctx: 65_536,
+        slots: 1,
+    },
+    TierGeometry {
+        tier_gb: 64,
+        ctx: 65_536,
+        slots: 1,
+    },
+    TierGeometry {
+        tier_gb: 128,
+        ctx: 196_608,
+        slots: 1,
+    },
+];
+
 /// One catalog entry.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Entry {
@@ -144,9 +169,10 @@ macro_rules! qwen_sampling {
 const UNCENSORED_NOTE: &str =
     "an uncensored build: its refusals were trained out, so it answers what the base model would decline";
 
-/// The registry, in the order the chip lists it. Every entry was loaded,
+/// The registry, in the order the chip lists it. The first five were loaded,
 /// answered and drafted on the owner's Mac on 2026-10-19 from these pins
-/// (design §4), from the GB10 router's presets of the same day.
+/// (design §4), from the GB10 router's presets of the same day; later entries
+/// say where they were measured.
 pub const CATALOG: &[Entry] = &[
     Entry {
         id: "qwen3.6-35b-a3b-uncensored",
@@ -361,6 +387,55 @@ pub const CATALOG: &[Entry] = &[
         // draft and projector loaded: 19,267 MiB of GPU at 32k, 24,195 MiB at
         // 256k — 4,928 MiB for 229,376 more tokens. Was 64, an estimate.
         kv_kib_per_token: 22,
+        state_mb_per_slot: 0,
+    },
+    // Measured on the GB10 only (2026-11-21/22), not on a Mac: the
+    // `inkling2_loop` architecture is in llama.cpp from b12611, so the pinned
+    // engine (`engine::PIN`) has to be that new for this entry to load.
+    Entry {
+        id: "inkling-2-mini",
+        provider: "inkling2",
+        label: "Inkling 2 Mini UD-Q4_K_XL (MoE, 3.4B active), with its vision projector",
+        note: "Thinking Machines' MoE, undrafted: about two-thirds of the production model's speed with its draft off, and a shorter window at each tier, since its context costs six times as much per token",
+        // unsloth's mainline-layout file: the repository's root GGUFs are in
+        // unsloth's own fork's layout, which mainline llama.cpp refuses.
+        // `.gguf_file` is the upload's name; llama-server reads it as is.
+        pins: &[
+            Pin {
+                repo: "unsloth/Inkling-2-Mini-GGUF",
+                revision: "ae9327c5fbc7333116ba32eee78bb5d2bbefae4f",
+                file: HubFile {
+                    path: "Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file",
+                    sha256: "e64276656f072e9b2197a61723667cbdb71da66a716ffd966e572c21088f3cd3",
+                    bytes: 17_629_760_736,
+                },
+                role: Role::Weights,
+            },
+            Pin {
+                repo: "unsloth/Inkling-2-Mini-GGUF",
+                revision: "ae9327c5fbc7333116ba32eee78bb5d2bbefae4f",
+                file: HubFile {
+                    path: "mmproj-F16.gguf",
+                    sha256: "3bff75ffeb2d6e0371ba7bd42e30d26a7d98aea681fa44b03b5a20891cfa2c5f",
+                    bytes: 639_348_160,
+                },
+                role: Role::Projector,
+            },
+        ],
+        geometry: Geometry::PerTier(INKLING_GEOMETRY),
+        // The model card's sampling. No draft: its own drafter (DSpark) is
+        // not in llama.cpp yet. Through both open versions (#32218, and the
+        // rewrite at 8b4c3aae) it decoded 5–14% faster on code and 5–15%
+        // slower on prose, accepting 0.39 of three drafted tokens and 0.50
+        // of two (GB10, 2026-11-21 and -22). The template's own default
+        // effort (0.9, "high") stands; a request sets
+        // `chat_template_kwargs.reasoning_effort`.
+        lines: &["temp = 1.0", "top-p = 1.0", "top-k = 0", "min-p = 0.0"],
+        temperature: Some(1.0),
+        // Measured on the GB10 (2026-11-21), weights and projector loaded:
+        // 21,924 MiB of GPU at 32k, 51,244 MiB at 256k — 29,320 MiB for
+        // 229,376 more tokens.
+        kv_kib_per_token: 131,
         state_mb_per_slot: 0,
     },
 ];
@@ -878,6 +953,37 @@ mod tests {
         assert_eq!(settings(section), settings(&ours));
         assert!(
             settings(section).contains_key("ctx-size"),
+            "the comparison is not vacuous"
+        );
+    }
+
+    /// The same agreement for Inkling, whose script section is a function
+    /// both its presets share: every line but the file paths is the
+    /// catalog's at 128 GB, the GB10's tier.
+    #[test]
+    fn the_scripts_inkling_section_is_the_catalogs() {
+        let script = include_str!("../../scripts/start-router.sh");
+        let body = script
+            .split_once("\ninkling() {\n")
+            .expect("the script's inkling function moved")
+            .1;
+        let body = &body[..body.find("\nEOF").unwrap()];
+        let settings = |text: &str| -> std::collections::BTreeMap<String, String> {
+            text.lines()
+                .filter_map(|l| l.split_once(" = "))
+                .filter(|(k, _)| !["model", "mmproj"].contains(&k.trim()))
+                .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+                .collect()
+        };
+        let p = Paths {
+            model: "/m/w.gguf".into(),
+            mmproj: Some("/m/p.gguf".into()),
+            draft: None,
+        };
+        let ours = section_text(entry("inkling-2-mini").unwrap(), 128, &p).unwrap();
+        assert_eq!(settings(body), settings(&ours));
+        assert!(
+            settings(body).contains_key("ctx-size"),
             "the comparison is not vacuous"
         );
     }
