@@ -10,7 +10,9 @@
 BASE is a mainline-layout (`inkling2_loop`) GGUF whose `blk.<n>.attn_output`
 tensors are Q8_0 (unsloth's Mainline_Support UD quants are). EDITED is a
 safetensors file carrying `model.llm.layers.<n>.attn.wo_ud.weight` in BF16 —
-the abliterated checkpoint itself, or any file holding just those tensors.
+the abliterated checkpoint itself, or a file holding just those tensors, all
+of them: the unedited ones are the proof (below), so a file of only the
+edited ones is refused.
 
 **Why a byte patch is enough.** OpenUncensored's Inkling-2-Mini-Uncensored
 differs from the original by exactly the 20 `attn.wo_ud` tensors of layers

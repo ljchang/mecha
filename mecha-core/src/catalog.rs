@@ -111,7 +111,7 @@ const GEMMA_GEOMETRY: &[TierGeometry] = &[
 /// this size: llama.cpp gives each of the 48 layer passes (24 layers, the 12
 /// of `loop_config`'s core 6..18 run three times) a full-length cache, its
 /// sliding-window layers included — `kv_kib_per_token` — so 256k at 128 GB
-/// would ask 50,961 MiB against a budget of 49,783 (production's 45,258, to
+/// would ask 50,960 MiB against a budget of 49,783 (production's 45,258, to
 /// a tenth). Trained to 1M; the window grows if llama.cpp windows those
 /// layers.
 const INKLING_GEOMETRY: &[TierGeometry] = &[
@@ -478,12 +478,13 @@ pub const CATALOG: &[Entry] = &[
 /// newer than the engine would otherwise download, restart the router, pass
 /// its health check on the base model, and fail only when the owner picks it.
 ///
-/// `running` is the engine the router's unit names today
-/// (`engine_gate::Servers::engine(Role::Router)`), which is the one to ask:
-/// the unit's drop-in is written once, at `setup chat`, and installing mecha's
-/// engine afterwards does not rewrite it — that is `--adopt`'s move. Only
-/// where the unit cannot be read (no systemd user manager) is the engine
-/// `Engine::resolve` would install with asked instead.
+/// `running` is the engine the router's service names today
+/// (`router_unit::running_engine`: the unit's drop-ins, or the launchd
+/// plist), which is the one to ask: the service is written once, at `setup
+/// chat`, and installing mecha's engine afterwards does not rewrite it —
+/// that is `--adopt`'s move. Only where the service names none or cannot be
+/// read — which `add` says — is the engine `Engine::resolve` would install
+/// with asked instead.
 ///
 /// A version that cannot be read is a refusal, never a pass — and a build
 /// from source counts its own commits, not the release's number, so it reads
@@ -501,7 +502,13 @@ pub fn engine_refusal(
             Err(e) => return Some(format!("{e:#}")),
         },
     };
-    let remedy = if server == crate::engine_gate::managed_binary(&m.mecha_home) {
+    // Compared as files, as `engine_gate` asks "is this mecha's engine": a
+    // unit may spell the same binary another way.
+    let same = |a: &Path, b: &Path| match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    };
+    let remedy = if same(&server, &crate::engine_gate::managed_binary(&m.mecha_home)) {
         "`mecha setup engine --upgrade` moves it to a newer release"
     } else {
         "`mecha setup engine --adopt` moves the router onto mecha's pinned engine"
