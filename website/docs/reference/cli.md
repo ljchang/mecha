@@ -16,7 +16,9 @@ for one. `mecha --version` prints the build.
 ## Global options
 
 These are declared once and accepted by every subcommand, including the ones that
-never build an agent (where they are simply ignored).
+never build an agent (where they are simply ignored). The exception is `mecha exp`:
+it refuses `-p`, `-m`, `-e` and `-s`, because an experiment's manifest decides what
+every trial runs on (see [`exp`](#exp)).
 
 | Flag | Description |
 |---|---|
@@ -375,6 +377,12 @@ mecha eval --ab-config max_turns=40             # measure a proposed change
 
 Run a designed comparison with named arms and isolated homes. The manifest fixes
 the tasks and treatments before trials run; this is separate from `mecha eval`.
+
+The manifest also fixes the model. Every `exp` subcommand refuses `--provider`,
+`--model`, `--effort` and `--system` rather than ignore them: name `provider` and
+`model` on each `[arms.<arm>]`, set effort with `overrides = ["effort=<level>"]`,
+and put a system prompt in the arm's or manifest's `[environment]`. An arm that
+names no provider runs on the config's `default_provider`.
 
 ```bash
 mecha exp new eval/assistant-lifetime.toml

@@ -12186,6 +12186,16 @@ comparison over a chosen set**, with the design written before the run.
   outright, in `levers_on` as in `levers_off`: a
   `forbid` is the operator's standing word, and only eval's fixture
   workspaces justify lifting it.
+- **The manifest is the only door to the model, so `exp` refuses the
+  global model flags.** `-p/--provider`, `-m/--model`, `-e/--effort` and
+  `-s/--system` are refused by every `exp` subcommand
+  (`exp::refuse_model_flags`, called from `dispatch` before the router is
+  held or observed), naming the flag and the arm fields that do the job:
+  `provider` / `model` on `[arms.<arm>]`, `overrides = ["effort=…"]`, the
+  environment's system prompt. Honouring one in `run` alone would plan
+  hashes `status` and `report` do not. `exp run <name> -p <provider>` once
+  parsed and ran every trial on the config's default provider, saying so
+  only in its first line (2026-11-22).
 - **A lever named on must change the rendered config, and the hash.**
   `child_invocation` sets every *config switch* (`Arm::resolve_forced_on`:
   the seven `[agent]` switches and `[messages] enabled`) true when named in

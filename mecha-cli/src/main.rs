@@ -49,18 +49,22 @@ pub struct Cli {
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct GlobalOpts {
     /// Provider to use, by config key (default: the config's default_provider).
+    /// `mecha exp` refuses it: each arm names its own `provider`.
     #[arg(long, short = 'p', global = true)]
     pub provider: Option<String>,
 
-    /// Model id, overriding the provider's default.
+    /// Model id, overriding the provider's default. `mecha exp` refuses it:
+    /// each arm names its own `model`.
     #[arg(long, short = 'm', global = true)]
     pub model: Option<String>,
 
-    /// Reasoning depth: low, medium, high, xhigh, max.
+    /// Reasoning depth: low, medium, high, xhigh, max. `mecha exp` refuses
+    /// it: an arm sets `overrides = ["effort=..."]`.
     #[arg(long, short = 'e', global = true)]
     pub effort: Option<Effort>,
 
-    /// System prompt. Use @path to read it from a file.
+    /// System prompt. Use @path to read it from a file. `mecha exp` refuses
+    /// it: an arm's environment carries its system prompt.
     #[arg(long, short = 's', global = true)]
     pub system: Option<String>,
 
@@ -994,6 +998,11 @@ async fn dispatch() -> Result<()> {
     // memory resume preflight tries to find or read the selected transcript.
     if let Command::Run(args) = &cli.command {
         commands::run::preflight_start(&cli.global, args)?;
+    }
+    // `exp` runs what its manifest names; a model flag it would ignore is
+    // refused before the router is held or observed on its account.
+    if let Command::Exp(_) = &cli.command {
+        commands::exp::refuse_model_flags(&cli.global)?;
     }
     #[cfg(feature = "memory-prototype")]
     let ordinary_memory = match &cli.command {
