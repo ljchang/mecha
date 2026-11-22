@@ -230,6 +230,25 @@ pub fn check_github(db: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             ),
         ));
     }
+    let unmatched: Vec<&str> = of(Kind::PackageUnmatched)
+        .filter_map(|p| p.repo.as_deref())
+        .collect();
+    if !unmatched.is_empty() {
+        out.push(finding(
+            Severity::Attention,
+            format!(
+                "a package line names {}, which the collector does not see — the correction \
+                 does nothing",
+                unmatched.join(", ")
+            ),
+            format!(
+                "in {}: ~/.mecha/github/packages.toml has a [[package]] line for a repository in \
+                 no inventory and no manifest read — a typo, or a repository since renamed, \
+                 transferred or no longer visible. Correct or remove the line.",
+                lasted(last, Kind::PackageUnmatched)
+            ),
+        ));
+    }
     if let Some(p) = of(Kind::BadPackages).next() {
         out.push(finding(
             Severity::Broken,

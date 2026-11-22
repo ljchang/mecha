@@ -253,6 +253,36 @@ fn no_push_access_is_a_refusal_and_a_dash_never_zero() {
     );
 }
 
+/// A day listed without an integer `count` or `uniques` makes the whole
+/// answer unreadable, as a day without a date does: kept as unknown it would
+/// be zero-filled, and unknown is never zero.
+#[test]
+fn a_traffic_day_without_its_numbers_is_unreadable_not_zero() {
+    let dir = scratch("traffic-no-count");
+    select(&dir, LAB_ALL);
+    let bad = r#"{"count":5,"uniques":2,"clones":[{"timestamp":"2026-11-17T00:00:00Z","uniques":2},{"timestamp":"2026-11-18T00:00:00Z","count":5,"uniques":2}]}"#;
+    let gh = fake(
+        &dir,
+        &with(vec![ok("*'repos/example-lab/tool-a/traffic/clones'*", bad)]),
+    );
+    collect_and_record(&dir, &gh, now());
+    let conn = db(&dir);
+    assert_eq!(kinds(&conn), ["failed:traffic:example-lab/tool-a"]);
+    assert_eq!(
+        strings(
+            &conn,
+            "SELECT day FROM traffic WHERE repo = 'example-lab/tool-a'"
+        ),
+        Vec::<String>::new(),
+        "a day with no count was written as a zero"
+    );
+    let uniques_text = r#"{"count":1,"uniques":1,"views":[{"timestamp":"2026-11-18T00:00:00Z","count":1,"uniques":"one"}]}"#;
+    assert_eq!(
+        crate::github::usage::parse_series(uniques_text, "views"),
+        None
+    );
+}
+
 /// The traffic step reads at most its share a run, the never-read first and
 /// then the longest unread: over runs, every repository is read.
 #[test]
@@ -537,6 +567,52 @@ fn the_package_mapping_is_detected_and_the_owner_corrects_it() {
             .map(|f| f.summary.as_str())
             .collect::<Vec<_>>(),
         ["the GitHub board's packages.toml cannot be used, so the package mapping is kept as it was"]
+    );
+}
+
+/// A package line naming a repository the collector does not see is said —
+/// its own kind, quoting the line, its own doctor finding — and is not
+/// written as a row no reader reaches. It fails nothing: a line left behind
+/// by a repository since deselected or renamed must not fail the unit.
+#[test]
+fn a_package_line_for_an_unknown_repository_is_said_not_dropped() {
+    let dir = scratch("packages-unmatched");
+    select(&dir, LAB_ALL);
+    let home = dir.join("home");
+    std::fs::create_dir_all(super::super::dir(&home)).unwrap();
+    std::fs::write(
+        packages_path(&home),
+        "[[package]]\nrepo = \"example-lab/toola\"\nregistry = \"pypi\"\nname = \"tool-a-py\"\n\n\
+         [[package]]\nrepo = \"Example-Lab/Tool-B\"\nregistry = \"npm\"\nname = \"tool-b-js\"\n",
+    )
+    .unwrap();
+    let c = collect_and_record(&dir, &fake(&dir, &healthy()), now());
+    let conn = db(&dir);
+    assert_eq!(
+        kinds(&conn),
+        ["package_unmatched:packages:example-lab/toola"],
+        "the known repository's line, in another case, is not unmatched"
+    );
+    assert!(c.problems[0].detail.contains("\"example-lab/toola\""));
+    assert!(c.problems.iter().all(|p| !p.kind.fails_collection()));
+    assert_eq!(c.collected(), 2);
+    assert_eq!(
+        strings(
+            &conn,
+            "SELECT repo || ' ' || registry || ' ' || name FROM packages ORDER BY repo"
+        ),
+        ["example-lab/tool-b npm tool-b-js"],
+        "an orphan row was written for the unknown line"
+    );
+    assert_eq!(
+        crate::doctor::check_github(&db_path(&home), now())
+            .iter()
+            .map(|f| f.summary.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "a package line names example-lab/toola, which the collector does not see — the \
+          correction does nothing"
+        ]
     );
 }
 
@@ -869,6 +945,7 @@ fn only_the_collections_own_problems_fail_it() {
                 | Kind::TrafficNoAccess
                 | Kind::RegistryRefused
                 | Kind::RegistryFailed
+                | Kind::PackageUnmatched
         );
         assert_eq!(k.fails_collection(), !aside, "{k:?}");
         assert_eq!(Kind::parse(k.as_str()), Some(k));

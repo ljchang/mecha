@@ -381,7 +381,10 @@ It is an optional feature, so step 1 starts at `ARCHITECTURE.md` §Features →
   collector only reads. A line decides its `(repo, registry)` either way, and
   the detected name stays beside it (`packages.detected_name`) for the
   picker. A file that cannot be used logs `bad_packages` and leaves the
-  mapping as the last run that could read it wrote it.
+  mapping as the last run that could read it wrote it. A line naming a
+  repository in no inventory and no manifest read is not written and logs
+  `package_unmatched`, which has its own doctor finding and fails nothing,
+  since a repository deselected or renamed later leaves such a line behind.
 - **Registry counts** are a pass after the write, like the summaries:
   pypistats.org for PyPI (PyPI's own JSON API no longer reports downloads)
   and npm's downloads API, a month of daily counts per name into

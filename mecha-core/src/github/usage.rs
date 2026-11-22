@@ -34,7 +34,7 @@ use super::{
 };
 use anyhow::Result;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
-use rusqlite::{params, Connection, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -72,7 +72,7 @@ pub(super) const RELEASE_FIELDS: &str = "releases(first: 20, orderBy: {field: CR
 pub struct Series {
     pub total: Option<i64>,
     pub uniques: Option<i64>,
-    pub days: BTreeMap<NaiveDate, (Option<i64>, Option<i64>)>,
+    pub days: BTreeMap<NaiveDate, (i64, i64)>,
 }
 
 /// What one repository's traffic said this run.
@@ -99,7 +99,7 @@ pub struct Traffic {
 /// `clones` or `views` from the traffic API's answer. `None` for an answer
 /// that is not that shape — one malformed day makes the whole answer
 /// unreadable, never a partial series written as if whole.
-fn parse_series(body: &str, key: &str) -> Option<Series> {
+pub(crate) fn parse_series(body: &str, key: &str) -> Option<Series> {
     let v: Value = serde_json::from_str(body).ok()?;
     let mut days = BTreeMap::new();
     for e in v.get(key)?.as_array()? {
@@ -109,13 +109,12 @@ fn parse_series(body: &str, key: &str) -> Option<Series> {
             .get(..10)?
             .parse::<NaiveDate>()
             .ok()?;
-        days.insert(
-            day,
-            (
-                e.get("count").and_then(Value::as_i64),
-                e.get("uniques").and_then(Value::as_i64),
-            ),
-        );
+        // A day listed without its numbers is as unreadable as one without
+        // its date: kept as unknown it would be zero-filled, and unknown is
+        // never zero.
+        let count = e.get("count")?.as_i64()?;
+        let uniques = e.get("uniques")?.as_i64()?;
+        days.insert(day, (count, uniques));
     }
     Some(Series {
         total: v.get("count").and_then(Value::as_i64),
@@ -732,6 +731,25 @@ pub(super) fn scan_step(
     Flow::Go
 }
 
+/// The repositories whose manifests the store has read, lower-cased: beside
+/// the inventory, what a `packages.toml` line may name.
+pub(super) fn detected_repos(db: &Path) -> BTreeSet<String> {
+    let Ok(conn) = Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+    else {
+        return BTreeSet::new();
+    };
+    let Ok(mut stmt) = conn.prepare("SELECT repo FROM package_scans") else {
+        return BTreeSet::new();
+    };
+    stmt.query_map([], |r| r.get::<_, String>(0))
+        .map(|rows| {
+            rows.filter_map(Result::ok)
+                .map(|r| r.to_ascii_lowercase())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 // ---- the owner's corrections ----
 
 /// `<home>/github/packages.toml` — the owner's corrections to the package
@@ -891,7 +909,7 @@ pub(super) fn record(tx: &Transaction<'_>, c: &Collected, run: &str, day: &str) 
                     .unwrap_or(*to);
                 let mut d = first;
                 while d <= last {
-                    let given = |s: &Series| s.days.get(&d).and_then(|(n, u)| n.map(|n| (n, *u)));
+                    let given = |s: &Series| s.days.get(&d).copied();
                     let (gc, gv) = (given(clones), given(views));
                     // A day GitHub listed: its numbers, the newest answer's
                     // (a day in progress grows; a past day's is final). A day
@@ -910,9 +928,9 @@ pub(super) fn record(tx: &Transaction<'_>, c: &Collected, run: &str, day: &str) 
                             t.repo,
                             d.format("%Y-%m-%d").to_string(),
                             gc.map_or(0, |g| g.0),
-                            gc.map_or(Some(0), |g| g.1),
+                            gc.map_or(0, |g| g.1),
                             gv.map_or(0, |g| g.0),
-                            gv.map_or(Some(0), |g| g.1),
+                            gv.map_or(0, |g| g.1),
                             run,
                             gc.is_some(),
                             gv.is_some()
@@ -1011,7 +1029,10 @@ pub(super) fn record(tx: &Transaction<'_>, c: &Collected, run: &str, day: &str) 
         for rule in rules {
             // The inventory's spelling, so a line written in another case is
             // the same repository's row.
-            let repo: String = tx
+            // A line naming no repository the store knows is not written:
+            // a row no reader's join reaches would look like a correction
+            // made. `collect` has said so (`package_unmatched`).
+            let Some(repo): Option<String> = tx
                 .query_row(
                     "SELECT repo FROM inventory WHERE lower(repo) = lower(?1)
                      UNION ALL SELECT repo FROM package_detected WHERE lower(repo) = lower(?1)
@@ -1019,7 +1040,10 @@ pub(super) fn record(tx: &Transaction<'_>, c: &Collected, run: &str, day: &str) 
                     params![rule.repo],
                     |r| r.get(0),
                 )
-                .unwrap_or_else(|_| rule.repo.clone());
+                .optional()?
+            else {
+                continue;
+            };
             let name = if rule.none { None } else { rule.name.clone() };
             tx.execute(
                 "INSERT INTO packages (repo, registry, name, source, manifest, detected_name, at)
