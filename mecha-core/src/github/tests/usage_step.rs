@@ -915,6 +915,12 @@ fn release_samples_past_the_keep_window_are_pruned() {
             )
             .unwrap();
         }
+        conn.execute(
+            "INSERT INTO release_reads (repo, day, releases, assets, complete, at)
+             VALUES ('example-lab/tool-z', ?1, 1, 1, 1, ?1)",
+            [&old],
+        )
+        .unwrap();
     }
     collect_and_record(&dir, &fake(&dir, &healthy()), now() + Duration::minutes(5));
     let days = strings(
@@ -922,4 +928,12 @@ fn release_samples_past_the_keep_window_are_pruned() {
         "SELECT day FROM releases WHERE asset_id = 1 ORDER BY day",
     );
     assert_eq!(days, [recent]);
+    assert!(
+        strings(
+            &db(&dir),
+            "SELECT day FROM release_reads WHERE repo = 'example-lab/tool-z'"
+        )
+        .is_empty(),
+        "the read records are pruned with their samples"
+    );
 }

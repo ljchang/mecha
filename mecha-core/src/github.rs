@@ -1636,8 +1636,12 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
                     e,
                     GhError::Auth(_) | GhError::Missing(_) | GhError::OutOfTime
                 );
-                rest_limited = matches!(e, GhError::RateLimited(_));
-                let repo = (!rest_limited).then_some(r.full_name.as_str());
+                // Once limited, limited for the run: a later repository's
+                // other failure must not clear it, because the traffic step
+                // reads it (review of #912).
+                let limited = matches!(e, GhError::RateLimited(_));
+                rest_limited |= limited;
+                let repo = (!limited).then_some(r.full_name.as_str());
                 c.problems.push(e.problem(Step::Ci, repo));
                 if stop {
                     return;
@@ -2051,12 +2055,17 @@ pub fn record(db: &Path, c: &Collected) -> Result<()> {
         "DELETE FROM collect_log WHERE run < ?1",
         params![ts(c.started - Duration::days(LOG_KEEP_DAYS))],
     )?;
-    tx.execute(
-        "DELETE FROM releases WHERE day < ?1",
-        params![(c.started - Duration::days(RELEASE_KEEP_DAYS))
-            .format("%Y-%m-%d")
-            .to_string()],
-    )?;
+    // The samples and the record of each day's read go together, or a day
+    // kept in one and pruned from the other draws a dash beside "every
+    // release" (review of #912).
+    for table in ["releases", "release_reads"] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE day < ?1"),
+            params![(c.started - Duration::days(RELEASE_KEEP_DAYS))
+                .format("%Y-%m-%d")
+                .to_string()],
+        )?;
+    }
 
     for p in &c.problems {
         tx.execute(
