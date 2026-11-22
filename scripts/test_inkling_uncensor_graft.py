@@ -135,6 +135,20 @@ class Graft(unittest.TestCase):
         r = run(self.base, self.edited({1: bf16_exact(99)}), self.out)
         self.refused(r, "not inkling2_loop")
 
+    def test_refuses_a_gguf_that_names_no_architecture(self):
+        w = GGUFWriter(str(self.base), arch="inkling2_loop")
+        w.add_tensor("x", np.zeros(32, dtype=np.float32))
+        w.write_header_to_file()
+        w.write_kv_data_to_file()
+        w.write_tensors_to_file()
+        w.close()
+        # GGUFWriter always writes general.architecture; drop it by rewriting
+        # the key's name to one the script does not read.
+        raw = self.base.read_bytes().replace(b"general.architecture", b"general.architecturX")
+        self.base.write_bytes(raw)
+        r = run(self.base, self.edited({1: bf16_exact(99)}), self.out)
+        self.refused(r, "architecture unnamed, not inkling2_loop")
+
     def test_refuses_a_base_whose_attn_output_is_not_q8_0(self):
         write_base(self.base, self.orig, qtype=GGMLQuantizationType.F32)
         r = run(self.base, self.edited({1: bf16_exact(99)}), self.out)
@@ -153,6 +167,10 @@ class Graft(unittest.TestCase):
         r = run(self.base, self.edited({1: bf16_exact(99)}), self.base)
         self.assertNotEqual(r.returncode, 0, r.stdout)
         self.assertIn("is BASE itself", r.stderr)
+        e = self.edited({1: bf16_exact(99)})
+        r = run(self.base, e, e)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("is EDITED itself", r.stderr)
         want = [bytes(t.data.tobytes()) for t in GGUFReader(self.base).tensors]
         write_base(self.d / "again.gguf", self.orig)
         self.assertEqual(want, [bytes(t.data.tobytes()) for t in GGUFReader(self.d / "again.gguf").tensors])

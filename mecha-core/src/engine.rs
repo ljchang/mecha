@@ -1449,8 +1449,9 @@ fn run_within(server: &Path, flag: &str, limit: std::time::Duration) -> Result<S
 }
 
 /// `--version`'s first line names the build and an abbreviated commit:
-/// `version: 0.5.0-dev (build 11391, commit 2bc563573)` from the pinned
-/// release, read on the GB10 on 2026-10-04. The abbreviation's length is the
+/// `version: 1.0.0-dev (build 12627, commit 225a5345b)` from the pinned
+/// release, read on the GB10 on 2026-11-22 (b11391's, on 2026-10-04, was
+/// `0.5.0-dev`: only the build and commit are read, never that prefix). The abbreviation's length is the
 /// release builder's `git rev-parse --short`, so any prefix of the expected
 /// commit of seven or more characters is that build.
 pub fn reports(text: &str, build: u32, commit: &str) -> bool {

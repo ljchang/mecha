@@ -477,25 +477,38 @@ pub const CATALOG: &[Entry] = &[
 /// engine itself, by its `--version`, before anything is fetched: an entry
 /// newer than the engine would otherwise download, restart the router, pass
 /// its health check on the base model, and fail only when the owner picks it.
+///
+/// `running` is the engine the router's unit names today
+/// (`engine_gate::Servers::engine(Role::Router)`), which is the one to ask:
+/// the unit's drop-in is written once, at `setup chat`, and installing mecha's
+/// engine afterwards does not rewrite it — that is `--adopt`'s move. Only
+/// where the unit cannot be read (no systemd user manager) is the engine
+/// `Engine::resolve` would install with asked instead.
+///
 /// A version that cannot be read is a refusal, never a pass — and a build
 /// from source counts its own commits, not the release's number, so it reads
 /// low and is sent to `--adopt` rather than trusted.
-pub fn engine_refusal(entry: &Entry, m: &crate::sidecar::Machinery) -> Option<String> {
-    use crate::llama_units::Engine;
+pub fn engine_refusal(
+    entry: &Entry,
+    m: &crate::sidecar::Machinery,
+    running: Option<&Path>,
+) -> Option<String> {
     let min = entry.min_engine_build?;
-    let engine = match Engine::resolve(m) {
-        Ok(e) => e,
-        Err(e) => return Some(format!("{e:#}")),
+    let server = match running {
+        Some(p) => p.to_path_buf(),
+        None => match crate::llama_units::Engine::resolve(m) {
+            Ok(e) => e.path().to_path_buf(),
+            Err(e) => return Some(format!("{e:#}")),
+        },
     };
-    let remedy = match engine {
-        Engine::Mecha(_) => "`mecha setup engine --upgrade` moves it to a newer release",
-        Engine::Provided(_) => {
-            "`mecha setup engine --adopt` moves the router onto mecha's pinned engine"
-        }
+    let remedy = if server == crate::engine_gate::managed_binary(&m.mecha_home) {
+        "`mecha setup engine --upgrade` moves it to a newer release"
+    } else {
+        "`mecha setup engine --adopt` moves the router onto mecha's pinned engine"
     };
     let needs = format!("{} needs llama.cpp b{min} or newer", entry.id);
-    let at = engine.path().display();
-    match crate::engine::build_of(engine.path()) {
+    let at = server.display();
+    match crate::engine::build_of(&server) {
         Ok(Some(b)) if b >= min => None,
         Ok(Some(b)) => Some(format!(
             "{needs}, and the router's engine ({at}) is build {b} — {remedy}"
@@ -991,7 +1004,7 @@ mod tests {
         ] {
             let dir = scratch("engine");
             let m = machine_whose_engine_says(&dir, said);
-            let got = engine_refusal(ink, &m);
+            let got = engine_refusal(ink, &m, None);
             match refused {
                 None => assert_eq!(got, None, "{said}"),
                 Some(why) => {
@@ -1003,14 +1016,49 @@ mod tests {
                 }
             }
             // An entry with no minimum never asks the engine.
-            assert_eq!(engine_refusal(gemma, &m), None);
+            assert_eq!(engine_refusal(gemma, &m, None), None);
             let _ = std::fs::remove_dir_all(&dir);
         }
         // No engine at all is said, not passed.
         let dir = scratch("engine");
         let mut m = machine_whose_engine_says(&dir, "");
         m.path.clear();
-        assert!(engine_refusal(ink, &m).is_some());
+        assert!(engine_refusal(ink, &m, None).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The engine asked is the one the router's unit runs, not the one an
+    /// install would pick: mecha's own engine installed after `setup chat`
+    /// does not move the router onto it until `--adopt`.
+    #[cfg(unix)]
+    #[test]
+    fn the_engine_asked_is_the_one_the_router_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let ink = entry("inkling-2-mini").unwrap();
+        let dir = scratch("engine");
+        // The PATH's engine — and the router's — is old.
+        let m = machine_whose_engine_says(&dir, "version: 1.0.0-dev (build 12000, commit 0123456)");
+        let old = dir.join("bin/llama-server");
+        // mecha's own is new, and installed.
+        let managed = crate::engine_gate::managed_binary(&m.mecha_home);
+        std::fs::create_dir_all(managed.parent().unwrap()).unwrap();
+        std::fs::write(
+            &managed,
+            "#!/bin/sh\nprintf '%s\\n' 'version: 1.0.0-dev (build 12627, commit 225a5345b)' >&2\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&managed, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // With the unit unreadable, the install's choice — mecha's — passes.
+        assert_eq!(engine_refusal(ink, &m, None), None);
+        // The router's unit still names the old one: that is what is asked.
+        let got = engine_refusal(ink, &m, Some(&old)).expect("the router's own engine is old");
+        assert!(
+            got.contains("is build 12000") && got.contains("--adopt"),
+            "{got}"
+        );
+        // Named by the unit as mecha's own, it passes, and its remedy would
+        // have been --upgrade.
+        assert_eq!(engine_refusal(ink, &m, Some(&managed)), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

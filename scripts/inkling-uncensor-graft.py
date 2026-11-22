@@ -46,13 +46,15 @@ def main():
     base_p, edit_p, out_p = sys.argv[1:]
     # The base is a pinned blob in the hub cache: written over, it is neither
     # the base nor the graft, and its name still says it is the base.
-    if os.path.exists(out_p) and os.path.samefile(base_p, out_p):
-        sys.exit(f"{out_p} is BASE itself; the graft is written beside it, never over it")
+    for name, p in (("BASE", base_p), ("EDITED", edit_p)):
+        if os.path.exists(out_p) and os.path.exists(p) and os.path.samefile(p, out_p):
+            sys.exit(f"{out_p} is {name} itself; the graft is written beside its inputs, never over one")
     try:
         base = GGUFReader(base_p)
     except Exception as e:
         sys.exit(f"{base_p}: not a readable GGUF ({e})")
-    arch = base.fields["general.architecture"].contents()
+    field = base.fields.get("general.architecture")
+    arch = field.contents() if field is not None else "unnamed"
     if arch != "inkling2_loop":
         sys.exit(f"{base_p}: architecture {arch}, not inkling2_loop (the mainline layout)")
     tensors = {t.name: t for t in base.tensors}

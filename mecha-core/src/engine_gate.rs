@@ -2197,9 +2197,13 @@ mod tests {
 
         let adopted = servers_naming(Some(&managed_binary(&m.mecha_home)));
         std::fs::create_dir_all(crate::engine::engine_root(&m.mecha_home)).unwrap();
-        crate::engine::point_current(&m.mecha_home, "b11391").unwrap();
+        // `current` is the pin itself, so the upgrade to the pin is refused
+        // as already run — named by the pin, not a literal that the next
+        // pin move would turn into a real upgrade attempt.
+        let pin = crate::engine::PIN.tag;
+        crate::engine::point_current(&m.mecha_home, pin).unwrap();
         let (_, tag) = check_upgradable(&m, &adopted, &h, ROUTER).unwrap();
-        assert_eq!(tag, "b11391");
+        assert_eq!(tag, pin);
         let spec = crate::engine::Spec::pin(crate::engine::Target::LinuxArm64Cuda13).unwrap();
         let cancel = tokio_util::sync::CancellationToken::new();
         let err = refused(

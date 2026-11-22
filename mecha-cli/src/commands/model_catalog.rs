@@ -328,11 +328,18 @@ pub(super) async fn add(
         for (k, v) in provider_settings(e, tier, &base)? {
             eprintln!("{k} = {v}");
         }
+        // Your router's engine is yours, and not asked: what it must be is said.
+        if let Some(min) = e.min_engine_build {
+            eprintln!("\n{id} needs llama.cpp b{min} or newer on that router.");
+        }
         bail!("nothing was installed: {why}");
     }
     // Before the plan and the download: an engine too old for the entry
     // would take the whole fetch and fail only at the first pick.
-    if let Some(why) = catalog::engine_refusal(e, &here.m) {
+    let running = mecha_core::engine_gate::Servers::read_or_none()
+        .0
+        .engine(mecha_core::engine_gate::Role::Router);
+    if let Some(why) = catalog::engine_refusal(e, &here.m, running.as_deref()) {
         bail!("nothing was installed: {why}");
     }
     if let Some(why) = table_conflict(cfg, e, here.naming.port) {
