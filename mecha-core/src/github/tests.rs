@@ -174,9 +174,47 @@ fn tool_a_runs() -> String {
 
 const NO_RUNS: &str = r#"{"total_count":0,"workflow_runs":[]}"#;
 
+/// One traffic series as the traffic API answers it: each listed day's
+/// count and uniques, and the window's sums.
+fn traffic_json(key: &str, days: &[(&str, i64, i64)]) -> String {
+    let entries: Vec<String> = days
+        .iter()
+        .map(|(d, n, u)| format!(r#"{{"timestamp":"{d}T00:00:00Z","count":{n},"uniques":{u}}}"#))
+        .collect();
+    format!(
+        r#"{{"count":{},"uniques":{},"{key}":[{}]}}"#,
+        days.iter().map(|d| d.1).sum::<i64>(),
+        days.iter().map(|d| d.2).sum::<i64>(),
+        entries.join(",")
+    )
+}
+
+/// One repository's manifests, by alias (`usage::MANIFESTS`): those named
+/// are files with that text, the rest are not there.
+fn manifests(files: &[(&str, &str)]) -> String {
+    let fields: Vec<String> = usage::MANIFESTS
+        .iter()
+        .map(|(alias, _)| match files.iter().find(|(a, _)| a == alias) {
+            Some((_, text)) => format!(
+                r#""{alias}":{{"text":{},"isTruncated":false}}"#,
+                serde_json::json!(text)
+            ),
+            None => format!(r#""{alias}":null"#),
+        })
+        .collect();
+    format!("{{{}}}", fields.join(","))
+}
+
 /// The cases a healthy run answers, before any test's own.
 fn healthy() -> Vec<Case> {
     vec![
+        // Ahead of the items batch, whose pattern its variables also match.
+        ok(
+            "*'fragment M on Repository'*",
+            &batch(&[manifests(&[]), manifests(&[])]),
+        ),
+        ok("*'/traffic/clones'*", &traffic_json("clones", &[])),
+        ok("*'/traffic/views'*", &traffic_json("views", &[])),
         ok("*'api rate_limit'*", RATE),
         ok("*'user/repos'*", &listing()),
         ok(
@@ -857,6 +895,7 @@ fn items_run(at: DateTime<Utc>, repo: &str, numbers: &[i64], complete: bool) -> 
             })
             .collect(),
         complete,
+        releases: None,
     });
     c
 }
@@ -1029,6 +1068,7 @@ fn repo(full: &str, fork: bool, archived: bool) -> Repo {
         default_branch: Some("main".into()),
         pushed_at: None,
         listed: true,
+        push: None,
     }
 }
 
@@ -1158,6 +1198,16 @@ fn a_failure_is_classified_by_what_gh_said() {
         classify(&ran(1, "", "gh: Not Found (HTTP 404)")),
         GhError::NotFound(_)
     ));
+    // The traffic API's refusal of a login that cannot push: a refusal of
+    // its own, never a failure and never a rate limit.
+    assert!(matches!(
+        classify(&ran(
+            1,
+            r#"{"message":"Must have push access to repository"}"#,
+            "gh: Must have push access to repository (HTTP 403)"
+        )),
+        GhError::NoAccess(_)
+    ));
     // A 403 that is not about quota is a failure, not a rate limit.
     assert!(matches!(
         classify(&ran(
@@ -1167,12 +1217,27 @@ fn a_failure_is_classified_by_what_gh_said() {
         )),
         GhError::Failed(_)
     ));
+    // ...and it is a traffic finding only at the traffic step: from any other
+    // step it is a failure that fails the run (review of #912).
+    let no_access = GhError::NoAccess("Must have push access".into());
+    assert_eq!(
+        no_access
+            .problem(Step::Traffic, Some("example-lab/tool-a"))
+            .kind,
+        Kind::TrafficNoAccess
+    );
+    for step in [Step::Inventory, Step::Ci, Step::Items] {
+        let p = no_access.problem(step, Some("example-lab/tool-a"));
+        assert_eq!(p.kind, Kind::Failed, "{step:?}");
+        assert!(p.kind.fails_collection(), "{step:?}");
+    }
 }
 
 /// Every call shares one budget, and it sits inside the unit's start timeout
 /// with a minute left for the write: a bound per call adds up past it, and
-/// systemd would kill the run before it wrote anything. The summary pass's
-/// budget comes after the collection's, so both fit, with the minute.
+/// systemd would kill the run before it wrote anything. The registry pass's
+/// and the summary pass's budgets come after the collection's, so all three
+/// fit, with the minute.
 #[test]
 fn the_budgets_fit_inside_the_units_start_timeout() {
     let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts");
@@ -1184,7 +1249,8 @@ fn the_budgets_fit_inside_the_units_start_timeout() {
         .and_then(|v| v.parse().ok())
         .expect("the unit states TimeoutStartSec in seconds");
     assert!(
-        RUN_BUDGET + summary::BUDGET + StdDuration::from_secs(60) <= StdDuration::from_secs(secs)
+        RUN_BUDGET + registry::BUDGET + summary::BUDGET + StdDuration::from_secs(60)
+            <= StdDuration::from_secs(secs)
     );
     assert!(
         unit.lines()
@@ -1333,7 +1399,7 @@ fn the_shipped_board_validates_and_its_loaders_read_the_collector() {
     let installed = Installed::load_dir(&board, "github")
         .unwrap()
         .unwrap_or_else(|r| panic!("{r}"));
-    assert_eq!(installed.loaders().len(), 4);
+    assert_eq!(installed.loaders().len(), 6);
 
     let dir = scratch("shipped-board");
     select(&dir, LAB_ALL);
@@ -1646,3 +1712,5 @@ fn no_shipped_loader_compares_github_times_against_datetime() {
         );
     }
 }
+
+mod usage_step;

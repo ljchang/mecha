@@ -63,6 +63,11 @@ pub const CI_KEEP_DAYS: i64 = 90;
 pub const ITEM_KEEP_DAYS: i64 = 30;
 /// The collector's own log.
 pub const LOG_KEEP_DAYS: i64 = 90;
+/// Release download samples: a row per asset per day, and no loader reads
+/// past thirty days, so twice that is kept (review of #912) — `traffic` and
+/// `registry_daily` are kept forever because the board reads their whole
+/// history.
+pub const RELEASE_KEEP_DAYS: i64 = 60;
 
 /// One run's whole allowance for calls to `gh`. A bound per call is not a
 /// bound per run (`ARCHITECTURE.md` §System state): four hundred selected
@@ -84,8 +89,9 @@ pub const ANSWER_BYTES_MAX: usize = 32 * 1024 * 1024;
 /// What is kept of `gh`'s stderr: only its first line is ever read.
 const STDERR_BYTES_MAX: usize = 64 * 1024;
 /// Repositories per GraphQL query: ten repositories of a hundred issues and
-/// a hundred pull requests with twenty labels each is ~42,000 nodes, well
-/// under GitHub's 500,000.
+/// a hundred pull requests with twenty labels each is ~42,000 nodes, and
+/// their twenty newest releases of fifty assets each (step 5) ~10,000 more,
+/// well under GitHub's 500,000.
 const BATCH: usize = 10;
 /// Follow-up pages per connection (100 each) before a listing is called
 /// incomplete — and an incomplete listing marks nothing closed.
@@ -283,6 +289,11 @@ pub struct Repo {
     /// In the login's own listing, rather than fetched because a `[[repo]]`
     /// line named it.
     pub listed: bool,
+    /// Whether the login can push to it, from the REST `permissions` GitHub
+    /// returns with every repository it lists for a login. `None` when the
+    /// answer did not say: the traffic API is then asked, and its refusal is
+    /// what says it (§3 — traffic is shown only to accounts with push access).
+    pub push: Option<bool>,
 }
 
 fn parse_repo(v: &Value, listed: bool) -> Option<Repo> {
@@ -300,6 +311,10 @@ fn parse_repo(v: &Value, listed: bool) -> Option<Repo> {
         default_branch: text("default_branch"),
         pushed_at: text("pushed_at"),
         listed,
+        push: v
+            .get("permissions")
+            .and_then(|p| p.get("push"))
+            .and_then(Value::as_bool),
     })
 }
 
@@ -363,6 +378,9 @@ pub struct RepoItems {
     /// Every open issue and pull request was read, so one not among them is
     /// no longer open. `false` marks nothing closed.
     pub complete: bool,
+    /// Its newest releases' asset download counts (step 5). `None` when the
+    /// answer held no releases field, which is unknown, not "no releases".
+    pub releases: Option<usage::Releases>,
 }
 
 /// One default-branch workflow run.
@@ -461,10 +479,30 @@ pub enum Kind {
     /// model server rejected, a body that did not fit). Not a refusal: a
     /// refusal is an answer, stored, and never asked again for that body.
     SummaryFailed,
+    /// GitHub refused a repository's traffic because the login cannot push
+    /// to it (§3: traffic is shown only to accounts with push access). A
+    /// refusal, never a failure: the board shows a dash for it, never a zero.
+    /// Logged only when the call was made — a repository whose permissions
+    /// already say "no push" is not asked, and its dash says why on its own.
+    TrafficNoAccess,
+    /// A package registry refused the collector: a rate limit, or a refusal
+    /// of an anonymous client (`usage::registry`). Not a failure.
+    RegistryRefused,
+    /// A registry's count could not be read: no answer, a server error, an
+    /// answer that did not parse.
+    RegistryFailed,
+    /// `packages.toml` is there and cannot be used: the package mapping
+    /// stays as the last run that could read it left it.
+    BadPackages,
+    /// A `packages.toml` line names a repository the collector does not see
+    /// — in no inventory and no manifest read — so the correction does
+    /// nothing. Not a failure: a repository later deselected or renamed
+    /// leaves such a line behind, and that must not fail the daily unit.
+    PackageUnmatched,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 11] = [
+    pub const ALL: [Kind; 16] = [
         Kind::Finished,
         Kind::RateLimited,
         Kind::Auth,
@@ -476,6 +514,11 @@ impl Kind {
         Kind::Failed,
         Kind::SummarySkipped,
         Kind::SummaryFailed,
+        Kind::TrafficNoAccess,
+        Kind::RegistryRefused,
+        Kind::RegistryFailed,
+        Kind::BadPackages,
+        Kind::PackageUnmatched,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -491,6 +534,11 @@ impl Kind {
             Kind::Failed => "failed",
             Kind::SummarySkipped => "summary_skipped",
             Kind::SummaryFailed => "summary_failed",
+            Kind::TrafficNoAccess => "traffic_no_access",
+            Kind::RegistryRefused => "registry_refused",
+            Kind::RegistryFailed => "registry_failed",
+            Kind::BadPackages => "bad_packages",
+            Kind::PackageUnmatched => "package_unmatched",
         }
     }
 
@@ -498,6 +546,24 @@ impl Kind {
     /// makes a repository "not read in full", and never fails the unit.
     pub fn is_summary(self) -> bool {
         matches!(self, Kind::SummarySkipped | Kind::SummaryFailed)
+    }
+
+    /// Whether this kind says the collection itself was refused or failed:
+    /// it makes the repository it names "not read in full" and the unit's
+    /// exit non-zero. Not the summary pass's (§5) and not the registries'
+    /// (a pass after the write, of services that are not GitHub), and not a
+    /// repository's traffic refused for push access, which is a standing
+    /// fact about the login that a dash on the board already says — a unit
+    /// failing every day for it would teach the owner to ignore the unit.
+    pub fn fails_collection(self) -> bool {
+        !self.is_summary()
+            && !matches!(
+                self,
+                Kind::TrafficNoAccess
+                    | Kind::RegistryRefused
+                    | Kind::RegistryFailed
+                    | Kind::PackageUnmatched
+            )
     }
 
     /// `None` for a kind this build does not know (a newer build's row),
@@ -519,6 +585,12 @@ pub enum Step {
     Ci,
     /// The quick-summary pass (§5), after the collection is written.
     Summaries,
+    /// Clones and views, by the traffic API (step 5).
+    Traffic,
+    /// The package mapping: manifests read, and `packages.toml`.
+    Packages,
+    /// The package registries' download counts, after the write.
+    Registry,
 }
 
 impl Step {
@@ -530,6 +602,9 @@ impl Step {
             Step::Items => "items",
             Step::Ci => "ci",
             Step::Summaries => "summaries",
+            Step::Traffic => "traffic",
+            Step::Packages => "packages",
+            Step::Registry => "registry",
         }
     }
 }
@@ -551,6 +626,9 @@ pub enum GhError {
     Auth(String),
     RateLimited(String),
     NotFound(String),
+    /// HTTP 403 for want of push access — the traffic API's answer to a
+    /// login that can read a repository and not push to it.
+    NoAccess(String),
     OutOfTime,
     /// The answer passed [`ANSWER_BYTES_MAX`] (the cap it passed): refused
     /// whole, never read cut short.
@@ -568,6 +646,11 @@ impl GhError {
             // a failure of that call; `collect` turns the repository lookups'
             // into `Vanished` itself.
             GhError::NotFound(d) => (Kind::Failed, d.clone()),
+            // A push-access refusal is the traffic API's answer; from any other
+            // step it is a failure that fails the run, never a traffic finding
+            // the owner is told to read past (review of #912).
+            GhError::NoAccess(d) if step == Step::Traffic => (Kind::TrafficNoAccess, d.clone()),
+            GhError::NoAccess(d) => (Kind::Failed, d.clone()),
             GhError::OutOfTime => (
                 Kind::OutOfTime,
                 format!(
@@ -657,6 +740,11 @@ fn classify(ran: &Ran) -> GhError {
         GhError::Auth(detail)
     } else if text.contains("rate limit") || text.contains("http 429") {
         GhError::RateLimited(detail)
+    } else if text.contains("http 403") && text.contains("push access") {
+        // "Must have push access to repository (HTTP 403)": the traffic API's
+        // refusal. Only this wording — any other 403 is a failure, as a token
+        // refused a scope is not the same finding (and not the same fix).
+        GhError::NoAccess(detail)
     } else if text.contains("http 404") {
         GhError::NotFound(detail)
     } else {
@@ -938,7 +1026,9 @@ fn batch_query(n: usize, bodies: bool) -> String {
          issues(states: OPEN, first: 100, orderBy: {{field: CREATED_AT, direction: DESC}}) {{\n    \
          totalCount pageInfo {{ hasNextPage endCursor }} nodes {{ {fields} }}\n  }}\n  \
          pullRequests(states: OPEN, first: 100, orderBy: {{field: CREATED_AT, direction: DESC}}) {{\n    \
-         totalCount pageInfo {{ hasNextPage endCursor }} nodes {{ {fields} }}\n  }}\n}}\n"
+         totalCount pageInfo {{ hasNextPage endCursor }} nodes {{ {fields} }}\n  }}\n  \
+         {releases}\n}}\n",
+        releases = usage::RELEASE_FIELDS
     ));
     q
 }
@@ -1041,6 +1131,15 @@ pub struct Collected {
     pub ci: Vec<CiRun>,
     /// Repositories whose workflow runs were read, none or many.
     pub ci_read: Vec<String>,
+    /// Traffic read or refused this run, one per repository asked (step 5).
+    pub traffic: Vec<usage::Traffic>,
+    /// Repositories whose package manifests were read this run.
+    pub scans: Vec<usage::Scan>,
+    /// The owner's corrections to the package mapping (`packages.toml`).
+    /// `None` when the file is there and cannot be used: the mapping is then
+    /// left as the last run that could read it wrote it, never rebuilt
+    /// without the owner's corrections.
+    pub package_rules: Option<Vec<usage::PackageRule>>,
     pub problems: Vec<Problem>,
     pub rate_before: Option<Rate>,
     pub rate_after: Option<Rate>,
@@ -1057,6 +1156,9 @@ impl Collected {
             repos: Vec::new(),
             ci: Vec::new(),
             ci_read: Vec::new(),
+            traffic: Vec::new(),
+            scans: Vec::new(),
+            package_rules: Some(Vec::new()),
             problems: Vec::new(),
             rate_before: None,
             rate_after: None,
@@ -1069,7 +1171,7 @@ impl Collected {
         let troubled: BTreeSet<&str> = self
             .problems
             .iter()
-            .filter(|p| !p.kind.is_summary())
+            .filter(|p| p.kind.fails_collection())
             .filter_map(|p| p.repo.as_deref())
             .collect();
         let ci: BTreeSet<&str> = self.ci_read.iter().map(String::as_str).collect();
@@ -1087,9 +1189,17 @@ fn prior_inventory(db: &Path) -> Vec<(Repo, bool)> {
     else {
         return Vec::new();
     };
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT repo, owner, name, fork, archived, private, default_branch, pushed_at, listed, selected FROM inventory",
-    ) else {
+    // A store from before step 5 has no `push` column, and the run that
+    // adds it reads this first: unknown for every row, never an empty prior
+    // (which would lose the fallback selection and every `vanished`).
+    let push = if has_column(&conn, "inventory", "push").unwrap_or(false) {
+        "push"
+    } else {
+        "NULL"
+    };
+    let Ok(mut stmt) = conn.prepare(&format!(
+        "SELECT repo, owner, name, fork, archived, private, default_branch, pushed_at, listed, selected, {push} FROM inventory",
+    )) else {
         return Vec::new();
     };
     stmt.query_map([], |r| {
@@ -1104,6 +1214,7 @@ fn prior_inventory(db: &Path) -> Vec<(Repo, bool)> {
                 default_branch: r.get(6)?,
                 pushed_at: r.get(7)?,
                 listed: r.get(8)?,
+                push: r.get(10)?,
             },
             r.get::<_, bool>(9)?,
         ))
@@ -1190,6 +1301,22 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
             Selection::default()
         }
     };
+
+    // The owner's corrections to the package mapping: read now, so a file
+    // that cannot be used is logged whatever else the run reaches.
+    match usage::read_packages(&usage::packages_path(home)) {
+        usage::PackagesRead::Absent => c.package_rules = Some(Vec::new()),
+        usage::PackagesRead::Read(rules) => c.package_rules = Some(rules),
+        usage::PackagesRead::Invalid(why) => {
+            c.package_rules = None;
+            c.problems.push(Problem {
+                kind: Kind::BadPackages,
+                step: Step::Packages,
+                repo: None,
+                detail: format!("{why}; the package mapping is kept as it was"),
+            });
+        }
+    }
 
     // The first call finds a missing `gh` and a missing login before any
     // other is made, and reads the quota the run then spends.
@@ -1331,6 +1458,29 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
                 .collect(),
         );
     }
+    // A package line naming a repository the collector does not see does
+    // nothing — said, never dropped in silence. Only when the inventory is
+    // known: with no listing and no earlier one, every line would read as
+    // unmatched.
+    if listed || !prior.is_empty() {
+        let mut known: BTreeSet<String> = repos.keys().cloned().collect();
+        known.extend(usage::detected_repos(&db_path(home)));
+        for rule in c.package_rules.iter().flatten() {
+            if !known.contains(&rule.repo.to_ascii_lowercase()) {
+                c.problems.push(Problem {
+                    kind: Kind::PackageUnmatched,
+                    step: Step::Packages,
+                    repo: Some(rule.repo.clone()),
+                    detail: format!(
+                        "packages.toml's line for {:?} ({}) names a repository the collector \
+                         does not see; the correction does nothing",
+                        rule.repo,
+                        rule.registry.as_str()
+                    ),
+                });
+            }
+        }
+    }
 
     // ---- items and counts, by GraphQL, a batch per owner ----
     let mut by_owner: BTreeMap<String, Vec<&Repo>> = BTreeMap::new();
@@ -1340,6 +1490,9 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
             .or_default()
             .push(r);
     }
+    // Whether GitHub refused GraphQL for quota: the package scan, also
+    // GraphQL, does not spend it further.
+    let mut graphql_limited = false;
     'graphql: for chunk in by_owner.values().flat_map(|rs| rs.chunks(BATCH)) {
         let vars: Vec<(String, String)> = chunk
             .iter()
@@ -1376,6 +1529,7 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
                 }
                 GhError::RateLimited(_) => {
                     c.problems.push(e.problem(Step::Items, None));
+                    graphql_limited = true;
                     break 'graphql;
                 }
                 _ => {
@@ -1434,6 +1588,7 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
                         // spending it further is how a secondary limit trips
                         // (review of #898).
                         if limited {
+                            graphql_limited = true;
                             break 'graphql;
                         }
                     }
@@ -1461,6 +1616,7 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
             }
         }
         if limited {
+            graphql_limited = true;
             break 'graphql;
         }
     }
@@ -1513,8 +1669,12 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
                     e,
                     GhError::Auth(_) | GhError::Missing(_) | GhError::OutOfTime
                 );
-                rest_limited = matches!(e, GhError::RateLimited(_));
-                let repo = (!rest_limited).then_some(r.full_name.as_str());
+                // Once limited, limited for the run: a later repository's
+                // other failure must not clear it, because the traffic step
+                // reads it (review of #912).
+                let limited = matches!(e, GhError::RateLimited(_));
+                rest_limited |= limited;
+                let repo = (!limited).then_some(r.full_name.as_str());
                 c.problems.push(e.problem(Step::Ci, repo));
                 if stop {
                     return;
@@ -1523,7 +1683,38 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
         }
     }
 
+    // ---- usage (step 5): traffic by REST, package manifests by GraphQL ----
+    // Not a repository this run already found gone: asking again is a call
+    // spent on a known answer, and a second finding for one fact.
+    let gone: BTreeSet<String> = c
+        .problems
+        .iter()
+        .filter(|p| p.kind == Kind::Vanished)
+        .filter_map(|p| p.repo.as_deref().map(str::to_ascii_lowercase))
+        .collect();
+    let present: Vec<Repo> = selected
+        .iter()
+        .filter(|r| !gone.contains(&r.full_name.to_ascii_lowercase()))
+        .cloned()
+        .collect();
+    let db = db_path(home);
+    if !rest_limited && usage::traffic_step(gh, &db, &present, now, c) == Flow::Stop {
+        return;
+    }
+    if !graphql_limited && usage::scan_step(gh, &db, &present, now, c) == Flow::Stop {
+        return;
+    }
+
     c.rate_after = gh.rate().ok();
+}
+
+/// Whether a step lets the run go on. `Stop` is for what ends every later
+/// call too — no `gh`, no login, the budget spent — and the problem saying
+/// which is already logged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Flow {
+    Go,
+    Stop,
 }
 
 /// A repository's GraphQL object, with any further pages of its issues and
@@ -1601,6 +1792,7 @@ fn repo_items(gh: &Gh, r: &Repo, d: &Value) -> Result<(RepoItems, Option<usize>)
             counts,
             items,
             complete,
+            releases: usage::parse_releases(d),
         },
         unread,
     ))
@@ -1652,7 +1844,7 @@ CREATE TABLE IF NOT EXISTS inventory (
   repo TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL,
   fork INTEGER NOT NULL, archived INTEGER NOT NULL, private INTEGER NOT NULL,
   default_branch TEXT, pushed_at TEXT,
-  listed INTEGER NOT NULL, selected INTEGER NOT NULL, seen_at TEXT NOT NULL);
+  listed INTEGER NOT NULL, selected INTEGER NOT NULL, seen_at TEXT NOT NULL, push INTEGER);
 CREATE TABLE IF NOT EXISTS ci_runs (
   id INTEGER PRIMARY KEY, repo TEXT NOT NULL, workflow TEXT, workflow_id INTEGER,
   run_number INTEGER, attempt INTEGER, event TEXT, status TEXT, conclusion TEXT,
@@ -1680,6 +1872,36 @@ CREATE TABLE IF NOT EXISTS collect_log (
   core_used INTEGER, core_remaining INTEGER, graphql_used INTEGER, graphql_remaining INTEGER,
   summarised INTEGER, summary_refused INTEGER, summary_failed INTEGER, summary_deferred INTEGER);
 CREATE INDEX IF NOT EXISTS collect_log_run ON collect_log (run);
+CREATE TABLE IF NOT EXISTS traffic (
+  repo TEXT NOT NULL, day TEXT NOT NULL,
+  clones INTEGER, clone_uniques INTEGER, views INTEGER, view_uniques INTEGER, at TEXT NOT NULL,
+  PRIMARY KEY (repo, day));
+CREATE TABLE IF NOT EXISTS traffic_access (
+  repo TEXT PRIMARY KEY, state TEXT NOT NULL, checked_at TEXT NOT NULL, detail TEXT,
+  window_clones INTEGER, window_clone_uniques INTEGER, window_views INTEGER, window_view_uniques INTEGER);
+CREATE TABLE IF NOT EXISTS releases (
+  repo TEXT NOT NULL, day TEXT NOT NULL, asset_id INTEGER NOT NULL,
+  release_id INTEGER, tag TEXT, asset TEXT NOT NULL, downloads INTEGER, at TEXT NOT NULL,
+  PRIMARY KEY (repo, day, asset_id));
+CREATE TABLE IF NOT EXISTS release_reads (
+  repo TEXT NOT NULL, day TEXT NOT NULL, releases INTEGER, assets INTEGER NOT NULL,
+  complete INTEGER NOT NULL, at TEXT NOT NULL,
+  PRIMARY KEY (repo, day));
+CREATE TABLE IF NOT EXISTS package_scans (
+  repo TEXT PRIMARY KEY, at TEXT NOT NULL, pushed_at TEXT, found INTEGER NOT NULL, notes TEXT);
+CREATE TABLE IF NOT EXISTS package_detected (
+  repo TEXT NOT NULL, registry TEXT NOT NULL, name TEXT NOT NULL, manifest TEXT NOT NULL,
+  at TEXT NOT NULL, PRIMARY KEY (repo, registry));
+CREATE TABLE IF NOT EXISTS packages (
+  repo TEXT NOT NULL, registry TEXT NOT NULL, name TEXT, source TEXT NOT NULL,
+  manifest TEXT, detected_name TEXT, at TEXT NOT NULL,
+  PRIMARY KEY (repo, registry));
+CREATE TABLE IF NOT EXISTS registry_daily (
+  registry TEXT NOT NULL, name TEXT NOT NULL, day TEXT NOT NULL, downloads INTEGER NOT NULL,
+  at TEXT NOT NULL, PRIMARY KEY (registry, name, day));
+CREATE TABLE IF NOT EXISTS registry_checks (
+  registry TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL, at TEXT NOT NULL,
+  PRIMARY KEY (registry, name));
 ";
 
 /// Columns added to a table after its first release, as `(table, column,
@@ -1687,8 +1909,9 @@ CREATE INDEX IF NOT EXISTS collect_log_run ON collect_log (run);
 /// store and does nothing to an old one, so [`open_store`] adds each that a
 /// store lacks — and a reader asks [`has_column`] before reading one, because
 /// a store the new collector has not written yet does not have it.
-const ADDED: [(&str, &str, &str); 5] = [
+const ADDED: [(&str, &str, &str); 6] = [
     ("items", "body_hash", "TEXT"),
+    ("inventory", "push", "INTEGER"),
     ("collect_log", "summarised", "INTEGER"),
     ("collect_log", "summary_refused", "INTEGER"),
     ("collect_log", "summary_failed", "INTEGER"),
@@ -1734,8 +1957,8 @@ pub fn record(db: &Path, c: &Collected) -> Result<()> {
         tx.execute("DELETE FROM inventory", [])?;
         for (r, selected) in inventory {
             tx.execute(
-                "INSERT INTO inventory (repo, owner, name, fork, archived, private, default_branch, pushed_at, listed, selected, seen_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT INTO inventory (repo, owner, name, fork, archived, private, default_branch, pushed_at, listed, selected, seen_at, push)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     r.full_name,
                     r.owner,
@@ -1747,7 +1970,8 @@ pub fn record(db: &Path, c: &Collected) -> Result<()> {
                     r.pushed_at,
                     r.listed,
                     selected,
-                    run
+                    run,
+                    r.push
                 ],
             )?;
         }
@@ -1813,6 +2037,9 @@ pub fn record(db: &Path, c: &Collected) -> Result<()> {
         }
     }
 
+    // Usage (step 5): traffic, releases, the package mapping.
+    usage::record(&tx, c, &run, &day)?;
+
     for w in &c.ci {
         tx.execute(
             "INSERT INTO ci_runs (id, repo, workflow, workflow_id, run_number, attempt, event, status, conclusion, head_sha, branch, created_at, started_at, updated_at, seen_at)
@@ -1861,6 +2088,17 @@ pub fn record(db: &Path, c: &Collected) -> Result<()> {
         "DELETE FROM collect_log WHERE run < ?1",
         params![ts(c.started - Duration::days(LOG_KEEP_DAYS))],
     )?;
+    // The samples and the record of each day's read go together, or a day
+    // kept in one and pruned from the other draws a dash beside "every
+    // release" (review of #912).
+    for table in ["releases", "release_reads"] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE day < ?1"),
+            params![(c.started - Duration::days(RELEASE_KEEP_DAYS))
+                .format("%Y-%m-%d")
+                .to_string()],
+        )?;
+    }
 
     for p in &c.problems {
         tx.execute(
@@ -2040,7 +2278,9 @@ pub fn read_log(db: &Path, vanished_within: Duration, now: DateTime<Utc>) -> Res
     })
 }
 
+pub mod registry;
 pub mod summary;
+pub mod usage;
 
 #[cfg(test)]
 mod tests;

@@ -144,6 +144,7 @@ fn run_of(at: DateTime<Utc>, items: Vec<Item>) -> Collected {
         counts: Counts::default(),
         items,
         complete: true,
+        releases: None,
     });
     c.selected = Some(1);
     c

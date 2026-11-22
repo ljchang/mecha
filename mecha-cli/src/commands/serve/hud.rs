@@ -714,6 +714,7 @@ mod tests {
             default_branch: Some("main".into()),
             pushed_at: None,
             listed: true,
+            push: None,
         };
         let mut c = github::Collected::new(Utc::now());
         c.inventory = Some(vec![(repo("tool-a"), true), (repo("tool-b"), false)]);

@@ -7,7 +7,7 @@ contributors, each with a short summary and a way to open it), and how much
 each repository is **used** — fed by a collector that runs with no model
 holding a credential, and drawn by the HUD.
 
-**Partly built** — steps 1 (the collector, #894) and 2 (the board, #902) are merged, step 3 (the typed reference, #908) is merged, step 4 (the summaries) is this change, and §7 tracks the rest. It extends [`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md)
+**Partly built** — steps 1 (the collector, #894) and 2 (the board, #902) are merged, step 3 (the typed reference, #908) and step 4 (the summaries, #909) are merged, step 5 (usage) is this change less conda and container counts (§7.2), and §7 tracks the rest. It extends [`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md)
 and does not restate it; where the two disagree about the HUD, that file wins
 until a ruling here amends it, and §0 says which do. It is the first
 integration with a service that is neither mail nor documents, and it is
@@ -246,7 +246,7 @@ Each step is useful alone and is its own pull request.
 | 2 | The board, installed: views 1 and 2 without summaries or links — `scripts/hud/github/` | the owner opens it and it is right about one known red repository |
 | 3 ✓ | The typed reference (§4): spec gate, renderer and serve-side check — *built 2026-11-22, §7.1* | the spec gate refuses an unknown `ref` and an unknown key beside the three; a row naming a repository outside inventory ∩ selection, or `..` as a name, renders no anchor; `hud.mjs` fails on a second link sink |
 | 4 | Summaries (§5) — **built** (below) | an issue whose body is an instruction to the reader produces a summary and nothing else; unchanged bodies are not re-summarised |
-| 5 | `traffic`, `releases`, view 3; then the package mapping and registry counts | totals carry their since-date; a repository without push access shows a dash |
+| 5 ✓ | `traffic`, `releases`, view 3; then the package mapping and registry counts — *built 2026-11-22 but for conda and container counts, §7.2* | totals carry their since-date; a repository without push access shows a dash |
 | 6 | The picker page (G3) | select-all on an owner writes the file the collector then obeys |
 
 **Step 4, as built** (`github/summary.rs`, `mecha github collect`). The
@@ -332,6 +332,99 @@ It is an optional feature, so step 1 starts at `ARCHITECTURE.md` §Features →
 - **The shipped board's** New table has the reference in place of its
   `number` column, and `new_items` selects `i.name` for it. A board
   installed before this keeps its old files until the owner reinstalls it.
+
+### 7.2 Step 5: what was built (2026-11-22)
+
+`github/usage.rs` (traffic, releases, the mapping), `github/registry.rs`
+(the counts), and the board's `usage` and `packages` loaders.
+
+- **Traffic** is two REST calls a repository (`traffic/clones`,
+  `traffic/views`), upserted per day into `traffic` and kept for good, so
+  GitHub's fourteen days accumulate from the first run on. A day the answer
+  listed takes the newest number. A day of its window it did not list is a
+  zero, because the answer covered it, but is never written over a number an
+  earlier answer gave. A day no answer covered has no row. The board's total
+  runs from the first day read (`clones_since`) and counts the uncovered days
+  as `missing_days`, never as zeros. At most `TRAFFIC_PER_RUN` (150)
+  repositories are read a run, the never-read and then the longest-unread
+  first, so a selection of four hundred is read every three runs, inside the
+  window.
+- **Push access** comes from the REST `permissions.push` that the login's
+  listing already carries (`inventory.push`, a column added in place). A
+  repository it says "no" for is not asked. One GitHub refuses anyway
+  (`Must have push access … (HTTP 403)`, `GhError::NoAccess`) logs
+  `traffic_no_access`, a refusal and not a failure: it neither marks the
+  repository unread nor fails the unit, and the doctor names it. Either way
+  `traffic_access.state` is `no_access` and the board shows a dash. Any other
+  403 stays a failure.
+- **Release downloads** ride the existing GraphQL batch, so they cost no new
+  call: the twenty newest releases' assets, fifty each, a row per asset per
+  day in `releases`, the day's latest answer standing for it, with a
+  `release_reads` row saying how many there were and whether that was all.
+  They are GitHub's all-time per-asset counts. Generated source archives are
+  not counted, and a repository with no asset shows a dash.
+- **Stars** are `counts`, as before; the board adds the change over thirty
+  days, a dash until a sample that old exists.
+- **The mapping** is read from each repository's own manifests, in one
+  GraphQL query per ten repositories (`object(expression: "HEAD:…")`):
+  `pyproject.toml` (`[project]` or `[tool.poetry]`), else `setup.cfg`'s
+  `[metadata]`, for PyPI; `package.json` unless it is `private`, for npm;
+  `recipe/` or `conda.recipe/meta.yaml` (a literal, or `{% set name %}`) for
+  conda. `setup.py` is not read, because it is a program. Text is held in
+  memory, and only a name that passes the registry's grammar is kept,
+  canonicalised. Manifests are read again after a push to the default branch
+  or after 30 days, at most 50 repositories a run. A repository with none
+  records a scan that found none, and the board says "none found".
+- **The owner's corrections** are `~/.mecha/github/packages.toml`
+  (`[[package]] repo, registry, name`, or `none = true`;
+  `deny_unknown_fields`), which the picker (step 6) will write and the
+  collector only reads. A line decides its `(repo, registry)` either way, and
+  the detected name stays beside it (`packages.detected_name`) for the
+  picker. A file that cannot be used logs `bad_packages` and leaves the
+  mapping as the last run that could read it wrote it. A line naming a
+  repository in no inventory and no manifest read is not written and logs
+  `package_unmatched`, which has its own doctor finding and fails nothing,
+  since a repository deselected or renamed later leaves such a line behind.
+- **Registry counts** are a pass after the write, like the summaries:
+  pypistats.org for PyPI (PyPI's own JSON API no longer reports downloads)
+  and npm's downloads API, a month of daily counts per name into
+  `registry_daily`, kept for good. It is a fixed fetch with no model and no
+  credential: the collector has no tool surface, the hosts are constants,
+  the name passes the grammar again before it goes into the path, and
+  redirects are not followed. At most 60 names are asked within
+  `registry::BUDGET` (60 s), the longest-unchecked first. A 429 or 403 is
+  `registry_refused` and stops that registry for the run; no answer, a server
+  error or an answer that does not parse is `registry_failed`; a 404 is an
+  answer (`not_found`), shown on the board and not logged. Neither fails the
+  unit, and `--no-registries` skips the pass.
+- **The budget**: `RUN_BUDGET` (8 min), the registries' minute, the
+  summaries' 5 min and a minute for the writes make the unit's 900 s, held by
+  `the_budgets_fit_inside_the_units_start_timeout`. The traffic and manifest
+  calls are inside `RUN_BUDGET`, and their quota is on the `finished` row.
+- **The board** has two tables over `usage` (clones and views; downloads and
+  stars) and one over `packages`. Each figure has a thirty-day strip drawn in
+  its cell as block characters, a dot for a day with no reading, because a
+  table cell holds no chart. Rows are ordered by clones. The renderer's
+  tables do not sort, so "sortable" (§6) is not met.
+
+Decisions taken in the build, open to the owner:
+
+- **A private repository's detected package name is never sent to a
+  registry**, since asking would tell a third party it exists. Only an
+  owner-set name is asked about.
+- **Unique cloners over the whole history cannot be counted.** GitHub gives
+  them per day and per fourteen days, so the board shows each day's figure
+  summed (`unique_cloner_days`, named for what it is) beside GitHub's
+  fourteen-day figure.
+- The per-run caps: 150 traffic repositories, 50 manifest reads, 60 registry
+  names.
+- The zero-fill of an answered window's unlisted days assumes GitHub's
+  window is the fourteen days ending today. That is unmeasured until the
+  first real run, and its `traffic` rows are the first thing to check.
+
+**Not built:** conda download counts (names are detected and mapped, and
+shown "not counted yet"; anaconda.org's API needs a channel per name),
+container pulls, and click-to-sort in the table renderer.
 
 ## 8. Deliberately not in scope
 

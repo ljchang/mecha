@@ -1,7 +1,7 @@
 {
   "version": 1,
   "title": "GitHub",
-  "datasets": ["headline", "failing_now", "recent_runs", "new_items"],
+  "datasets": ["headline", "failing_now", "recent_runs", "new_items", "usage", "packages"],
   "filters": [
     {"id": "owner", "label": "Owner", "dataset": "new_items", "field": "owner"}
   ],
@@ -33,6 +33,17 @@
     {"type": "table", "title": "New: open issues and outside pull requests", "dataset": "new_items",
      "columns": ["repo", "kind", {"ref": "github", "owner": "owner", "repo": "name", "number": "number"},
                  "title", "about", "summary", "author", "age_days", "comments"], "span": 4},
+    {"type": "table", "title": "Use: clones and views", "dataset": "usage",
+     "columns": ["repo", "clones", "clones_since", "clones_trend", "unique_cloner_days", "cloners_14d",
+                 "views", "missing_days", "traffic"], "span": 4},
+    {"type": "table", "title": "Use: downloads and stars", "dataset": "usage",
+     "columns": ["repo", "release_downloads", "releases_trend", "release_note", "stars", "stars_30d",
+                 "stars_trend", "packages", "package_downloads_30d", "package_trend"], "span": 4},
+    {"type": "table", "title": "Packages counted", "dataset": "packages",
+     "columns": ["repo", "registry", "name", "source", "detected_name", "status", "downloads_30d",
+                 "downloads_since"], "span": 4},
+    {"type": "text", "span": 4,
+     "markdown": "Use. A clone is not an install: CI, mirrors and bots clone, and the column counts them all. GitHub keeps traffic for fourteen days and shows it only to accounts that can push, so each total runs from the day the collector first read it (clones since), days no read covered are missing and not counted, and a repository the login cannot push to shows a dash, never zero. Unique cloner-days add up each day's unique cloners; GitHub gives no count of unique cloners over a longer span. Release downloads are GitHub's all-time counts for uploaded assets of the newest twenty releases, sampled daily; generated source archives are not counted. Package downloads are the registry's own (PyPI through pypistats.org, npm's downloads API) for the name the Packages table shows, over the last thirty days; correct a wrong name in ~/.mecha/github/packages.toml. Each strip is the last thirty days, oldest on the left; a dot is a day with no reading."},
     {"type": "text", "span": 4,
      "markdown": "Collected once a day (06:40 Eastern) through your own `gh` login; the headline's dataset carries when the collector last finished. Red means the latest completed run of a workflow on the default branch failed; Dependabot's update runs are not counted. New lists what is open now, newest 500 — an issue opened and closed within a day is never seen. The Owner filter narrows the New table only. Titles are the authors' own text. A summary and its kind (about) are a local model's reading of the body, made by the collector in a pass with no tools, never at refresh: model prose about a stranger's words, to be read as that. Where there is none the column says why."}
   ]

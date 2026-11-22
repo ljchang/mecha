@@ -1,8 +1,9 @@
 # The GitHub board — a HUD draft
 
-Steps 2, 3 and 4 of `docs/GITHUB-DASHBOARD-DESIGN.md` §7: views 1 and 2
+Steps 2 to 5 of `docs/GITHUB-DASHBOARD-DESIGN.md` §7: views 1 and 2
 (failing now, and new issues and outside pull requests), with the headline
-counts. The New table's `GitHub` column is the typed reference (§4): on the
+counts, and view 3 (use: clones, views, release downloads, stars and package
+downloads, each with a thirty-day strip). The New table's `GitHub` column is the typed reference (§4): on the
 tailnet board it opens the issue, but only for a repository that is in the
 collector's inventory and in `repos.toml`; a published copy shows it as text.
 Its `about` and `summary` columns are step 4's summaries, which the
@@ -38,6 +39,30 @@ and open `#hud/github` in the web app. A board installed from here is the
 owner's from then on (`~/.mecha/hud/boards/github/`); a later revision of this
 draft reaches it only through another install (or `mecha hud accept` of a
 proposal), never by itself.
+
+**Use.** A clone is not an install, and every figure is named for what it
+counts. Traffic totals run from the day the collector first read the
+repository (`clones_since`). Days no read covered are `missing_days`, not
+zeros. A repository the login cannot push to shows a dash, because GitHub
+shows traffic only to accounts that can. Package names come from each
+repository's own `pyproject.toml`, `setup.cfg`, `package.json` or conda
+recipe, and the Packages table shows which name is counted and where it came
+from. To correct one, write `~/.mecha/github/packages.toml`:
+
+```toml
+[[package]]
+repo = "example-lab/tool-a"
+registry = "pypi"          # pypi, npm or conda
+name = "tool-a-py"
+
+[[package]]
+repo = "example-lab/tool-b"
+registry = "npm"
+none = true                # publishes nothing there
+```
+
+A name detected in a private repository is never sent to a registry; a name
+written here is.
 
 **What "red" means.** The latest completed run of a workflow (by id, so a
 rename stays one workflow) on the default branch failed, timed out or never
