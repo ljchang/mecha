@@ -165,7 +165,7 @@ Measured on the GB10 only, not on a Mac:
 
 | id | files | tiers | ctx × slots | draft |
 |---|---|---|---|---|
-| `inkling-2-mini` (2026-11-22) | unsloth's `Mainline_Support` UD-Q4_K_XL + F16 projector, one revision | 32, 64, 128 | 65536 × 1 at 32 and 64, 196608 × 1 at 128 | none |
+| `inkling-2-mini` (2026-11-22) | unsloth's `Mainline_Support` UD-Q4_K_XL + BF16 projector, one revision | 32, 64, 128 | 73728 × 1 at 32, 98304 × 1 at 64, 245760 × 1 at 128 | none |
 
 **Inkling 2 Mini** needs engine b12611 or newer: that is the first release
 with the `inkling2_loop` fix (llama.cpp #32704; without it the output is

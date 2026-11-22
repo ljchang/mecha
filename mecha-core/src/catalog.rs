@@ -106,27 +106,28 @@ const GEMMA_GEOMETRY: &[TierGeometry] = &[
     },
 ];
 
-/// Inkling 2 Mini's: 192k at 128 GB and 64k at 64 and 32 GB, the largest
-/// windows within the fit rule. The window is dear for an MoE this size:
-/// llama.cpp gives each of the 48 layer passes (24 layers, the middle 13 run
-/// three times) a full-length cache, its sliding-window layers included —
-/// `kv_kib_per_token` — so 256k at 128 GB would ask 50,958 MiB against a
-/// budget of 48,765. Trained to 1M; the window grows if llama.cpp windows
-/// those layers.
+/// Inkling 2 Mini's: the largest windows, in 8k steps, within the fit rule —
+/// 240k at 128 GB, 96k at 64 GB, 72k at 32 GB. The window is dear for an MoE
+/// this size: llama.cpp gives each of the 48 layer passes (24 layers, the 12
+/// of `loop_config`'s core 6..18 run three times) a full-length cache, its
+/// sliding-window layers included — `kv_kib_per_token` — so 256k at 128 GB
+/// would ask 50,961 MiB against a budget of 49,783 (production's 45,258, to
+/// a tenth). Trained to 1M; the window grows if llama.cpp windows those
+/// layers.
 const INKLING_GEOMETRY: &[TierGeometry] = &[
     TierGeometry {
         tier_gb: 32,
-        ctx: 65_536,
+        ctx: 73_728,
         slots: 1,
     },
     TierGeometry {
         tier_gb: 64,
-        ctx: 65_536,
+        ctx: 98_304,
         slots: 1,
     },
     TierGeometry {
         tier_gb: 128,
-        ctx: 196_608,
+        ctx: 245_760,
         slots: 1,
     },
 ];
@@ -411,13 +412,17 @@ pub const CATALOG: &[Entry] = &[
                 },
                 role: Role::Weights,
             },
+            // BF16, the one `start-router.sh`'s `hub_mmproj` (`mmproj_in`)
+            // picks when the revision ships BF16 and F16 side by side, as
+            // this one does: pin the other and the router serves one
+            // projector while `present()` checks another.
             Pin {
                 repo: "unsloth/Inkling-2-Mini-GGUF",
                 revision: "ae9327c5fbc7333116ba32eee78bb5d2bbefae4f",
                 file: HubFile {
-                    path: "mmproj-F16.gguf",
-                    sha256: "3bff75ffeb2d6e0371ba7bd42e30d26a7d98aea681fa44b03b5a20891cfa2c5f",
-                    bytes: 639_348_160,
+                    path: "mmproj-BF16.gguf",
+                    sha256: "2c165c78790e78a3f45a2d1e9e931083e52ee69d45ff2a0dc9c281fdf1a666e7",
+                    bytes: 641_805_760,
                 },
                 role: Role::Projector,
             },
@@ -430,7 +435,23 @@ pub const CATALOG: &[Entry] = &[
         // of two (GB10, 2026-11-21 and -22). The template's own default
         // effort (0.9, "high") stands; a request sets
         // `chat_template_kwargs.reasoning_effort`.
-        lines: &["temp = 1.0", "top-p = 1.0", "top-k = 0", "min-p = 0.0"],
+        //
+        // `reasoning-preserve` is set, never left to the build, as for every
+        // Qwen preset (`start-router.sh`'s `qwen_sampling`): the template
+        // has no rule of its own and renders every `reasoning_content` it is
+        // handed, so the flag alone decides whether earlier thinking stays in
+        // the prompt — and llama.cpp flipped its default once already. Kept,
+        // so each prompt is a prefix of the next. No `reasoning-budget`:
+        // whether the build's forced end of thinking lands in Inkling's
+        // `<|content_thinking|>` format is not measured. No
+        // `image-min-tokens`: the floor is Qwen-VL's grounding fix.
+        lines: &[
+            "temp = 1.0",
+            "top-p = 1.0",
+            "top-k = 0",
+            "min-p = 0.0",
+            "reasoning-preserve = true",
+        ],
         temperature: Some(1.0),
         // Measured on the GB10 (2026-11-21), weights and projector loaded:
         // 21,924 MiB of GPU at 32k, 51,244 MiB at 256k — 29,320 MiB for
@@ -980,11 +1001,31 @@ mod tests {
             mmproj: Some("/m/p.gguf".into()),
             draft: None,
         };
-        let ours = section_text(entry("inkling-2-mini").unwrap(), 128, &p).unwrap();
+        let e = entry("inkling-2-mini").unwrap();
+        let ours = section_text(e, 128, &p).unwrap();
         assert_eq!(settings(body), settings(&ours));
         assert!(
             settings(body).contains_key("ctx-size"),
             "the comparison is not vacuous"
+        );
+        // The paths themselves: the script looks up the pinned weights by
+        // name, and its projector is `mmproj_in`'s first choice — which must
+        // be the pinned one, since this revision ships two.
+        let pinned = |r: Role| e.pins.iter().find(|p| p.role == r).unwrap().file.path;
+        assert!(
+            script.contains(&format!("hub_file \"$R\" {}", pinned(Role::Weights))),
+            "the script serves other weights"
+        );
+        let mmproj = include_str!("../../scripts/mmproj.sh");
+        let first = mmproj
+            .split_once("for p in \"${1%/}/")
+            .expect("mmproj_in's list moved")
+            .1;
+        let first = &first[..first.find('"').unwrap()];
+        assert_eq!(
+            first,
+            pinned(Role::Projector),
+            "the router would serve another projector"
         );
     }
 
