@@ -2187,6 +2187,90 @@ export const personaFiles = {
   },
 };
 
+// --- the GitHub picker -----------------------------------------------------
+
+// `/api/github/picker`: Settings → GitHub, shaped as `github::picker::view`
+// serialises it. A made-up lab and one other owner; one fork, one archived,
+// one repository whose next collect differs from its last, and a mapping in
+// each of its states.
+const ghPackages = (pypi, npm = { state: 'none_found' }, conda = { state: 'none_found' }) =>
+  [
+    ['pypi', pypi],
+    ['npm', npm],
+    ['conda', conda],
+  ].map(([registry, p]) => ({ registry, name: null, detected: null, manifest: null, ...p }));
+const ghRepo = (owner, name, extra = {}) => ({
+  full_name: `${owner}/${name}`,
+  name,
+  fork: false,
+  archived: false,
+  private: false,
+  pushed_at: '2031-04-12T09:30:00Z',
+  listed: true,
+  collected: true,
+  included: true,
+  by_owner: true,
+  line: null,
+  packages: ghPackages({ state: 'none_found' }),
+  ...extra,
+});
+export const githubPicker = {
+  selection: { path: '~/.mecha/github/repos.toml', state: 'read', digest: 'demo-selection' },
+  packages: { path: '~/.mecha/github/packages.toml', state: 'read', digest: 'demo-packages' },
+  store: {
+    state: 'read',
+    path: '~/.mecha/github/github.db',
+    listed_at: '2031-04-20T10:40:12.004Z',
+    last_collect: { started: '2031-04-20T10:40:12.004Z', finished: '2031-04-20T10:44:51.330Z' },
+  },
+  owners: [
+    {
+      login: 'example-lab',
+      line: { include: 'all', forks: false, archived: false },
+      repos: [
+        ghRepo('example-lab', 'tool-a', {
+          packages: ghPackages(
+            { state: 'detected', name: 'tool-a', detected: 'tool-a', manifest: 'pyproject.toml' },
+            { state: 'owner_none', detected: 'tool-a-web', manifest: 'package.json' },
+          ),
+        }),
+        ghRepo('example-lab', 'tool-b', {
+          packages: ghPackages({ state: 'owner', name: 'tool-b-py', detected: 'toolb', manifest: 'setup.cfg' }),
+        }),
+        ghRepo('example-lab', 'course-notes', { included: false, line: false, collected: true }),
+        ghRepo('example-lab', 'fork-of-upstream', { fork: true, included: false, by_owner: false, collected: false }),
+        ghRepo('example-lab', 'old-site', {
+          archived: true,
+          included: false,
+          by_owner: false,
+          collected: false,
+          pushed_at: '2027-02-01T00:00:00Z',
+          packages: ghPackages({ state: 'not_scanned' }, { state: 'not_scanned' }, { state: 'not_scanned' }),
+        }),
+      ],
+      unseen: [],
+    },
+    {
+      login: 'example-collab',
+      line: null,
+      repos: [
+        ghRepo('example-collab', 'shared-data', {
+          included: true,
+          by_owner: false,
+          line: true,
+          collected: false,
+          private: true,
+          packages: ghPackages({ state: 'not_scanned' }, { state: 'not_scanned' }, { state: 'not_scanned' }),
+        }),
+        ghRepo('example-collab', 'website', { included: false, by_owner: false, collected: false }),
+      ],
+      unseen: [],
+    },
+  ],
+  registries: ['pypi', 'npm', 'conda'],
+  schedule: 'daily at 06:40 America/New_York',
+};
+
 // --- features ------------------------------------------------------------
 
 // `/api/features`: the registry's rows, shaped as `feature::all` serialises
@@ -2230,6 +2314,7 @@ export const features = {
     on('cloning', 'Voice cloning', '~/voices', { part_of: 'voice', requires: ['web'] }),
     on('frontdoor', 'Front door (inbound requests)', '`factory-publish` on PATH'),
     on('publishing', 'Publishing tools', '[[mcp]] `factory`', { part_of: 'frontdoor' }),
+    on('github', 'GitHub board (CI, new issues and use, collected through `gh`)', '`mecha github collect` into ~/.mecha/github/github.db'),
     {
       ...on('messages', 'Messages between sessions', null),
       state: 'off',

@@ -2069,6 +2069,15 @@ mecha github collect [--json]
   `scripts/mecha-github-collect.timer` runs it once a day, at 06:40 Eastern; how
   often is that file's setting.
 
+The web app's Settings → GitHub writes this file, and
+`~/.mecha/github/packages.toml` (package-name corrections), on your click:
+per owner, all or only those you picked (or none, confirmed), and its forks
+and archived filters; per repository,
+in or out; per repository and registry, a package name or none. It lists
+what the last collect saw, so run `collect` once first. It edits the file in
+place, so your comments stay, and refuses a save when the file changed after
+the page read it. You can also edit the file by hand:
+
 ```toml
 # ~/.mecha/github/repos.toml
 [[owner]]

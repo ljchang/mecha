@@ -391,7 +391,7 @@ pub fn apply(form: &Form, text: &str, changes: &Map<String, Json>) -> Result<Str
 /// The comment lines anywhere in `t` — above its header, above its keys,
 /// trailing its values, and in its sub-tables — for a table that is going,
 /// so its comments are handed on rather than deleted.
-fn comments_of(t: &Table) -> String {
+pub(crate) fn comments_of(t: &Table) -> String {
     fn take(out: &mut String, raw: Option<&toml_edit::RawString>) {
         for line in raw.and_then(|r| r.as_str()).unwrap_or("").lines() {
             if let Some(at) = line.find('#') {

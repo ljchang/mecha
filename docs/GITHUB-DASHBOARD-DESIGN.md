@@ -7,7 +7,7 @@ contributors, each with a short summary and a way to open it), and how much
 each repository is **used** — fed by a collector that runs with no model
 holding a credential, and drawn by the HUD.
 
-**Partly built** — steps 1 (the collector, #894) and 2 (the board, #902) are merged, step 3 (the typed reference, #908) and step 4 (the summaries, #909) are merged, step 5 (usage) is this change less conda and container counts (§7.2), and §7 tracks the rest. It extends [`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md)
+**Partly built** — steps 1 (the collector, #894) and 2 (the board, #902) are merged, step 3 (the typed reference, #908) and step 4 (the summaries, #909) are merged, step 5 (usage) is built less conda and container counts (§7.2), step 6 (the picker) is this change (§7.3), and §7 tracks the rest. It extends [`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md)
 and does not restate it; where the two disagree about the HUD, that file wins
 until a ruling here amends it, and §0 says which do. It is the first
 integration with a service that is neither mail nor documents, and it is
@@ -247,7 +247,7 @@ Each step is useful alone and is its own pull request.
 | 3 ✓ | The typed reference (§4): spec gate, renderer and serve-side check — *built 2026-11-22, §7.1* | the spec gate refuses an unknown `ref` and an unknown key beside the three; a row naming a repository outside inventory ∩ selection, or `..` as a name, renders no anchor; `hud.mjs` fails on a second link sink |
 | 4 | Summaries (§5) — **built** (below) | an issue whose body is an instruction to the reader produces a summary and nothing else; unchanged bodies are not re-summarised |
 | 5 ✓ | `traffic`, `releases`, view 3; then the package mapping and registry counts — *built 2026-11-22 but for conda and container counts, §7.2* | totals carry their since-date; a repository without push access shows a dash |
-| 6 | The picker page (G3) | select-all on an owner writes the file the collector then obeys |
+| 6 ✓ | The picker page (G3) — *built 2026-11-22, §7.3* | select-all on an owner writes the file the collector then obeys |
 
 **Step 4, as built** (`github/summary.rs`, `mecha github collect`). The
 listing asks for each `body` (a scalar: no change to the batch's node
@@ -292,7 +292,8 @@ and the 5-minute budget; summary problems are logged for the doctor and do
 not make the unit fail, since the collection they follow was written whole.
 
 It is an optional feature, so step 1 starts at `ARCHITECTURE.md` §Features →
-*Adding a feature*. Until step 6 the selection file is edited by hand.
+*Adding a feature*. From step 6 the selection file is the picker's to edit
+(§7.3), and a hand edit is as good as one.
 
 ### 7.1 Step 3: what was built (2026-11-22)
 
@@ -425,6 +426,115 @@ Decisions taken in the build, open to the owner:
 **Not built:** conda download counts (names are detected and mapped, and
 shown "not counted yet"; anaconda.org's API needs a channel per name),
 container pulls, and click-to-sort in the table renderer.
+
+### 7.3 Step 6: what was built (2026-11-22)
+
+`github/picker.rs` (the read and the edit), `serve/github.rs` (three
+routes), and Settings → GitHub (`SettingsGithub.svelte`, `github-picker.js`).
+
+- **The read** (`GET /api/github/picker`) lists, per owner, every repository
+  in the collector's `inventory`: the login's own account and each
+  organisation it saw, and any owner the file names. Each row has fork,
+  archived, private, pushed-at, and whether the last collect watched it
+  (`inventory.selected`). It also has whether the file **as it reads now**
+  selects it (`Selection::selects`, the collector's own rule), what its
+  owner's line alone gives it, and its own `[[repo]]` line. The owner's-line
+  answer is `Selection::by_owner`, split out of `selects` so the two cannot
+  drift. Each registry shows a mapping: `packages.toml`'s name or `none` as
+  the file reads now, else the detected name and its manifest, else "none
+  found" for a scanned repository, else "not scanned yet". A `[[repo]]` line
+  naming a repository the inventory does not hold is listed under its owner
+  as not seen yet. The read never calls GitHub. No store, a store that cannot
+  be read, and a file that cannot be used are each a state the page says
+  (`StoreView`, `FileState`), never an empty list. A selection that cannot be
+  read shows every repository's inclusion as unknown, not unselected. The
+  last finished collect comes from `collect_log`, and the list's own age from
+  `inventory.seen_at`; the page says when the last run could not list. The
+  schedule is the shipped timer's `OnCalendar` line, read from
+  `scripts/mecha-github-collect.timer` at build time and labelled as
+  shipped.
+- **The write** (`POST …/selection`, `POST …/packages`) takes a closed set
+  of changes (`deny_unknown_fields`):
+  - `select_all`: the owner's `include = "all"`, with the owner's `[[repo]]`
+    exclusions removed, or select-all would not select all.
+  - `select_listed`: `include = "listed"`, touching no `[[repo]]` line. It
+    is the undo of `select_all`, so the owner's hand-made inclusions come
+    back rather than go (review of #913: unticking "all" used to send
+    `select_none` and delete them).
+  - `select_none`: `include = "listed"`, with the owner's `[[repo]]` lines
+    removed, inclusions too. The page offers it as its own action, and asks
+    in place first when it would remove an inclusion.
+  - `filters`: the owner's `forks` and `archived` (G4).
+  - `repo`: one repository's line, set, or removed with `null`.
+  - per `(repo, registry)`: a name, `none`, or back to `detected`.
+
+  The page asks for a repository's own line only where the wanted state
+  differs from `by_owner`, so the file holds exceptions, not restatements.
+  An owner line the page writes says `forks = false` and `archived = false`
+  out loud, as §2 asks.
+- **The owner's file stays the owner's.** Each change is set in place with
+  `toml_edit`, so comments, order and spelling survive. A table the edit
+  removes hands its comments to the next table, or to the end of the file.
+  A file the page creates begins with a header saying the picker wrote it
+  and that hand edits are kept. A file the collector cannot read, or one
+  written as an inline list, is refused (409) and left for a hand fix,
+  never replaced.
+- **Compare-and-swap.** Each save carries the digest (sha256) of the file
+  its page read, or `null` for no file. Under one process-wide lock the
+  server:
+  1. reads the file, and refuses a different digest (409, nothing written);
+  2. applies the changes;
+  3. runs **the collector's own reader** (`parse_selection`,
+     `parse_packages`) over the exact bytes that would land, and refuses
+     what it refuses (422);
+  4. puts the file in place by a temporary sibling, synced and renamed
+     (`imagelib::write_atomic_mode`), keeping the file's mode and writing a
+     new file 0600.
+
+  A save answers the page's whole read again, so what the page draws after
+  a click is what the collector will now do. Any refusal re-reads.
+- **Gating.** The routes are `Owner::Of(Feature::Github)` behind
+  `owner_guard`: the owner's login, and on each save the page's
+  `x-mecha-request` header with no cross-site `sec-fetch-site`. Nothing a
+  model or a tool can reach writes either file: no tool names them, no
+  agent path calls `picker::save_*`, and the collector only reads them.
+- **The page** is Settings → GitHub. Per owner it has a checkbox for all
+  (`select_all`, or back to `select_listed`), a separate "select none" with
+  an in-page confirm, and the owner's forks and archived filters. Per
+  repository it has a checkbox and tags: fork, archived, private, named,
+  and "added / dropped next collect" where the file now differs from what
+  the last collect did. Each repository also shows its mapping, with an
+  editor per registry. Forks and archived repositories are hidden by default
+  with a toggle (G4), but one that is selected, or that the last collect
+  watched, is never hidden, so its "dropped next collect" stays in sight. There is a search
+  box and a "pushed in the last year" filter, as §2 asks. The page says that
+  changes take effect on the next collect, and when the last one finished.
+  A finished collect that never listed (no `gh` login, say: the run stops
+  early and still writes its `finished` row) is said as such, on the page
+  and on the Settings index, never as an empty account or "0 of 0".
+- **Acceptance**: `select_all_on_an_owner_writes_the_file_the_collector_then_obeys`
+  drives `save_selection`, reads the written file with `read_selection`, runs
+  the collector against the fake `gh`, and checks the watched set and
+  `Watched`. `select_all_through_the_endpoint_writes_the_file_the_collector_obeys`
+  does the same through the route.
+
+Decisions taken in the build, open to the owner:
+
+- **The page can write the first file only once a collect has listed.**
+  With the switch on and no `repos.toml`, the feature is unready rather than
+  off: the collector lists the inventory and selects nothing, and the page
+  then lists it. With the switch off the routes answer `feature_off`, like
+  every other feature's.
+- **Owners are listed alphabetically.** The inventory does not record which
+  owner is the login's own account, so the page cannot put it first.
+- **Each click saves at once**, one save at a time, rather than a pending
+  list behind a Save button. The server's answer is then always what the
+  page shows, and nothing in the page restates the selection's rules.
+- **Select-none keeps the owner's line** as `include = "listed"` rather than
+  deleting it, and removes the owner's `[[repo]]` lines either way.
+- **The schedule shown is the shipped timer's**, not the installed unit's
+  next run. Asking `systemctl` from a settings read is the Background page's
+  job, and that page already shows the timer.
 
 ## 8. Deliberately not in scope
 

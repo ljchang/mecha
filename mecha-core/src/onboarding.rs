@@ -1101,7 +1101,8 @@ pub fn blurb(f: crate::feature::Feature) -> &'static str {
             "A board of the GitHub repositories you choose: what is failing on the default \
              branch, new issues and outside pull requests, and stars and forks by day. A timer \
              asks GitHub through your own `gh` login, which mecha never holds; no model reads \
-             any of it. You list the repositories in ~/.mecha/github/repos.toml."
+             any of it. You choose the repositories in the web app (Settings → GitHub) once \
+             a first collect has listed them, or in ~/.mecha/github/repos.toml."
         }
         // Parts are summarised under their parent and never stepped alone.
         Feature::Incognito

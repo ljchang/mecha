@@ -47,7 +47,8 @@ zeros. A repository the login cannot push to shows a dash, because GitHub
 shows traffic only to accounts that can. Package names come from each
 repository's own `pyproject.toml`, `setup.cfg`, `package.json` or conda
 recipe, and the Packages table shows which name is counted and where it came
-from. To correct one, write `~/.mecha/github/packages.toml`:
+from. To correct one, use the web app's Settings → GitHub (the picker, which
+writes `~/.mecha/github/packages.toml`), or write the file by hand:
 
 ```toml
 [[package]]

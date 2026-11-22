@@ -48,6 +48,7 @@ export const PANE_FEATURE = {
   'settings/voice': 'voice',
   'settings/images': 'image',
   'settings/loras': ['image', 'video'],
+  'settings/github': 'github',
   'library/voices': 'voice',
   // No `personas/...` rows. A personas sub is a persona's name, so such a
   // key would be the deep link to a persona so named, and would give her

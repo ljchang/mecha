@@ -229,6 +229,7 @@ export const ROUTES = [
   ['*', /^\/api\/loras\/image\/layer\//, () => new Response('the demo keeps no LoRAs', { status: 501 })],
   ['*', /^\/api\/loras\/(image|video)(\/[^/]+)?$/, () => new Response('the demo keeps no LoRAs', { status: 501 })],
   ['GET', /^\/api\/settings\/lock$/, () => fx.lockSettings],
+  ['GET', /^\/api\/github\/picker$/, () => fx.githubPicker],
   ['GET', /^\/api\/settings\/images$/, () => fx.chatImages],
 
   // Personas: their own door, as on the server (`persona_chat.rs`).
@@ -436,6 +437,7 @@ export const ROUTES = [
           'library/voices/(sample|lock)',
           'speak',
           'settings/lock',
+          'github/picker/(selection|packages)',
           'settings/images',
           'model/(use|cancel)',
           'resume',

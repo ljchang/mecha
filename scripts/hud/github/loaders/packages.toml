@@ -3,9 +3,9 @@ schedule = "15 * * * *"
 max_rows = 500
 # The package mapping, per selected repository and registry: the name counted,
 # where it came from (a manifest the collector read, or the owner's
-# packages.toml, which wins), and what the registry last said. Until the picker
-# (step 6) shows it, this table is where a wrong mapping is seen; the fix is a
-# line in ~/.mecha/github/packages.toml.
+# packages.toml, which wins), and what the registry last said. A wrong mapping
+# is corrected in the web app's Settings → GitHub (the picker, step 6), which
+# writes a line in ~/.mecha/github/packages.toml.
 #
 # Downloads are the registry's own daily counts over the last thirty days, and
 # `downloads_since` is the oldest day the store holds for the name. A name

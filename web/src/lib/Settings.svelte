@@ -7,9 +7,11 @@
   import SettingsLock from './SettingsLock.svelte';
   import SettingsImages from './SettingsImages.svelte';
   import SettingsLoras from './SettingsLoras.svelte';
+  import SettingsGithub from './SettingsGithub.svelte';
   import { autolockLine } from './autolock.js';
   import { features } from './features.svelte.js';
   import { isShown, summary } from './features.js';
+  import { indexLine } from './github-picker.js';
 
   // Settings is an index of features, not one long scroll: each row opens a
   // pane at `#settings/<pane>`, so the hash names where you are, reload
@@ -18,7 +20,7 @@
   // two-tap save and the voice pane's live microphone have no business
   // sharing a scope.
   let { initial = null, navigate, backTo } = $props();
-  const PANES = ['charter', 'learning', 'voice', 'images', 'loras', 'lock', 'features'];
+  const PANES = ['charter', 'learning', 'voice', 'images', 'loras', 'lock', 'github', 'features'];
   // Derived, never copied into state: App re-renders this with a new
   // `initial` on back/forward, and a `$state` snapshot would ignore it.
   const pane = $derived(PANES.includes(initial) ? initial : null);
@@ -30,6 +32,7 @@
     images: 'Images',
     loras: 'LoRAs',
     lock: 'Lock',
+    github: 'GitHub',
     features: 'Features',
   };
 
@@ -43,6 +46,7 @@
   let voice = $state(null);
   let images = $state(null);
   let lock = $state(null);
+  let github = $state(null);
 
   async function loadSummary() {
     try {
@@ -81,6 +85,15 @@
       lock = res.ok ? await res.json() : null;
     } catch {
       lock = null;
+    }
+    // Only while the feature shows: off, its route answers `feature_off`.
+    if (isShown(features.rows, 'github')) {
+      try {
+        const res = await fetch('/api/github/picker');
+        github = res.ok ? await res.json() : null;
+      } catch {
+        github = null;
+      }
     }
   }
 
@@ -146,6 +159,9 @@
     return { text: `locks after ${autolockLine(lock.idle_minutes)} idle` };
   });
 
+  // How many repositories the collector watches now, or why that is unknown.
+  const githubLine = $derived(indexLine(github));
+
   const ICON = {
     // Ranked lines, shortening: the charter's order is its rank.
     charter: 'M5 6h14M5 11h10M5 16h6',
@@ -159,6 +175,8 @@
     loras: 'M12 4l8 4-8 4-8-4zM4 12l8 4 8-4M4 16l8 4 8-4',
     // A padlock: the library's, which Personas share.
     lock: 'M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z',
+    // A branch: one line forking off another and joining back.
+    github: 'M7 4v16M7 8a5 5 0 005 5h3M17 13a2 2 0 110-4 2 2 0 010 4zM7 20a2 2 0 110-4',
     // Switches.
     features: 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4',
   };
@@ -190,6 +208,7 @@
         name: 'Lock',
         line: lockLine,
       },
+      isShown(features.rows, 'github') && { pane: 'github', name: 'GitHub', line: githubLine },
       { pane: 'features', name: 'Features', line: featuresLine },
     ].filter(Boolean),
   );
@@ -262,6 +281,8 @@
       <SettingsImages />
     {:else if pane === 'loras'}
       <SettingsLoras />
+    {:else if pane === 'github'}
+      <SettingsGithub />
     {:else}
       <SettingsVoice />
     {/if}

@@ -27,7 +27,8 @@
 //!   the default branch's head, held in memory, and kept only as the name it
 //!   yields (checked against the registry's grammar). The owner corrects the
 //!   mapping in `~/.mecha/github/packages.toml` ([`read_packages`]), which
-//!   the picker (step 6) will write; the collector only reads it.
+//!   the picker ([`super::picker`], step 6) writes; the collector only reads
+//!   it.
 
 use super::{
     graphql_errors, split_full_name, Collected, Flow, Gh, GhError, Kind, Problem, Repo, Step, BATCH,
@@ -753,7 +754,8 @@ pub(super) fn detected_repos(db: &Path) -> BTreeSet<String> {
 // ---- the owner's corrections ----
 
 /// `<home>/github/packages.toml` — the owner's corrections to the package
-/// mapping. The picker (step 6) writes it; the collector only reads it.
+/// mapping. The picker ([`super::picker`]) writes it; the collector only
+/// reads it.
 pub fn packages_path(home: &Path) -> PathBuf {
     super::dir(home).join("packages.toml")
 }

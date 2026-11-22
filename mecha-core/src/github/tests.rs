@@ -1713,4 +1713,5 @@ fn no_shipped_loader_compares_github_times_against_datetime() {
     }
 }
 
+mod picker_step;
 mod usage_step;
