@@ -2364,6 +2364,18 @@ impl Session {
             .collect())
     }
 
+    /// Every outcome a session recorded, folded into the episode it describes.
+    ///
+    /// `last_outcome` answers a different question — how the session *ended* —
+    /// and using it as an episode's stats is a unit mismatch: a resumed chat
+    /// records one row per run, while anything replaying the session drives
+    /// every recorded user turn and folds all of them.
+    pub fn episode_stats(path: &Path) -> Result<Option<RunStats>> {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        Ok(RunStats::fold(outcomes_in(&text)))
+    }
+
     /// The most recent outcome, without parsing the transcript that precedes
     /// it.
     ///
@@ -2380,30 +2392,11 @@ impl Session {
     ///
     /// Still one reader of the record format — this lives beside `outcomes`
     /// rather than in a caller, so a change to `Record` cannot leave a
-    /// second, private parser behind.
-    /// Every outcome a session recorded, folded into the episode it describes.
-    ///
-    /// `last_outcome` answers a different question — how the session *ended* —
-    /// and using it as an episode's stats is a unit mismatch: a resumed chat
-    /// records one row per run, while anything replaying the session drives
-    /// every recorded user turn and folds all of them.
-    pub fn episode_stats(path: &Path) -> Result<Option<RunStats>> {
-        let text =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        Ok(RunStats::fold(outcomes_in(&text)))
-    }
-
+    /// second, private parser behind; and it is
+    /// [`last_outcome_and_taint`](Self::last_outcome_and_taint)'s own read,
+    /// so the two cannot come to disagree about which outcome is last.
     pub fn last_outcome(path: &Path) -> Result<Option<RunStats>> {
-        let text =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        Ok(text
-            .lines()
-            .rev()
-            .filter(|l| !l.trim().is_empty())
-            .find_map(|l| match serde_json::from_str(l) {
-                Ok(Record::Outcome(s)) => Some(s),
-                _ => None,
-            }))
+        Ok(Self::last_outcome_and_taint(path)?.0)
     }
 
     /// [`last_outcome`](Self::last_outcome) and the conversation's recorded

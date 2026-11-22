@@ -109,20 +109,43 @@ fn list(all: bool) -> Result<()> {
         return Ok(());
     }
     for q in &items {
-        // The taint marker is not decoration. A question is composed by a
-        // model that may have been reading third-party text, so an armed
-        // snapshot means "review the question itself", not only its answer.
-        let mark = if q.taint.untrusted { " ⚠" } else { "" };
-        println!(
-            "{:<10}  {:<10}{}  {}",
-            short(&q.id),
-            q.status,
-            mark,
-            q.summary()
-        );
+        println!("{}", list_line(q));
     }
     println!("\n{} question(s)", items.len());
+    if items
+        .iter()
+        .any(|q| q.resume == mecha_core::questions::Resume::Chat)
+    {
+        println!("{WEB_ONLY}: answer it in the web app (Tasks → Waiting) — it resumes in its chat");
+    }
     Ok(())
+}
+
+/// The word a listed question carries when `questions answer` will refuse
+/// it: a `chat` question is answered in the web app, as `show` says.
+const WEB_ONLY: &str = "web";
+
+/// One question, one line of `questions list`.
+fn list_line(q: &Question) -> String {
+    // The taint marker is not decoration. A question is composed by a
+    // model that may have been reading third-party text, so an armed
+    // snapshot means "review the question itself", not only its answer.
+    let mark = if q.taint.untrusted { " ⚠" } else { "" };
+    // Said on the line, before the owner types `questions answer` and is
+    // refused: only the web app answers a chat question.
+    let web = if q.resume == mecha_core::questions::Resume::Chat {
+        format!(" {WEB_ONLY}")
+    } else {
+        String::new()
+    };
+    format!(
+        "{:<10}  {:<10}{}{}  {}",
+        short(&q.id),
+        q.status,
+        mark,
+        web,
+        q.summary()
+    )
 }
 
 fn show(id: &str) -> Result<()> {
@@ -679,5 +702,44 @@ mod tests {
             assert!(after.is_open(), "the refusal consumed the question");
             assert!(after.answer.is_none());
         }
+    }
+
+    /// `list` says which questions only the web app can answer, before the
+    /// owner types `questions answer` and is refused; a background one
+    /// carries no such word.
+    #[test]
+    fn the_list_marks_a_question_only_the_web_app_answers() {
+        let _home = crate::testenv::HomeGuard::new("questions-list-web");
+        let store = store().unwrap();
+        let chat = store
+            .park_as(
+                Resume::Chat,
+                "Which room should the review be in?",
+                vec![],
+                "20261119T070000-0a1b2c3d",
+                None,
+                None,
+                Taint::default(),
+                None,
+                None,
+            )
+            .unwrap();
+        let background = store
+            .park(
+                "Which account should the invoice go to?",
+                vec![],
+                "20261119T070000-4e5f6a7b",
+                Some("task-1".into()),
+                None,
+                Taint::default(),
+                None,
+            )
+            .unwrap();
+        let web = format!(" {WEB_ONLY} ");
+        let line = list_line(&chat);
+        assert!(line.contains(&web), "{line}");
+        assert!(line.contains("Which room"), "{line}");
+        let line = list_line(&background);
+        assert!(!line.contains(&web), "{line}");
     }
 }

@@ -953,7 +953,7 @@ async fn fire(
         None
     };
 
-    let ran = run_agent(global, t, &mut record, carried, stop).await;
+    let ran = run_agent(global, store, t, &mut record, carried, stop).await;
     if let Some(notice) = settle(t, &mut record, ran, asked_question) {
         record.notify_error = notify(t, &workspace_of(t), &notice);
     }
@@ -1184,6 +1184,7 @@ fn first_turn(prompt: &str, carried: Option<String>) -> Message {
 
 async fn run_agent(
     global: &GlobalOpts,
+    store: &TriggerStore,
     t: &Trigger,
     record: &mut RunRecord,
     carried: Option<String>,
@@ -1297,6 +1298,17 @@ async fn run_agent(
         },
     )?;
     record.session_id = Some(session.meta.id.clone());
+    // The marker `fire` wrote names this transcript now that it exists, so
+    // an answer to an *older* fire's question is not refused as though this
+    // run had asked it, and Tasks → Background can open the running row's
+    // chat (review of #904). Not fatal: a marker naming no session makes
+    // the answer door refuse, which is the side to fail on.
+    if let Err(e) = store.name_session(&t.name, &session.meta.id) {
+        eprintln!(
+            "mecha: trigger `{}` could not name its session on its run marker — {e:#}",
+            t.name
+        );
+    }
     // **A trigger may ask** (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` §Unattended
     // runs ask, A1). Nobody is there to answer, so asking parks the question
     // on this run's own session and ends the run — no seat or prefix held
@@ -2166,6 +2178,24 @@ mod tests {
         // information — measured on this project's own eval set, that wording
         // makes models invent. See `ask_user`'s decline text.
         assert!(!UNATTENDED.contains("best judgment"));
+    }
+
+    /// The run names its transcript on the marker `fire` wrote, as soon as
+    /// the transcript exists and before anything can park a question on it:
+    /// the answer door tells this run from an older fire's by that name, and
+    /// Background opens a running row's chat by it (review of #904). A run
+    /// cannot be fired here without a provider and the global config, so
+    /// the order is pinned in the source.
+    #[test]
+    fn a_fire_names_its_session_on_its_marker_before_it_can_ask() {
+        let src = include_str!("trigger.rs");
+        let body = &src[src.find("async fn run_agent(").unwrap()..];
+        let created = body.find("let session = Session::create(").unwrap();
+        let named = body
+            .find("store.name_session(&t.name, &session.meta.id)")
+            .expect("run_agent names its session on the run marker");
+        let asks = body.find("ParkingAsker::new(").unwrap();
+        assert!(created < named && named < asks, "named out of order");
     }
 
     #[test]

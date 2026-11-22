@@ -1354,6 +1354,23 @@ impl TriggerStore {
         self.markers().mark_running(name, slot)
     }
 
+    /// Name the transcript the run in flight is writing, once it exists —
+    /// a trigger marks itself before it waits out a model switch, and its
+    /// session is created after. What lets an answer to an older fire's
+    /// question tell this run from the one that asked (review of #904); see
+    /// [`RunMarkers::name_session`](crate::runmarker::RunMarkers::name_session)
+    /// for why a pending stop survives it.
+    pub fn name_session(&self, name: &str, session: &str) -> Result<()> {
+        self.markers().name_session(name, session)
+    }
+
+    /// The live run's marker, for a reader that must refuse when it cannot
+    /// tell — see
+    /// [`RunMarkers::peek_checked`](crate::runmarker::RunMarkers::peek_checked).
+    pub fn live_marker(&self, name: &str) -> Result<Option<RunMarker>> {
+        self.markers().peek_checked(name)
+    }
+
     /// Clear the marker and any unclaimed cancel request.
     pub fn clear_running(&self, name: &str) {
         self.markers().clear(name)

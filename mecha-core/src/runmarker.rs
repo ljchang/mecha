@@ -23,7 +23,7 @@
 //! - **Clearing removes both files.** A cancel that arrives as a run is ending
 //!   must not be left lying around to kill the *next* one.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -131,9 +131,42 @@ impl RunMarkers {
             slot,
             session: session.map(str::to_string),
         };
+        self.write_marker(name, &marker)
+    }
+
+    /// Name the transcript a run that already marked itself is writing — for
+    /// a run that has to announce itself before its session exists (a
+    /// trigger marks itself, then waits out a model switch, then creates its
+    /// transcript).
+    ///
+    /// **Rewrites the marker only, never the cancel or steer files.**
+    /// [`mark_running_for`](Self::mark_running_for) clears both because a run
+    /// *starts* uncancelled; this one has already started, and a stop asked
+    /// for while it waited for its model must still reach it.
+    ///
+    /// Refuses a marker that is not this process's, and one that is not
+    /// there: naming a session on another run's marker would tell every
+    /// reader that run owns a transcript it has never seen.
+    pub fn name_session(&self, name: &str, session: &str) -> Result<()> {
+        let path = self.marker_path(name);
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading the run marker {}", path.display()))?;
+        let mut marker: RunMarker = serde_json::from_str(&text)
+            .with_context(|| format!("parsing the run marker {}", path.display()))?;
+        if marker.pid != std::process::id() {
+            anyhow::bail!(
+                "the run marker for `{name}` belongs to process {}, not this one",
+                marker.pid
+            );
+        }
+        marker.session = Some(session.to_string());
+        self.write_marker(name, &marker)
+    }
+
+    fn write_marker(&self, name: &str, marker: &RunMarker) -> Result<()> {
         let path = self.marker_path(name);
         let tmp = path.with_extension("running.tmp");
-        std::fs::write(&tmp, serde_json::to_string(&marker)?)?;
+        std::fs::write(&tmp, serde_json::to_string(marker)?)?;
         std::fs::rename(&tmp, &path)?;
         Ok(())
     }
@@ -230,6 +263,25 @@ impl RunMarkers {
         let text = std::fs::read_to_string(self.marker_path(name)).ok()?;
         let marker: RunMarker = serde_json::from_str(&text).ok()?;
         crate::process_alive(marker.pid).then_some(marker)
+    }
+
+    /// [`peek`](Self::peek) for a reader that must refuse when it cannot
+    /// tell: no marker is `Ok(None)`, as is one whose process is gone, but a
+    /// marker that is there and cannot be read or parsed is an error — it
+    /// may be a live run, and `None` would say there is none.
+    pub fn peek_checked(&self, name: &str) -> Result<Option<RunMarker>> {
+        let path = self.marker_path(name);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(anyhow::Error::new(e)
+                    .context(format!("reading the run marker {}", path.display())))
+            }
+        };
+        let marker: RunMarker = serde_json::from_str(&text)
+            .with_context(|| format!("parsing the run marker {}", path.display()))?;
+        Ok(crate::process_alive(marker.pid).then_some(marker))
     }
 
     /// The run in flight, if there is one.
@@ -432,6 +484,65 @@ mod tests {
         .unwrap();
         assert!(m.running("t").is_some(), "it is still a running run");
         assert!(m.live_writer_of("anything").is_none());
+    }
+
+    /// A run that marks itself before its transcript exists names it later,
+    /// and the naming keeps what the first mark set: its start, its slot,
+    /// and a stop already asked for — `mark_running_for` would clear that,
+    /// and a stop asked for while the run waited for its model would be
+    /// lost. Another process's marker is never renamed.
+    #[test]
+    fn naming_a_session_keeps_the_start_the_slot_and_a_pending_stop() {
+        let m = RunMarkers::new(scratch("namesession"));
+        let slot = Utc::now() - chrono::Duration::minutes(3);
+        m.mark_running("t", Some(slot)).unwrap();
+        let first = m.running("t").unwrap();
+        assert!(first.session.is_none());
+        assert!(m.request_cancel("t").unwrap());
+
+        m.name_session("t", "20261120T090000-named").unwrap();
+        let named = m.running("t").unwrap();
+        assert_eq!(named.session.as_deref(), Some("20261120T090000-named"));
+        assert_eq!(named.started_at, first.started_at);
+        assert_eq!(named.slot, Some(slot));
+        assert!(m.cancel_requested("t"), "naming the session dropped a stop");
+        assert_eq!(
+            m.live_writer_of("20261120T090000-named").as_deref(),
+            Some("t")
+        );
+
+        assert!(m.name_session("absent", "s").is_err(), "no marker to name");
+        std::fs::write(
+            m.dir().join("other.running"),
+            serde_json::json!({"pid": 1, "started_at": Utc::now().to_rfc3339()}).to_string(),
+        )
+        .unwrap();
+        assert!(m.name_session("other", "s").is_err(), "another process's");
+    }
+
+    /// The checked read refuses to say "nothing running" about a marker it
+    /// could not read: absent and dead are `None`, garbage is an error.
+    #[test]
+    fn a_checked_peek_says_unreadable_rather_than_none() {
+        let m = RunMarkers::new(scratch("checkedpeek"));
+        assert!(m.peek_checked("a").unwrap().is_none(), "no directory");
+        m.mark_running_for("a", None, Some("s-1")).unwrap();
+        assert_eq!(
+            m.peek_checked("a").unwrap().unwrap().session.as_deref(),
+            Some("s-1")
+        );
+        std::fs::write(
+            m.dir().join("dead.running"),
+            serde_json::json!({"pid": 0, "started_at": Utc::now().to_rfc3339()}).to_string(),
+        )
+        .unwrap();
+        assert!(m.peek_checked("dead").unwrap().is_none());
+        assert!(
+            m.dir().join("dead.running").exists(),
+            "a reader does not sweep"
+        );
+        std::fs::write(m.dir().join("torn.running"), "{\"pid\": ").unwrap();
+        assert!(m.peek_checked("torn").is_err());
     }
 
     /// Two instructions typed a second apart are two things the owner meant.

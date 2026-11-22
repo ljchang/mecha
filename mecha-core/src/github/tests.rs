@@ -1145,6 +1145,19 @@ fn the_shipped_board_validates_and_its_loaders_read_the_collector() {
         )
         .unwrap();
     }
+    // And, in a repository nothing else turns red, a workflow GitHub gave no
+    // id: green, then red. The headline counts its repository, so the table
+    // must show it — `=` on a NULL id dropped it from every join.
+    for (id, conclusion, hours) in [(9201, "success", 60), (9202, "failure", 45)] {
+        conn.execute(
+            "INSERT INTO ci_runs (id, repo, workflow, workflow_id, run_number, attempt, event,
+               status, conclusion, head_sha, branch, created_at, seen_at)
+             VALUES (?1, 'example-lab/tool-b', 'No id', NULL, ?1, 1, 'push',
+               'completed', ?2, 'abc', 'main', ?3, ?3)",
+            rusqlite::params![id, conclusion, at(hours)],
+        )
+        .unwrap();
+    }
     drop(conn);
 
     for (name, loader) in installed.loaders() {
@@ -1191,14 +1204,42 @@ fn the_shipped_board_validates_and_its_loaders_read_the_collector() {
         serde_json::json!(same),
         "{tied:?}"
     );
+    let unnamed: Vec<_> = fetched
+        .rows
+        .iter()
+        .filter(|r| r[col("workflow")] == serde_json::json!("No id"))
+        .collect();
+    assert_eq!(
+        unnamed.len(),
+        1,
+        "a red workflow with no id is missing from the table: {:?}",
+        fetched.rows
+    );
+    assert_eq!(
+        unnamed[0][col("repo")],
+        serde_json::json!("example-lab/tool-b")
+    );
+    assert_eq!(unnamed[0][col("red_since")], serde_json::json!(at(45)));
+    assert_eq!(
+        unnamed[0][col("last_green")],
+        serde_json::json!(at(60)),
+        "its last success was found"
+    );
+    let red_repos: std::collections::BTreeSet<String> = fetched
+        .rows
+        .iter()
+        .map(|r| r[col("repo")].as_str().unwrap().to_string())
+        .collect();
 
     let headline = &installed.loaders()["headline"];
     let fetched = run_sqlite(&path, headline.query(), 1, QUERY_TIMEOUT).unwrap();
     let col = |name: &str| fetched.columns.iter().position(|c| c == name).unwrap();
     let row = &fetched.rows[0];
-    assert!(
-        row[col("failing")].as_i64().unwrap() >= 1,
-        "the headline counts the red repository: {row:?}"
+    assert_eq!(
+        row[col("failing")].as_i64().unwrap(),
+        red_repos.len() as i64,
+        "the headline and the table disagree about which repositories are red: \
+         {row:?} vs {red_repos:?}"
     );
     assert_eq!(row[col("new_day")], serde_json::json!(0), "{row:?}");
     assert_eq!(row[col("new_week")], serde_json::json!(1), "{row:?}");

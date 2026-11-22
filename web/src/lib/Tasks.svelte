@@ -6,6 +6,7 @@
   import Workflows from './Workflows.svelte';
   import Background from './Background.svelte';
   import { isActionable } from './home-view.js';
+  import { AGENT, CLOSED_STATUSES, QUIET_STOPS } from './background.js';
   import { answeredChat, chatHref, resumesInChat } from './question-resume.js';
   // The GTD board, over `mecha tasks …` — which reaches the graph's own
   // store through its MCP surface. Nothing here confirms: every status is
@@ -264,8 +265,8 @@
   // `waiting_on` names the agent while a run is in flight and the owner when
   // it stops, so "is work happening?" is answered by the store the run
   // writes to rather than by anything the run says about itself (D5/D16).
-  const AGENT = 'mecha';
-  const CLOSED_STATUSES = ['done', 'dropped'];
+  // The words themselves come from background.js, which reads the same runs
+  // for Tasks → Background: one copy, so the two cannot drift.
   const closed = (t) => CLOSED_STATUSES.includes(t.status);
   const working = (t) => t.status === 'waiting' && t.waiting_on === AGENT;
 
@@ -345,9 +346,9 @@
     // A cancellation is never a failure, on doctor's own rule for the same
     // field: `stopped` is a person, `parked` is a question to the owner,
     // `shutdown` is the process, and `interrupted` is the older record that
-    // did not say which. (`cut_short` is false for all four anyway; named
-    // here so the rule is visible where it is applied.)
-    if (['interrupted', 'parked', 'stopped', 'shutdown'].includes(run.stop_cause)) return 'ready';
+    // did not say which (`QUIET_STOPS`). (`cut_short` is false for all four
+    // anyway; named here so the rule is visible where it is applied.)
+    if (QUIET_STOPS.includes(run.stop_cause)) return 'ready';
     if (run.cut_short || run.ended_on_failed_call) return 'failed';
     return 'ready';
   }

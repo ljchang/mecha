@@ -6267,6 +6267,21 @@ pub(super) async fn answer_in_chat(
             "that question resumes in the background, not as a chat\n".into(),
         ));
     }
+    // **Every refusal that does not need the resumed slot comes before the
+    // resume** — resuming is the owner's own, so it takes the chat out of
+    // the archive and puts it in the session map, and a refused answer must
+    // leave both as they were. Closed between this read and the lock below
+    // is still caught by `answer_with`.
+    if !asked.is_open() {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "that question is already {} — answering it again would resume a conversation \
+                 that has already moved on\n",
+                asked.status
+            ),
+        ));
+    }
     // A remembered ordinary chat resumes with its memory, as `POST
     // /api/resume` resumes it; any other memory-marked transcript has its
     // own door and takes verified input only.
@@ -6294,12 +6309,13 @@ pub(super) async fn answer_in_chat(
     // The trigger run that parked this still finishing — its taint checkpoint
     // and ledger row are written after the park, and a trigger session has no
     // live-writer marker for `resume_locked` to see. Answering now would be a
-    // second writer on its transcript (review of #904).
+    // second writer on its transcript (review of #904). Only *that* run: a
+    // later fire of the same trigger writes its own transcript, and its
+    // marker names it (review of #904, pass 2).
     if let Some(name) = asked.trigger.as_deref() {
-        let running = mecha_core::trigger::TriggerStore::open_default()
-            .map(|store| store.running(name).is_some())
-            .unwrap_or(true);
-        if running {
+        let live = mecha_core::trigger::TriggerStore::open_default()
+            .and_then(|store| store.live_marker(name));
+        if trigger_may_be_writing(live, &asked.session_id) {
             return Err((
                 StatusCode::CONFLICT,
                 format!(
@@ -6323,6 +6339,28 @@ pub(super) async fn answer_in_chat(
             "server is shutting down\n".into(),
         ));
     }
+    // Idle and holding its conversation, or the answer waits for the owner
+    // to send it again: steering it into a turn in flight would make it part
+    // of someone else's run. Asked first of the slot this process already
+    // holds, before the resume — a conversation the map does not hold comes
+    // back idle — and again below, under the same lock, of the key the
+    // resume settles on.
+    let in_flight = || {
+        (
+            StatusCode::CONFLICT,
+            "that conversation has a turn in flight — your answer was not sent; try again \
+             when it ends\n"
+                .to_string(),
+        )
+    };
+    if sessions
+        .values()
+        .filter_map(ChatSlot::ordinary)
+        .find(|ws| ws.session.id() == asked.session_id)
+        .is_some_and(|ws| ws.live.is_some() || ws.conversation.is_none())
+    {
+        return Err(in_flight());
+    }
     let key = resume_locked(chat, &mut sessions, &asked.session_id, remembered, true)?;
     // The question's own taint into the resumed conversation: the transcript's
     // `Record::Taint` is written after the park, so a transcript that lost it
@@ -6336,20 +6374,12 @@ pub(super) async fn answer_in_chat(
     {
         convo.taint.merge(asked.taint);
     }
-    // Idle and holding its conversation, or the answer waits for the owner
-    // to send it again: steering it into a turn in flight would make it part
-    // of someone else's run.
     let idle = sessions
         .get(&key)
         .and_then(ChatSlot::ordinary)
         .is_some_and(|ws| ws.live.is_none() && ws.conversation.is_some());
     if !idle {
-        return Err((
-            StatusCode::CONFLICT,
-            "that conversation has a turn in flight — your answer was not sent; try again \
-             when it ends\n"
-                .into(),
-        ));
+        return Err(in_flight());
     }
     let mut refused: Option<(StatusCode, String)> = None;
     let mut began = false;
@@ -6410,6 +6440,25 @@ pub(super) async fn answer_in_chat(
             // or abandoned it from another device.
             (StatusCode::CONFLICT, format!("{e:#}\n"))
         })),
+    }
+}
+
+/// Whether the trigger run behind `live` may still be writing `session`,
+/// the transcript a question was parked on.
+///
+/// A live run that names another transcript is a later fire of the same
+/// trigger, and does not hold this one. Everything that cannot tell refuses:
+/// a marker store or marker that cannot be read, and a live marker naming
+/// no session — a run between its mark and its transcript, or one from a
+/// build whose markers never named one. Unknown is never clean.
+fn trigger_may_be_writing(
+    live: anyhow::Result<Option<mecha_core::runmarker::RunMarker>>,
+    session: &str,
+) -> bool {
+    match live {
+        Err(_) => true,
+        Ok(None) => false,
+        Ok(Some(marker)) => marker.session.as_deref().is_none_or(|s| s == session),
     }
 }
 
@@ -10693,6 +10742,74 @@ mod wake_tests {
         );
     }
 
+    /// Where a woken turn cannot park — here, a question store that will not
+    /// open — `ask_user` is withheld from it rather than putting up a card in
+    /// front of nobody: the call is refused at once and the run goes on.
+    /// Without the withholding the page's asker takes the call, and its card
+    /// holds the turn for ten minutes; the timeout is what fails.
+    #[tokio::test]
+    async fn a_woken_turn_that_cannot_park_is_not_offered_a_card() {
+        let home = crate::testenv::HomeGuard::new("wake-no-park");
+        let routes: QuestionRoutes = Arc::default();
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let chat = waking_chat_over(
+            true,
+            true,
+            vec![web_ask_user(&routes)],
+            Box::new(Scripted {
+                seen: Arc::clone(&seen),
+                steps: vec![
+                    Step::Call(
+                        "ask_user",
+                        serde_json::json!({"question": "Which build should I check?"}),
+                    ),
+                    Step::Say("checked the nightly, assuming that one"),
+                ],
+            }),
+            routes,
+        );
+        let (_, session) = due_follow_up(&chat, &home.dir);
+        let (key, _watching) = {
+            let mut sessions = chat.sessions.lock().await;
+            let key = resume_locked(&chat, &mut sessions, &session, false, true).unwrap();
+            let ws = sessions
+                .get_mut(&key)
+                .and_then(ChatSlot::ordinary_mut)
+                .unwrap();
+            *ws.mode.lock().unwrap() = PermissionMode::Ask;
+            (key.clone(), ws.events.subscribe())
+        };
+        // A file where the question store's directory would be.
+        let questions = mecha_core::questions::QuestionStore::default_root().unwrap();
+        std::fs::write(&questions, "not a directory").unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            chat.wake_due_follow_ups(),
+        )
+        .await
+        .expect("the woken turn waited on a card nobody will answer");
+
+        let asked = seen.lock().unwrap().clone();
+        assert_eq!(asked.len(), 2, "the question, then the turn went on");
+        let refused = asked[1].messages.last().unwrap().content.iter().any(|b| {
+            matches!(
+                b,
+                mecha_core::message::Block::ToolResult { is_error: true, .. }
+            )
+        });
+        assert!(
+            refused,
+            "the call was not refused: {:?}",
+            asked[1].messages.last()
+        );
+        {
+            let sessions = chat.sessions.lock().await;
+            let ws = sessions.get(&key).and_then(ChatSlot::ordinary).unwrap();
+            assert!(ws.questions.cards().is_empty(), "a card went up for nobody");
+        }
+        assert!(questions.is_file(), "nothing parked a question anyway");
+    }
+
     /// A recorded conversation that ended on a parked `ask_user` — a
     /// trigger's run, as the ledger leaves it — carrying third-party taint,
     /// and the open `chat` question it parked.
@@ -10843,20 +10960,27 @@ mod wake_tests {
             }),
             Arc::default(),
         );
-        let (_, qid) = asked_in_a_chat_as(&chat, &home.dir, true, Some("morning"));
+        let (session, qid) = asked_in_a_chat_as(&chat, &home.dir, true, Some("morning"));
         let triggers = mecha_core::trigger::TriggerStore::open_default().unwrap();
         triggers.mark_running("morning", None).unwrap();
-        let err = answer_in_chat(&chat, &question_store(), &qid, "the small one")
-            .await
-            .unwrap_err();
-        assert_eq!(err.0, StatusCode::CONFLICT, "{}", err.1);
-        assert!(err.1.contains("still finishing"), "{}", err.1);
-        assert_eq!(
-            question_store().get(&qid).unwrap().status,
-            mecha_core::questions::OPEN
-        );
-        assert!(chat.sessions.lock().await.is_empty(), "nothing was resumed");
-        assert!(seen.lock().unwrap().is_empty(), "no turn ran");
+        // Refused while the run names no transcript yet (it cannot be told
+        // from the one that asked), and once it names the question's own.
+        for named in [None, Some(session.as_str())] {
+            if let Some(s) = named {
+                triggers.name_session("morning", s).unwrap();
+            }
+            let err = answer_in_chat(&chat, &question_store(), &qid, "the small one")
+                .await
+                .unwrap_err();
+            assert_eq!(err.0, StatusCode::CONFLICT, "{named:?}: {}", err.1);
+            assert!(err.1.contains("still finishing"), "{named:?}: {}", err.1);
+            assert_eq!(
+                question_store().get(&qid).unwrap().status,
+                mecha_core::questions::OPEN
+            );
+            assert!(chat.sessions.lock().await.is_empty(), "nothing was resumed");
+            assert!(seen.lock().unwrap().is_empty(), "no turn ran");
+        }
 
         triggers.clear_running("morning");
         let key = answer_in_chat(&chat, &question_store(), &qid, "the small one")
@@ -10864,6 +10988,103 @@ mod wake_tests {
             .unwrap();
         settled(&chat, &key).await;
         assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    /// A later fire of the same trigger writes its own transcript, and its
+    /// marker says which: an answer to the older fire's question goes
+    /// through while it runs. Keyed on the trigger's name alone, every
+    /// fire after the one that asked refused it as "still finishing"
+    /// (review of #904).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_later_fire_of_the_same_trigger_does_not_hold_an_older_question() {
+        let home = crate::testenv::HomeGuard::new("answer-trigger-later-fire");
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let chat = waking_chat_over(
+            true,
+            true,
+            Vec::new(),
+            Box::new(Scripted {
+                seen: Arc::clone(&seen),
+                steps: vec![Step::Say("noted")],
+            }),
+            Arc::default(),
+        );
+        let (session, qid) = asked_in_a_chat_as(&chat, &home.dir, true, Some("morning"));
+        let triggers = mecha_core::trigger::TriggerStore::open_default().unwrap();
+        triggers.mark_running("morning", None).unwrap();
+        triggers
+            .name_session("morning", "20261121T080000-laterfire")
+            .unwrap();
+        assert_ne!(session, "20261121T080000-laterfire", "the premise");
+        let key = answer_in_chat(&chat, &question_store(), &qid, "the small one")
+            .await
+            .unwrap();
+        settled(&chat, &key).await;
+        assert_eq!(seen.lock().unwrap().len(), 1, "the answer's turn ran");
+        assert_eq!(
+            question_store().get(&qid).unwrap().status,
+            mecha_core::questions::ANSWERED
+        );
+        triggers.clear_running("morning");
+    }
+
+    /// The guard's table: a marker that cannot be read refuses, no live run
+    /// does not, and a live one refuses unless it names another transcript.
+    #[test]
+    fn the_trigger_guard_refuses_whatever_it_cannot_tell_apart() {
+        let marker = |session: Option<&str>| mecha_core::runmarker::RunMarker {
+            pid: std::process::id(),
+            started_at: chrono::Utc::now(),
+            slot: None,
+            session: session.map(str::to_string),
+        };
+        assert!(trigger_may_be_writing(Err(anyhow::anyhow!("torn")), "s-1"));
+        assert!(!trigger_may_be_writing(Ok(None), "s-1"));
+        assert!(trigger_may_be_writing(Ok(Some(marker(None))), "s-1"));
+        assert!(trigger_may_be_writing(Ok(Some(marker(Some("s-1")))), "s-1"));
+        assert!(!trigger_may_be_writing(
+            Ok(Some(marker(Some("s-2")))),
+            "s-1"
+        ));
+    }
+
+    /// A refused answer leaves the chat where it was: a question already
+    /// given up on is refused before the resume, so the conversation is not
+    /// put in the session map and an archived chat stays archived. Resumed
+    /// first, the refusal came after the chat had been lifted into the map
+    /// and taken out of the archive.
+    #[tokio::test]
+    async fn a_refused_answer_resumes_nothing_and_unarchives_nothing() {
+        let home = crate::testenv::HomeGuard::new("answer-refused-early");
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let chat = waking_chat_over(
+            true,
+            true,
+            Vec::new(),
+            Box::new(Scripted {
+                seen: Arc::clone(&seen),
+                steps: vec![Step::Say("noted")],
+            }),
+            Arc::default(),
+        );
+        let (session, qid) = asked_in_a_chat(&chat, &home.dir);
+        mecha_core::archive::archive(chat.sessions_dir(), &session, chrono::Utc::now()).unwrap();
+        question_store().abandon(&qid).unwrap();
+
+        let err = answer_in_chat(&chat, &question_store(), &qid, "the small one")
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, StatusCode::CONFLICT, "{}", err.1);
+        assert!(err.1.contains("already"), "{}", err.1);
+        assert!(
+            chat.sessions.lock().await.is_empty(),
+            "a refused answer resumed the chat into the map"
+        );
+        assert!(
+            mecha_core::archive::is_archived(chat.sessions_dir(), &session),
+            "a refused answer took the chat out of the archive"
+        );
+        assert!(seen.lock().unwrap().is_empty(), "no turn ran");
     }
 
     #[tokio::test]

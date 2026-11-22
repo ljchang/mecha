@@ -39,7 +39,7 @@ pub enum Cmd {
         reason: String,
     },
     /// What you did within a day of each woken follow-up's answer: replied,
-    /// released or declined a draft, dismissed the reminder, or none. A
+    /// released or rejected a draft, dismissed the reminder, or none. A
     /// sensor — nothing reads it. Whether you opened the chat is not measured.
     Measure {
         #[arg(long)]
@@ -196,7 +196,9 @@ fn measure_text(rows: &[followup::Measured], tz: chrono_tz::Tz) -> String {
             .map(|s| match s {
                 followup::Signal::Replied => "replied".to_string(),
                 followup::Signal::Released { outbox_id } => format!("released {outbox_id}"),
-                followup::Signal::Rejected { outbox_id } => format!("declined {outbox_id}"),
+                // The outcome's own word (`Response::Rejected`'s), so a
+                // row does not say `rejected` and `declined` of one act.
+                followup::Signal::Rejected { outbox_id } => format!("rejected {outbox_id}"),
                 followup::Signal::Dismissed { .. } => "dismissed".to_string(),
             })
             .chain(r.unknown.iter().cloned())
@@ -209,7 +211,7 @@ fn measure_text(rows: &[followup::Measured], tz: chrono_tz::Tz) -> String {
     }
     let t = followup::Totals::of(rows);
     out.push_str(&format!(
-        "\nreplied {} · released {} · declined {} · dismissed {} · none {} · pending {} · unknown {}\n",
+        "\nreplied {} · released {} · rejected {} · dismissed {} · none {} · pending {} · unknown {}\n",
         t.replied, t.released, t.rejected, t.dismissed, t.none, t.pending, t.unknown
     ));
     let rate = t
@@ -690,7 +692,20 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("opened the chat"));
-        assert!(measure_text(&rows, chrono_tz::UTC).contains("Not measured: whether you opened"));
+        let text = measure_text(&rows, chrono_tz::UTC);
+        assert!(text.contains("Not measured: whether you opened"));
+        // One act, one word: the row's outcome, its signal and the totals
+        // all say `rejected`, as the JSON and the outbox do.
+        let declined = text
+            .lines()
+            .find(|l| l.contains("decl5678"))
+            .unwrap_or_else(|| panic!("no row for the declined draft: {text}"));
+        assert!(
+            declined.contains(&format!("rejected (rejected {})", draft.id)),
+            "{declined}"
+        );
+        assert!(!text.contains("declined"), "{text}");
+        assert!(text.contains("· rejected 1 ·"), "{text}");
 
         // `--since` past every answer: nothing to measure, and a dash.
         let none = gather(&workflows, &sessions, &outbox_root, Some(now), now).unwrap();

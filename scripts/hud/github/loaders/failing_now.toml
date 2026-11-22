@@ -27,18 +27,22 @@ ok AS (SELECT repo, workflow_id, created_at AS last_ok, id AS last_ok_id FROM
        WHERE rn = 1),
 -- The first deciding run after the last success, ordered as the ranking is:
 -- a failure in the same second as that success still counts.
+-- Every workflow_id match is `IS`, never `=`: a run with no workflow id is
+-- one partition above (as the headline counts it), and `NULL = NULL` never
+-- matches, so `=` dropped that red workflow from this table while the
+-- headline still counted its repository (review of #902).
 since AS (SELECT red.repo, red.workflow_id,
             (SELECT min(c.created_at) FROM ci c WHERE c.repo = red.repo
-               AND c.workflow_id = red.workflow_id
+               AND c.workflow_id IS red.workflow_id
                AND (c.created_at, c.id) > (coalesce(ok.last_ok, ''), coalesce(ok.last_ok_id, -1)))
             AS red_since
-          FROM red LEFT JOIN ok ON ok.repo = red.repo AND ok.workflow_id = red.workflow_id)
+          FROM red LEFT JOIN ok ON ok.repo = red.repo AND ok.workflow_id IS red.workflow_id)
 SELECT red.repo, i.owner, red.workflow, since.red_since,
   CAST(julianday('now') - julianday(since.red_since) AS INTEGER) AS days_red,
   CASE WHEN ok.last_ok IS NULL THEN 'never green in the kept history' ELSE ok.last_ok END
      AS last_green
-FROM red LEFT JOIN ok ON ok.repo = red.repo AND ok.workflow_id = red.workflow_id
-JOIN since ON since.repo = red.repo AND since.workflow_id = red.workflow_id
+FROM red LEFT JOIN ok ON ok.repo = red.repo AND ok.workflow_id IS red.workflow_id
+JOIN since ON since.repo = red.repo AND since.workflow_id IS red.workflow_id
 JOIN inventory i ON i.repo = red.repo AND i.selected = 1
 ORDER BY since.red_since
 -- The longest-red 200: max_rows refuses a larger answer rather than

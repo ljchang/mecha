@@ -495,7 +495,12 @@ pub fn workflow_for(
 pub const ACTED_ON_WINDOW: chrono::Duration = chrono::Duration::hours(24);
 
 /// What the owner did about one woken answer, as the records show it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Written out (`followups measure --json`) and never read back: no store
+/// holds it, so it derives no `Deserialize`. One that came to read it would
+/// need an unknown name to land on `Unknown` (`#[serde(other)]`), never fail
+/// the record — a closed enum written down is a wire format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Response {
     /// Their own words in the chat after the woken turn began.

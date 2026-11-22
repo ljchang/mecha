@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
+  AGENT,
+  CLOSED_STATUSES,
+  QUIET_STOPS,
   assistantRows,
   delegatedRow,
   delegatedRows,
@@ -56,7 +62,10 @@ assert.equal(delegatedRow(task({ run: ran({ ended_on_failed_call: true }) })).st
 assert.equal(delegatedRow(task({ run: ran({ taint: undefined }) })).taint, null, 'an older server sends no taint: unknown');
 
 // The window: a finished run older than seven days is out; running and
-// waiting are always in; an unknown with no time only while the task is open.
+// waiting are always in; a run with no time — unknown, or a done or failed
+// one from a record older than `ended_at` — only while the task is open.
+// Dropping an open task's undated run left the view saying "no assistant
+// runs" about a task the board still shows.
 const rows = delegatedRows(
   [
     task({ id: 'old', run: ran({ ended_at: hoursAgo(24 * 8) }) }),
@@ -65,11 +74,39 @@ const rows = delegatedRows(
     task({ id: 'lost-open' }),
     task({ id: 'lost-closed', status: 'done' }),
     task({ id: 'untimed', run: ran({ ended_at: null }) }),
+    task({ id: 'untimed-failed', run: ran({ ended_at: undefined, cut_short: true, stop_cause: 'timeout' }) }),
+    task({ id: 'untimed-closed', status: 'dropped', run: ran({ ended_at: null }) }),
   ],
   [],
   now,
 );
-assert.deepEqual(rows.map((r) => r.task).sort(), ['live', 'lost-open', 'new']);
+assert.deepEqual(rows.map((r) => r.task).sort(), ['live', 'lost-open', 'new', 'untimed', 'untimed-failed']);
+const untimed = rows.find((r) => r.task === 'untimed');
+assert.equal(untimed.state, 'done');
+assert.equal(untimed.finished_at, null, 'no time is made up for it');
+assert.equal(rows.find((r) => r.task === 'untimed-failed').state, 'failed');
+assert.equal(sortKey(untimed), -Infinity, 'and it sorts last');
+assert.deepEqual(
+  assistantRows({}, [task({ id: 'untimed', run: ran({ ended_at: null }) })], [], now).map((r) => r.task),
+  ['untimed'],
+  'the only run the view knows of is still shown',
+);
+
+// One copy of the board's words: Tasks.svelte imports them from here rather
+// than keeping its own (the home-view precedent for `isActionable`).
+assert.equal(AGENT, 'mecha');
+assert.deepEqual(CLOSED_STATUSES, ['done', 'dropped']);
+assert.deepEqual(QUIET_STOPS, ['interrupted', 'parked', 'stopped', 'shutdown']);
+const board = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../src/lib/Tasks.svelte'), 'utf8');
+assert.match(
+  board,
+  /import \{ AGENT, CLOSED_STATUSES, QUIET_STOPS \} from '\.\/background\.js'/,
+  'Tasks imports the shared words',
+);
+for (const name of ['AGENT', 'CLOSED_STATUSES', 'QUIET_STOPS']) {
+  assert.doesNotMatch(board, new RegExp(`const ${name}\\s*=`), `Tasks keeps its own ${name}`);
+}
+assert.doesNotMatch(board, /\['interrupted', 'parked'/, 'Tasks spells the quiet stops out again');
 
 // Merged, newest first; a run in flight on top, untimed history last.
 const body = {
