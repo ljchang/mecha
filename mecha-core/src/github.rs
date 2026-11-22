@@ -506,10 +506,15 @@ pub enum Kind {
     /// `packages.toml` is there and cannot be used: the package mapping
     /// stays as the last run that could read it left it.
     BadPackages,
+    /// A `packages.toml` line names a repository the collector does not see
+    /// — in no inventory and no manifest read — so the correction does
+    /// nothing. Not a failure: a repository later deselected or renamed
+    /// leaves such a line behind, and that must not fail the daily unit.
+    PackageUnmatched,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 15] = [
+    pub const ALL: [Kind; 16] = [
         Kind::Finished,
         Kind::RateLimited,
         Kind::Auth,
@@ -525,6 +530,7 @@ impl Kind {
         Kind::RegistryRefused,
         Kind::RegistryFailed,
         Kind::BadPackages,
+        Kind::PackageUnmatched,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -544,6 +550,7 @@ impl Kind {
             Kind::RegistryRefused => "registry_refused",
             Kind::RegistryFailed => "registry_failed",
             Kind::BadPackages => "bad_packages",
+            Kind::PackageUnmatched => "package_unmatched",
         }
     }
 
@@ -564,7 +571,10 @@ impl Kind {
         !self.is_summary()
             && !matches!(
                 self,
-                Kind::TrafficNoAccess | Kind::RegistryRefused | Kind::RegistryFailed
+                Kind::TrafficNoAccess
+                    | Kind::RegistryRefused
+                    | Kind::RegistryFailed
+                    | Kind::PackageUnmatched
             )
     }
 
@@ -1459,6 +1469,29 @@ fn run_steps(gh: &Gh, home: &Path, now: DateTime<Utc>, c: &mut Collected) {
                 .map(|r| (r.clone(), selection.selects(r)))
                 .collect(),
         );
+    }
+    // A package line naming a repository the collector does not see does
+    // nothing — said, never dropped in silence. Only when the inventory is
+    // known: with no listing and no earlier one, every line would read as
+    // unmatched.
+    if listed || !prior.is_empty() {
+        let mut known: BTreeSet<String> = repos.keys().cloned().collect();
+        known.extend(usage::detected_repos(&db_path(home)));
+        for rule in c.package_rules.iter().flatten() {
+            if !known.contains(&rule.repo.to_ascii_lowercase()) {
+                c.problems.push(Problem {
+                    kind: Kind::PackageUnmatched,
+                    step: Step::Packages,
+                    repo: Some(rule.repo.clone()),
+                    detail: format!(
+                        "packages.toml's line for {:?} ({}) names a repository the collector \
+                         does not see; the correction does nothing",
+                        rule.repo,
+                        rule.registry.as_str()
+                    ),
+                });
+            }
+        }
     }
 
     // ---- items and counts, by GraphQL, a batch per owner ----
