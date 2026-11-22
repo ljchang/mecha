@@ -1066,6 +1066,9 @@ impl ChatState {
             Ok(m) if m.live_writer_of(&session_id).is_none() => {}
             _ => return Err(WakeSkip::Later),
         }
+        if crate::commands::trigger::live_writer_of(&session_id).is_some() {
+            return Err(WakeSkip::Later);
+        }
         // The cheapest refusals before a seat or the router hold is taken: a
         // chat with a turn in flight, or one ending on the owner's own words,
         // waits — and re-checked under the lock below (review of #897).
@@ -6506,6 +6509,17 @@ fn resume_locked(
             .to_string(),
         ));
     }
+    // A trigger's run the same way: its marker names the transcript once it
+    // exists, and Tasks → Background offers *Open chat* on it while it runs.
+    if let Some(name) = crate::commands::trigger::live_writer_of(id) {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "the `{name}` trigger is still running in this transcript — open it \
+                 again when it has finished, or `mecha trigger cancel {name}`\n"
+            ),
+        ));
+    }
     let path = match Session::find(&dir, id) {
         Ok(p) => p,
         Err(e) => return Err((StatusCode::NOT_FOUND, format!("{e:#}\n"))),
@@ -10988,6 +11002,45 @@ mod wake_tests {
             .unwrap();
         settled(&chat, &key).await;
         assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    /// Tasks → Background offers *Open chat* on a running trigger's
+    /// transcript, so the resume door must see the trigger's marker, not only
+    /// the delegated runs': opening it while the run appends would give one
+    /// JSONL two writers. Refused while the marker names it; resumed once the
+    /// run has finished (review of #907).
+    #[tokio::test]
+    async fn the_resume_door_refuses_a_transcript_a_trigger_is_still_writing() {
+        let home = crate::testenv::HomeGuard::new("resume-trigger-running");
+        let chat = waking_chat_over(
+            true,
+            true,
+            Vec::new(),
+            Box::new(Scripted {
+                seen: Arc::default(),
+                steps: vec![],
+            }),
+            Arc::default(),
+        );
+        let (session, _) = asked_in_a_chat_as(&chat, &home.dir, true, Some("morning"));
+        let triggers = mecha_core::trigger::TriggerStore::open_default().unwrap();
+        triggers.mark_running("morning", None).unwrap();
+        triggers.name_session("morning", &session).unwrap();
+        {
+            let mut sessions = chat.sessions.lock().await;
+            let err = resume_locked(&chat, &mut sessions, &session, false, true).unwrap_err();
+            assert_eq!(err.0, StatusCode::CONFLICT, "{}", err.1);
+            assert!(
+                err.1.contains("`morning` trigger is still running"),
+                "{}",
+                err.1
+            );
+            assert!(sessions.is_empty(), "nothing was resumed");
+        }
+        triggers.clear_running("morning");
+        let mut sessions = chat.sessions.lock().await;
+        resume_locked(&chat, &mut sessions, &session, false, true)
+            .expect("resumed once the run has finished");
     }
 
     /// A later fire of the same trigger writes its own transcript, and its

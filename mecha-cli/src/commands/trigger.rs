@@ -911,6 +911,15 @@ sent or done. And your answer will be read later, out of context, by someone \
 who has not seen this conversation: lead with what they need to know, and \
 keep it short enough to read on a phone.";
 
+/// The trigger whose live run is writing transcript `session`, for a door
+/// about to resume it — every surface that checks the delegated runs'
+/// markers checks this beside them, so a trigger's transcript never gets a
+/// second writer through a resume (review of #907). No trigger store reads
+/// as no trigger run.
+pub(crate) fn live_writer_of(session: &str) -> Option<String> {
+    TriggerStore::open_existing_default()?.live_writer_of(session)
+}
+
 /// Run one trigger to completion and record what happened.
 async fn fire(
     global: &GlobalOpts,

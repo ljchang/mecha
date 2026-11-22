@@ -1347,6 +1347,15 @@ impl TriggerStore {
         crate::runmarker::RunMarkers::new(self.locks_dir())
     }
 
+    /// The trigger whose live run is writing transcript `session`, if any —
+    /// the trigger half of "is another process appending to this JSONL?",
+    /// beside `tasks::markers().live_writer_of`. A run names its session on
+    /// its marker once the transcript exists (`name_session`); before that
+    /// it names none and this cannot see it.
+    pub fn live_writer_of(&self, session: &str) -> Option<String> {
+        self.markers().live_writer_of(session)
+    }
+
     /// Announce that a run has started, for anything that wants to *display*
     /// whether one is in flight. See [`crate::runmarker`] for why this is not
     /// the flock.

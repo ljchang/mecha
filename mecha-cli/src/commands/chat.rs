@@ -338,6 +338,12 @@ pub async fn execute(
                  where it is"
             );
         }
+        if let Some(name) = crate::commands::trigger::live_writer_of(id) {
+            anyhow::bail!(
+                "the `{name}` trigger is still running in this transcript — resume it when it \
+                 has finished, or `mecha trigger cancel {name}`"
+            );
+        }
         #[cfg(feature = "memory-prototype")]
         let (meta, prior) = if chat_memory.is_some() {
             let t = Session::read(&path)?;

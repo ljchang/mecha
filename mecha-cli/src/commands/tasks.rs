@@ -2797,6 +2797,9 @@ async fn work(
                      `mecha tasks stop {other}` first"
                 );
             }
+            if let Some(name) = crate::commands::trigger::live_writer_of(id) {
+                bail!("the `{name}` trigger is still running in that conversation");
+            }
             let path = mecha_core::session::Session::find(&session_dir, id)?;
             let (meta, prior) = load_task_resume(&path)?;
             eprintln!(
