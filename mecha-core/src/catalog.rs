@@ -949,11 +949,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    fn scratch() -> PathBuf {
-        std::env::temp_dir().join(format!("mecha-catalog-engine-{}", uuid::Uuid::new_v4()))
-    }
-
     /// A machine whose router engine answers `--version` with `text`.
     #[cfg(unix)]
     fn machine_whose_engine_says(dir: &Path, text: &str) -> crate::sidecar::Machinery {
@@ -994,7 +989,7 @@ mod tests {
             ("version: 11205 (95887577)", Some("names no build")),
             ("", Some("names no build")),
         ] {
-            let dir = scratch();
+            let dir = scratch("engine");
             let m = machine_whose_engine_says(&dir, said);
             let got = engine_refusal(ink, &m);
             match refused {
@@ -1012,7 +1007,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(&dir);
         }
         // No engine at all is said, not passed.
-        let dir = scratch();
+        let dir = scratch("engine");
         let mut m = machine_whose_engine_says(&dir, "");
         m.path.clear();
         assert!(engine_refusal(ink, &m).is_some());

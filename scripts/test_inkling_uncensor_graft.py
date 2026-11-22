@@ -6,9 +6,11 @@
 """scripts/inkling-uncensor-graft.py, run on synthetic files.
 
 `uv run scripts/test_inkling_uncensor_graft.py`, under the same pins as the
-script, because the graft's one claim is that gguf's Q8_0 re-encodes a tensor
-to the bytes the base already holds. A gguf version that changed its rounding
-would make every real run refuse, and this is where that shows first.
+script (`test_the_pins_here_are_the_scripts_pins`), because the graft's one
+claim is that gguf's Q8_0 re-encodes a tensor to the bytes the base already
+holds. A gguf version that changed its rounding would make every real run
+refuse; `test_gguf_s_q8_0_is_ggml_s` is where that shows first, since every
+other case encodes both sides with gguf and would move with it.
 
 The base is a three-layer `inkling2_loop` GGUF whose `attn_output` tensors are
 Q8_0, plus one F32 tensor that must come through untouched. The edited file is
@@ -146,6 +148,34 @@ class Graft(unittest.TestCase):
     def test_refuses_an_edited_file_that_is_not_bf16(self):
         r = run(self.base, self.edited({1: bf16_exact(99)}, dtype="F16"), self.out)
         self.refused(r, "expected BF16")
+
+    def test_refuses_to_write_over_the_base(self):
+        r = run(self.base, self.edited({1: bf16_exact(99)}), self.base)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("is BASE itself", r.stderr)
+        want = [bytes(t.data.tobytes()) for t in GGUFReader(self.base).tensors]
+        write_base(self.d / "again.gguf", self.orig)
+        self.assertEqual(want, [bytes(t.data.tobytes()) for t in GGUFReader(self.d / "again.gguf").tensors])
+
+    def test_gguf_s_q8_0_is_ggml_s(self):
+        # Every case above encodes both sides with gguf, so a change in gguf's
+        # rounding would move them together. This holds gguf to ggml's own
+        # quantize_row_q8_0_ref — the quantizer that wrote the real base: d =
+        # amax / 127 stored as f16, each value roundf(x / d), ties away from
+        # zero — including exact ties, which numpy's round would send to even.
+        def ggml(x):
+            b = x.reshape(-1, 32).astype(np.float32)
+            d = np.abs(b).max(axis=1, keepdims=True) / 127
+            with np.errstate(divide="ignore"):
+                inv = np.where(d != 0, 1.0 / d, 0.0).astype(np.float32)
+            v = b * inv
+            q = (np.sign(v) * np.floor(np.abs(v) + 0.5)).astype(np.int8)
+            return b"".join(di.tobytes() + qi.tobytes() for di, qi in zip(d.astype(np.float16), q))
+        ties = np.zeros((1, 32), dtype=np.float32)
+        ties[0, 0] = 127.0
+        ties[0, 1:] = np.arange(31) + 0.5
+        for x in [ties, np.zeros((1, 32), dtype=np.float32)] + [bf16_exact(s) for s in range(32)]:
+            self.assertEqual(quants.quantize(x, GGMLQuantizationType.Q8_0).tobytes(), ggml(x))
 
     def test_the_pins_here_are_the_scripts_pins(self):
         # The script runs under *this* file's interpreter (sys.executable), so

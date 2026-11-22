@@ -1488,7 +1488,7 @@ fn reports_the_pin(text: &str) -> bool {
     reports(text, PIN.build, PIN.commit)
 }
 
-/// `/props`' `build_info` — `b11391-2bc563573` — names the same build
+/// `/props`' `build_info` — `b12627-225a5345b` — names the same build
 /// `--version` does: asked of the router after a promotion, it is the model's
 /// own process saying which engine it runs.
 pub fn build_info_is(info: &str, build: u32, commit: &str) -> bool {

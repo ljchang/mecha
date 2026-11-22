@@ -44,6 +44,10 @@ def main():
     if len(sys.argv) != 4:
         sys.exit(__doc__.split("\n\n")[1])
     base_p, edit_p, out_p = sys.argv[1:]
+    # The base is a pinned blob in the hub cache: written over, it is neither
+    # the base nor the graft, and its name still says it is the base.
+    if os.path.exists(out_p) and os.path.samefile(base_p, out_p):
+        sys.exit(f"{out_p} is BASE itself; the graft is written beside it, never over it")
     try:
         base = GGUFReader(base_p)
     except Exception as e:
