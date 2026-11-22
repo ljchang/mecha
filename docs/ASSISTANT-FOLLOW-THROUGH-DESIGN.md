@@ -81,6 +81,7 @@ mean it.
 | F4 | **Web first.** The TUI and Slack follow. |
 | F5 | **It has an off switch** (2026-11-18): `[features] followups`, the Settings → Features toggle, off until the owner turns it on; `[tools] disabled` withholds the tool too. Off stops new proposals; decided and waiting ones stay. |
 | F6 | **Voice calls propose too** (2026-11-18): a spoken turn in a web chat and the voice facade's own slot both name their conversation, so a follow-up from a call returns to it. |
+| F7 | **A per-chat auto button** (2026-11-22) in the web chat's header, beside the read-only / ask / allow mode button, off by default; a click toggles it. While it is on, that chat's follow-up proposals are accepted automatically **when the conversation read no outside content**; a tainted (or unknown-taint) proposal still waits for the owner. **Drafts are not covered** — they still always wait. The owner intends to extend auto to drafts later; that is a separate step and ruling. This supersedes F2's "on the surfaces that have an auto mode" for the web; the TUI's `/review auto` accepts untainted proposals from its session too, as F2 said. |
 
 **The shape.** A run calls `propose_follow_up` with one line and a time; the
 tool writes a record to `~/.mecha/followups/` (`followup.rs`) carrying the
@@ -113,7 +114,7 @@ only proposals, and acceptance crosses the owner.
 |---|---|---|
 | 1 | The store, the tool (web chat and TUI), `mecha followups`, the proposals pane, the Home card, Open chat on a workflow | merged (#896) |
 | 2 | F1: a due follow-up wakes a staging-only run in its conversation, run by the host that owns it; its answer lands in the chat and the workflow's reminder says it was answered | merged (#897) |
-| 3 | F2's auto-accept, on the surfaces that have an auto mode | after 2 |
+| 3 | F7 (and F2 for the TUI): the web chat's **auto** chip and the TUI's `/review auto` accept a run's untainted proposals when it ends, through the owner's accept path, recorded `accepted_by: auto` (§Step 3). Follow-ups only: auto for drafts is a later step and its own ruling | this change |
 | 4 | The acted-on measure: whether the owner opened, replied in or acted on the chat within a day of a woken answer | this change: `mecha followups measure` (§Step 4); "opened" is not measured |
 
 ### Step 2: a due follow-up wakes its conversation
@@ -184,6 +185,43 @@ still only reminds.
   coalesced, quiet-hours-respecting path, so Home's workflow count and the
   card's Open chat button are the way back (F3).
 - **Not here.** Auto-accept (step 3), the acted-on measure (step 4), Slack.
+
+### Step 3: the owner's standing word accepts
+
+F7's rule is one function, `review_policy::auto_accepts`, beside the drafts'
+`auto_releases`: **auto on, the proposal's own recorded taint clean
+(`FollowUp::armed` false, so unknown waits), and the run finished cleanly**.
+Private data alone does not hold a proposal — the owner's own mail in the
+conversation is not an injection's way in; outside content is.
+
+- **The switch.** On the web, the chat header's **auto** chip, beside the
+  mode chip, offered only with `[features] followups` on and never in an
+  incognito or memory chat; `POST /api/chat/{key}/auto` is its one writer,
+  and the server's `auto` event and the transcript's `auto` field are what
+  every open page shows. Nothing a model or a message says reaches it. Like
+  the mode it is kept in memory with the conversation: a resume or a restart
+  starts it off. In the TUI it is the existing `/review auto`, which also
+  still releases untainted drafts as before.
+- **The scope.** When a run ends, only the proposals that run made in that
+  conversation — an id-diff against the store taken when the run started,
+  as the outbox's is — and only while auto is on then. What was already
+  waiting, another chat's, and anything before the chip was turned on are
+  left alone; there is no backfill. A store that cannot be read whole at the
+  start gives no baseline, and nothing is accepted.
+- **The same writer.** Acceptance goes through `followups::accept_as`, the
+  path the pane's Accept drives, so an auto-accepted workflow and a clicked
+  one differ only in `accepted_by` (`owner | auto`, a wire enum that reads
+  an unknown word as `unknown`): on the proposal, on its workflow, in the
+  workflow's `created` event, on the Tasks → Workflows card, and in
+  `followups measure`, so the acted-on rate can be read apart by who
+  accepted.
+- **Not taken.** A woken follow-up's own run never auto-accepts (it takes no
+  baseline): a follow-up cannot schedule the next one without the owner. An
+  early-stopped or failed run's proposals wait, as its drafts do. Each one
+  left waiting is said in the chat with the reason.
+- **Not here.** Drafts (F7 leaves them to a later step and ruling), Slack
+  and the voice facade's own slot (neither has an auto switch for
+  follow-ups; Slack does not propose), the readline `mecha chat`.
 
 ### Step 4: the acted-on measure
 

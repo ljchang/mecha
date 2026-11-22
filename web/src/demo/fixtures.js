@@ -1287,6 +1287,8 @@ export const transcript = {
   steered: false,
   model: 'qwen3.6-35b-a3b',
   mode: 'read_only',
+  // Auto for follow-ups (F7), off as every chat starts.
+  auto: false,
   taint: { private: true, untrusted: true },
   task: null,
   todo: [],

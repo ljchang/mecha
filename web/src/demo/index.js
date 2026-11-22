@@ -374,6 +374,22 @@ export const ROUTES = [
       return text('');
     },
   ],
+  [
+    'POST',
+    /^\/api\/chat\/[^/]+\/auto$/,
+    async (_url, _params, init) => {
+      // The auto chip tracks the server too, for the same reason as the mode
+      // chip: the real one echoes the change back over the stream.
+      let on = false;
+      try {
+        on = JSON.parse(init?.body ?? '{}').on === true;
+      } catch {
+        /* keep it off */
+      }
+      setTimeout(() => emit({ type: 'auto', on }), 60);
+      return json({ ok: true, auto: on });
+    },
+  ],
 
   // The demo boundary: everything that would change something outside the
   // browser, plus the queue panes deep enough to need a real store behind

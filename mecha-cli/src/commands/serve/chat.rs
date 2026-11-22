@@ -230,6 +230,16 @@ pub(super) struct WebSession {
     /// the page yet. Shared with the running approver, so a change lands on
     /// the run's next call (the Slack mode-cell pattern).
     mode: Arc<StdMutex<PermissionMode>>,
+    /// **Auto**, for this conversation's follow-up proposals
+    /// (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` F7): while on, a proposal a run
+    /// here makes is accepted when the run ends, if its recorded taint is
+    /// clean (`review_policy::auto_accepts`); drafts are not covered. Off by
+    /// default, and written by one thing only — the owner's button, through
+    /// [`set_auto`] — never by a tool or by anything a turn says. Kept as
+    /// `mode` is kept: in memory with the conversation, so a resume or a
+    /// restart starts it off again, as it starts `mode` at read-only. Shared
+    /// with the running turn, which reads it when it ends.
+    auto: Arc<std::sync::atomic::AtomicBool>,
     /// Outstanding approval/ask cards for this session.
     questions: super::present::Questions,
     /// How many owner turns this conversation had when it was last named.
@@ -780,6 +790,7 @@ impl ChatState {
                 events,
                 last_usage: Arc::new(StdMutex::new(None)),
                 mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
+                auto: Arc::default(),
                 questions,
                 titled_at: 0,
                 // Empty on purpose: an incognito chat's withheld tools are
@@ -1693,6 +1704,13 @@ pub enum WireEvent {
     /// and a stale chip is a person believing a run is gated when it is not.
     Mode {
         mode: String,
+    },
+    /// The conversation's **auto** for follow-up proposals, whenever the
+    /// owner changes it — the state every open page reconciles its button
+    /// against, as `mode` is, for the same reason: a button reading off over
+    /// a chat that accepts on the owner's behalf is the dangerous staleness.
+    Auto {
+        on: bool,
     },
     /// The grants this conversation holds, standing first, after an owner's
     /// `/grant` or `/revoke` or a run's card-made grant — the state every
@@ -2734,6 +2752,7 @@ fn ensure_session_as<'a>(
                 events,
                 last_usage: Arc::new(StdMutex::new(None)),
                 mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
+                auto: Arc::default(),
                 questions,
                 titled_at: 0,
                 withheld: Arc::from(init.withheld),
@@ -3006,6 +3025,9 @@ pub async fn transcript(
         "incognito": ws.session.room().is_some(),
         "model": bound.model,
         "mode": mode,
+        // Auto for this chat's follow-up proposals (F7): the server's word,
+        // so a reloaded page shows what will happen, not what it last asked.
+        "auto": ws.auto.load(std::sync::atomic::Ordering::SeqCst),
         "running": running,
         // Its background jobs as they stand — the one running, then the ones
         // waiting in order — for the page's queue panel; kept current after
@@ -4198,6 +4220,30 @@ fn begin_turn(
                     .map(|i| i.id)
                     .collect()
             });
+    // The follow-ups already proposed before this run, for the auto rule at
+    // its end (F7), taken here for the same reason as the outbox's. Only for
+    // a turn in a recorded conversation whose binding can propose, and
+    // **never for a woken one**: with no baseline nothing is accepted, so a
+    // follow-up's own run cannot schedule the next wake without the owner —
+    // its proposals wait in the pane like any tainted one.
+    let follow_baseline = follow_ups_may_auto_accept(
+        opts.unattended,
+        ws.session.kept().is_some(),
+        bound
+            .agent
+            .registry()
+            .get(mecha_core::tool::follow_up::NAME)
+            .is_some(),
+    )
+    .then(crate::commands::followups::baseline)
+    .flatten();
+    let follow_auto = Arc::clone(&ws.auto);
+    let follow_session = ws.session.kept().map(|s| s.meta.id.clone());
+    // Where the workflow says its drafts stage: what `mecha followups
+    // accept` records from the same config, so an auto-accepted workflow and
+    // a clicked one differ only in who accepted.
+    let follow_outbox = bound.config.outbox.dir.clone();
+    let follow_tz = bound.config.agent.timezone().unwrap_or(chrono_tz::UTC);
     // Per-run context on the shared agent: jail, approver, budget, cancel,
     // steering, and an outbox route stamped with this session's id.
     let mut cx = (**bound.agent.context()).clone();
@@ -5023,6 +5069,39 @@ fn begin_turn(
             }
         }
 
+        // F7: with the chat's auto on — read now, so the owner's latest word
+        // governs — this run's follow-up proposals are settled by
+        // `review_policy::auto_accepts`, through the same accept the
+        // proposals pane drives. Before `Done`, like the drafts' offer: how
+        // the run's proposals were taken is part of how it ended.
+        if let (Some(baseline), Some(session_id)) = (follow_baseline, follow_session) {
+            if follow_auto.load(std::sync::atomic::Ordering::SeqCst) {
+                let finished_clean = matches!(&outcome, Ok(o) if !o.stop_cause.is_early());
+                // The TUI's `/review auto` makes this same call.
+                let lines = tokio::task::spawn_blocking(move || {
+                    crate::commands::followups::settle_auto_lines(
+                        &session_id,
+                        &baseline,
+                        finished_clean,
+                        follow_outbox,
+                        follow_tz,
+                    )
+                })
+                .await
+                // Unread is never "nothing proposed": said, and whatever the
+                // run proposed is still proposed.
+                .unwrap_or_else(|e| {
+                    vec![format!(
+                        "Follow-ups were not accepted automatically ({e}); anything this \
+                         run proposed waits in Review → Follow-ups."
+                    )]
+                });
+                for text in lines {
+                    let _ = bcast.send(WireEvent::Notice { text });
+                }
+            }
+        }
+
         let taint = conversation.taint;
         let done = match &outcome {
             Ok(o) => WireEvent::Done {
@@ -5766,6 +5845,71 @@ pub async fn set_mode(
     Json(serde_json::json!({ "ok": true })).into_response()
 }
 
+#[derive(serde::Deserialize)]
+pub struct AutoBody {
+    pub on: bool,
+}
+
+/// What the chat says when auto changes — the line in the conversation
+/// saying a person changed it, and what it does and does not cover.
+pub(super) fn auto_notice(on: bool) -> &'static str {
+    if on {
+        "auto on: follow-ups proposed here are accepted for you when the conversation \
+         has read no outside content; the rest, and every draft, still wait for you"
+    } else {
+        "auto off: follow-ups proposed here wait for you in Review → Follow-ups"
+    }
+}
+
+/// POST /api/chat/{key}/auto — the chat's **auto** for follow-up proposals
+/// (`ASSISTANT-FOLLOW-THROUGH-DESIGN.md` F7), the owner's button and the
+/// one writer of [`WebSession::auto`]. Like the mode, an explicit control
+/// only: nothing a model or a message says reaches it, because a standing
+/// acceptance must not be decidable by anything sharing a context window
+/// with third-party text (`review_policy::ReviewMode`'s rule).
+///
+/// Behind `[features] followups` (the route's owner): with the feature off
+/// nothing proposes, and a switch for it would promise what does not run.
+/// Refused for an incognito chat, which records no conversation and so has
+/// no follow-up to accept.
+pub async fn set_auto(
+    State(state): Chat,
+    axum::extract::Path(key): axum::extract::Path<String>,
+    Json(body): Json<AutoBody>,
+) -> axum::response::Response {
+    if !valid_key(&key) {
+        return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
+    }
+    if super::incognito::is_incognito_key(&key) {
+        return (
+            StatusCode::BAD_REQUEST,
+            "an incognito chat proposes no follow-ups, so it has no auto\n",
+        )
+            .into_response();
+    }
+    let chat = match chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let bound = chat.followed_or_current().await;
+    let mut sessions = chat.sessions.lock().await;
+    if chat.stopping.is_cancelled() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "server is shutting down\n").into_response();
+    }
+    let ws = match ensure_session(chat, &bound, &mut sessions, &key) {
+        Ok(ws) => ws,
+        Err(e) => return (super::incognito::status_of(&e), format!("{e:#}\n")).into_response(),
+    };
+    ws.auto.store(body.on, std::sync::atomic::Ordering::SeqCst);
+    // The event for every open page's button, the notice for the record of
+    // a person changing it — `set_mode`'s pair.
+    let _ = ws.events.send(WireEvent::Auto { on: body.on });
+    let _ = ws.events.send(WireEvent::Notice {
+        text: auto_notice(body.on).to_string(),
+    });
+    Json(serde_json::json!({ "ok": true, "auto": body.on })).into_response()
+}
+
 /// One grant as the page shows it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GrantWire {
@@ -6413,6 +6557,15 @@ pub(super) async fn answer_in_chat(
     }
 }
 
+/// Whether a turn takes the follow-up baseline the auto rule (F7) needs at
+/// its end — without one, nothing it proposes is accepted. Never for a woken
+/// (unattended) turn: a follow-up's own run must not be able to schedule the
+/// next wake with no owner in the loop. Only in a recorded conversation whose
+/// binding can propose.
+fn follow_ups_may_auto_accept(unattended: bool, recorded: bool, can_propose: bool) -> bool {
+    !unattended && recorded && can_propose
+}
+
 /// Put a recorded conversation in the session map under its resume key,
 /// or say why not — the half of `POST /api/resume` that needs the map
 /// locked, so a caller that must start a turn on the result (the
@@ -6627,6 +6780,7 @@ fn resume_locked(
             events,
             last_usage: Arc::new(StdMutex::new(None)),
             mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
+            auto: Arc::default(),
             questions,
             titled_at: 0,
             // **A resumed delegation is still a delegation.** D6 is a
@@ -8283,6 +8437,82 @@ pub(super) fn test_chat_drawing(
     )
 }
 
+/// A chat whose model, every turn, proposes the follow-up `what` two hours
+/// out with `propose_follow_up` — over the default follow-up store, so call
+/// it under a `HomeGuard` — and then says so: the F7 auto tests' run.
+#[cfg(test)]
+pub(super) fn test_chat_proposing(what: &'static str) -> Arc<ChatState> {
+    use mecha_core::message::{Block, CompletionResponse, StopReason};
+    struct Proposes {
+        what: &'static str,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl mecha_core::provider::Provider for Proposes {
+        fn local(&self) -> bool {
+            true
+        }
+        fn id(&self) -> &str {
+            "local"
+        }
+        fn default_model(&self) -> &str {
+            "test"
+        }
+        async fn complete(
+            &self,
+            req: &mecha_core::message::CompletionRequest,
+            _: Option<&mecha_core::provider::StreamSink>,
+        ) -> Result<CompletionResponse> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // Keyed on the request, not a count: a chat's naming pass asks
+            // the same provider between turns.
+            let answered = req.messages.last().is_some_and(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, Block::ToolResult { .. }))
+            });
+            let (block, stop_reason) = if !answered {
+                (
+                    Block::ToolUse {
+                        id: format!("propose-{n}"),
+                        name: mecha_core::tool::follow_up::NAME.into(),
+                        input: serde_json::json!({"what": self.what, "in_hours": 2}),
+                    },
+                    StopReason::ToolUse,
+                )
+            } else {
+                (
+                    Block::Text {
+                        text: "I'll check back on it.".into(),
+                    },
+                    StopReason::EndTurn,
+                )
+            };
+            Ok(CompletionResponse {
+                message: Message::assistant(vec![block]),
+                stop_reason,
+                usage: Usage::default(),
+                refusal: None,
+                model: "test".into(),
+                malformed_tool_args: 0,
+            })
+        }
+    }
+    let mut registry = mecha_core::tool::Registry::new();
+    registry.insert(Arc::new(mecha_core::tool::follow_up::ProposeFollowUp::new(
+        Arc::new(mecha_core::followup::FollowUpStore::open_default().unwrap()),
+        Arc::new(mecha_core::clock::SystemClock),
+    )));
+    test_chat_from(
+        Box::new(Proposes {
+            what,
+            calls: Default::default(),
+        }),
+        registry,
+        answering_config(true),
+    )
+}
+
 /// A chat whose model looks something up with one tool and then answers,
 /// every turn, with `[features] corrections` as given.
 #[cfg(test)]
@@ -8650,6 +8880,7 @@ mod held_tests {
                 withheld: Arc::from([]),
                 task: None,
                 mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
+                auto: Arc::default(),
                 questions: Default::default(),
                 titled_at: 0,
                 recorded_generation: 1,
@@ -8729,6 +8960,7 @@ mod held_tests {
                 withheld: Arc::from([]),
                 task: None,
                 mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
+                auto: Arc::default(),
                 questions: Default::default(),
                 titled_at: 0,
                 recorded_generation: 0,
@@ -8886,6 +9118,7 @@ mod held_tests {
                 withheld: Arc::from([]),
                 task: None,
                 mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
+                auto: Arc::default(),
                 questions: Default::default(),
                 titled_at: 0,
                 recorded_generation: 0,
@@ -9114,6 +9347,7 @@ mod held_tests {
                 withheld: Arc::from([]),
                 task: None,
                 mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
+                auto: Arc::default(),
                 questions: Default::default(),
                 titled_at: 0,
                 recorded_generation: 1,
@@ -9244,6 +9478,7 @@ mod workflow_recording_tests {
                     withheld: Arc::from([]),
                     task: Some(serde_json::json!({"id":case,"name":case})),
                     mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
+                    auto: Arc::default(),
                     questions: Default::default(),
                     titled_at: 0,
                     recorded_generation: 1,
@@ -9622,6 +9857,16 @@ mod wake_tests {
 
     /// A tool that changes something, and says whether it ran.
     struct WriteNote(Arc<std::sync::atomic::AtomicBool>);
+    /// A woken turn never takes the baseline, so with auto on its proposals
+    /// still wait: a follow-up cannot schedule the next one by itself.
+    #[test]
+    fn a_woken_turn_never_auto_accepts_a_follow_up() {
+        assert!(!follow_ups_may_auto_accept(true, true, true));
+        assert!(follow_ups_may_auto_accept(false, true, true));
+        assert!(!follow_ups_may_auto_accept(false, false, true));
+        assert!(!follow_ups_may_auto_accept(false, true, false));
+    }
+
     #[async_trait::async_trait]
     impl mecha_core::tool::Tool for WriteNote {
         fn name(&self) -> &str {
@@ -9838,8 +10083,15 @@ mod wake_tests {
             decided_at: Some(now - chrono::Duration::hours(2)),
             workflow_id: None,
             reason: None,
+            accepted_by: Some(followup::Acceptance::Owner),
         };
-        let w = followup::workflow_for(&f, workspace, None, now - chrono::Duration::hours(2));
+        let w = followup::workflow_for(
+            &f,
+            workspace,
+            None,
+            followup::Acceptance::Owner,
+            now - chrono::Duration::hours(2),
+        );
         WorkflowStore::default_store()
             .unwrap()
             .create(w.clone())
