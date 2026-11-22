@@ -181,7 +181,10 @@ pub enum Cmd {
     Export { name: String },
 }
 
-pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
+pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
+    // `dispatch` refused these already; restated so no other caller of
+    // `execute` can hand a trial a flag it would ignore.
+    refuse_model_flags(global)?;
     match args.cmd {
         Cmd::New { manifest } => new(&manifest),
         Cmd::Run {
@@ -443,6 +446,41 @@ fn provider_and_model(cfg: &mecha_core::config::Config) -> Result<(String, Strin
         provider,
         p.model.clone().unwrap_or_else(|| "(default)".into()),
     ))
+}
+
+/// The global options that choose what a run talks to — and that `mecha
+/// exp` does not honour. Its trials run on what each arm names (`provider`,
+/// `model`, an `effort=` override, the arm's or manifest's environment for
+/// the system prompt), and the condition hash every row carries is planned
+/// from the same manifest in `run`, `status` and `report`; a flag here
+/// would steer none of them. Refused rather than ignored, for every
+/// subcommand: `exp run -p <name>` once ran every trial on the config's
+/// default provider and said so only in its first line (2026-11-22).
+///
+/// Called from `dispatch` before the router is held or observed, so a
+/// refused command takes no hold on the provider it named.
+pub(crate) fn refuse_model_flags(global: &GlobalOpts) -> Result<()> {
+    let named: Vec<&str> = [
+        (global.provider.is_some(), "--provider/-p"),
+        (global.model.is_some(), "--model/-m"),
+        (global.effort.is_some(), "--effort/-e"),
+        (global.system.is_some(), "--system/-s"),
+    ]
+    .into_iter()
+    .filter_map(|(set, flag)| set.then_some(flag))
+    .collect();
+    if named.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "`mecha exp` does not take {}: the manifest decides what every trial runs on, and the \
+         flag would be ignored. Name it on each arm instead — `provider = \"<name>\"` (a key in \
+         [providers]) and/or `model = \"<id>\"` under `[arms.<arm>]`, `overrides = \
+         [\"effort=<level>\"]` for effort, the arm's or manifest's `[environment]` for a system \
+         prompt. An arm that names no provider runs on the config's `default_provider`. The \
+         manifest is written once at `exp new`, so a different model is a new experiment.",
+        named.join(", ")
+    );
 }
 
 /// An experiment names the model it measures. A default provider that
@@ -3295,6 +3333,65 @@ mod tests {
     }
 
     use super::*;
+
+    /// `exp run <name> -p <provider>` parses — the options are global — and
+    /// used to run every trial on the default provider (2026-11-22). Each of
+    /// the four flags `exp` ignores is refused, wherever it sits on the line
+    /// and for every subcommand; the error names the flag and the manifest
+    /// fix; a line with none of them, or with a flag that is not one of the
+    /// four, passes.
+    #[test]
+    fn a_model_flag_exp_would_ignore_is_refused() {
+        use clap::Parser;
+        let parse = |argv: &[&str]| crate::Cli::try_parse_from(argv).unwrap();
+        for (argv, flag) in [
+            (
+                &["mecha", "exp", "run", "x", "-p", "inkling"][..],
+                "--provider/-p",
+            ),
+            (
+                &["mecha", "-p", "inkling", "exp", "status", "x"],
+                "--provider/-p",
+            ),
+            (&["mecha", "exp", "report", "x", "-m", "qwen"], "--model/-m"),
+            (
+                &["mecha", "exp", "run", "x", "--effort", "high"],
+                "--effort/-e",
+            ),
+            (
+                &["mecha", "exp", "export", "x", "-s", "be brief"],
+                "--system/-s",
+            ),
+            (
+                &["mecha", "exp", "judge", "x", "--provider", "a"],
+                "--provider/-p",
+            ),
+        ] {
+            let cli = parse(argv);
+            assert!(matches!(cli.command, crate::Command::Exp(_)), "{argv:?}");
+            let e = refuse_model_flags(&cli.global)
+                .expect_err(&format!("{argv:?} must be refused"))
+                .to_string();
+            assert!(e.contains(flag), "{argv:?}: {e}");
+            assert!(
+                e.contains("provider = \"<name>\"") && e.contains("[arms.<arm>]"),
+                "the error must name the manifest fix: {e}"
+            );
+            assert!(e.contains("default_provider"), "{e}");
+        }
+        // Every flag set is named in one error, not the first alone.
+        let cli = parse(&["mecha", "exp", "run", "x", "-p", "a", "-m", "b"]);
+        let e = refuse_model_flags(&cli.global).unwrap_err().to_string();
+        assert!(e.contains("--provider/-p, --model/-m"), "{e}");
+        // Nothing to refuse: no flag, or a global `exp` does not read for a
+        // model.
+        for argv in [
+            &["mecha", "exp", "run", "x", "--dry-run"][..],
+            &["mecha", "exp", "status", "x", "--no-mcp"],
+        ] {
+            assert!(refuse_model_flags(&parse(argv).global).is_ok(), "{argv:?}");
+        }
+    }
 
     /// A default provider that would ask its server for its model is refused
     /// before any trial runs; one that names its model is not (review of
