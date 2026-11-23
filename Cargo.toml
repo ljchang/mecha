@@ -40,7 +40,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 # persona plus `shared.db`, opened only by mecha core and never `graph.db`.
 # Ordinary bundled SQLite includes FTS5 for plaintext stores. Enabling core
 # memory-prototype unifies this linkage with its SQLCipher-enabled backend.
-rusqlite = { version = "0.41.1", features = ["bundled", "hooks", "limits"] }
+rusqlite = { version = "0.43.0", features = ["bundled", "hooks", "limits"] }
 serde = { version = "1", features = ["derive"] }
 # `preserve_order`: a tool schema reaches llama-server in the order it is
 # written. Its grammar fixes the order of optional properties, so sorted
