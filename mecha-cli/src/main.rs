@@ -24,7 +24,7 @@ mod tui;
 mod voice;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use mecha_core::message::Effort;
 use std::path::PathBuf;
 
@@ -49,22 +49,18 @@ pub struct Cli {
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct GlobalOpts {
     /// Provider to use, by config key (default: the config's default_provider).
-    /// `mecha exp` refuses it: each arm names its own `provider`.
     #[arg(long, short = 'p', global = true)]
     pub provider: Option<String>,
 
-    /// Model id, overriding the provider's default. `mecha exp` refuses it:
-    /// each arm names its own `model`.
+    /// Model id, overriding the provider's default.
     #[arg(long, short = 'm', global = true)]
     pub model: Option<String>,
 
-    /// Reasoning depth: low, medium, high, xhigh, max. `mecha exp` refuses
-    /// it: an arm sets `overrides = ["effort=..."]`.
+    /// Reasoning depth: low, medium, high, xhigh, max.
     #[arg(long, short = 'e', global = true)]
     pub effort: Option<Effort>,
 
-    /// System prompt. Use @path to read it from a file. `mecha exp` refuses
-    /// it: an arm's environment carries its system prompt.
+    /// System prompt. Use @path to read it from a file.
     #[arg(long, short = 's', global = true)]
     pub system: Option<String>,
 
@@ -450,7 +446,8 @@ pub enum Command {
 
     /// A designed comparison over a chosen set of runs: arms that vary the
     /// closed lever set, a control, a prediction per treatment arm, and one
-    /// isolated home per arm. A peer of `eval`, never a flag on it.
+    /// isolated home per arm. A peer of `eval`, never a flag on it. Takes no
+    /// global option: the manifest names each arm's model and harness.
     Exp(commands::exp::Args),
 
     /// Requests that arrived through the public surface, and the quarantine
@@ -993,16 +990,20 @@ async fn main() {
 }
 
 async fn dispatch() -> Result<()> {
-    let mut cli = Cli::parse();
+    // `Cli::parse` spelled out, keeping the matches: `exp` asks them where
+    // each global option's value came from.
+    let matches = Cli::command().get_matches();
+    let mut cli =
+        Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.format(&mut Cli::command()).exit());
     // A driven one-shot cannot resume at all; reject that boundary before
     // memory resume preflight tries to find or read the selected transcript.
     if let Command::Run(args) = &cli.command {
         commands::run::preflight_start(&cli.global, args)?;
     }
-    // `exp` runs what its manifest names; a model flag it would ignore is
+    // `exp` runs what its manifest names; a global option it would ignore is
     // refused before the router is held or observed on its account.
     if let Command::Exp(_) = &cli.command {
-        commands::exp::refuse_model_flags(&cli.global)?;
+        commands::exp::refuse_global_options(&Cli::command(), &matches, |k| std::env::var_os(k))?;
     }
     #[cfg(feature = "memory-prototype")]
     let ordinary_memory = match &cli.command {
@@ -1104,7 +1105,7 @@ async fn dispatch() -> Result<()> {
         Command::Serve(args) => commands::serve::execute(args, cli.global.dynamic_goals).await,
         Command::Diagnose(args) => commands::diagnose::execute(&cli.global, args).await,
         Command::Harness(args) => commands::harness::execute(&cli.global, args).await,
-        Command::Exp(args) => commands::exp::execute(&cli.global, args).await,
+        Command::Exp(args) => commands::exp::execute(args).await,
         Command::Frontdoor(args) => commands::frontdoor::run(&cli.global, args).await,
         Command::Mail(args) => commands::mail::run(&cli.global, args).await,
         Command::Tasks(args) => commands::tasks::run(&cli.global, args).await,

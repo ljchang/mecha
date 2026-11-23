@@ -16,9 +16,9 @@ for one. `mecha --version` prints the build.
 ## Global options
 
 These are declared once and accepted by every subcommand, including the ones that
-never build an agent (where they are simply ignored). The exception is `mecha exp`:
-it refuses `-p`, `-m`, `-e` and `-s`, because an experiment's manifest decides what
-every trial runs on (see [`exp`](#exp)).
+never build an agent (where they are simply ignored). The exception is `mecha exp`,
+which refuses every one of them, because an experiment's manifest decides what
+every trial runs with (see [`exp`](#exp)).
 
 | Flag | Description |
 |---|---|
@@ -378,11 +378,13 @@ mecha eval --ab-config max_turns=40             # measure a proposed change
 Run a designed comparison with named arms and isolated homes. The manifest fixes
 the tasks and treatments before trials run; this is separate from `mecha eval`.
 
-The manifest also fixes the model. Every `exp` subcommand refuses `--provider`,
-`--model`, `--effort` and `--system` rather than ignore them: name `provider` and
-`model` on each `[arms.<arm>]`, set effort with `overrides = ["effort=<level>"]`,
-and put a system prompt in the arm's or manifest's `[environment]`. An arm that
-names no provider runs on the config's `default_provider`.
+The manifest also fixes the model and the harness. Every `exp` subcommand refuses
+the global options rather than ignore them: name `provider` and `model` on each
+`[arms.<arm>]`, set effort with `overrides = ["effort=<level>"]`, and put a system
+prompt, turn limit or MCP server in the arm's or manifest's `[environment]`. An arm
+that names no provider runs on the config's `default_provider`, which
+`MECHA_PROVIDER` and `MECHA_MODEL` set as they do for any command; `MECHA_EFFORT`
+would not reach a trial, so `exp` refuses to start while it is set.
 
 ```bash
 mecha exp new eval/assistant-lifetime.toml

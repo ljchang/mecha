@@ -1110,6 +1110,35 @@ mod tests {
         real
     }
 
+    /// The premise of `mecha exp`'s two environment rulings
+    /// (`exp::DROPPED_ENV`): the operator's `[agent]` effort, which
+    /// `MECHA_EFFORT` writes, never reaches a trial home, so `exp` refuses the
+    /// variable; the operator's default provider and its model, which
+    /// `MECHA_PROVIDER` and `MECHA_MODEL` write, do, so `exp` honours them. If
+    /// this fails, a trial home has started copying the operator's harness,
+    /// and the refusal is refusing a variable that now works.
+    #[test]
+    fn a_trial_home_takes_the_operators_model_and_never_its_effort() {
+        let tmp = Scratch::new();
+        let env = env_at(tmp.path(), "[agent]\nmax_turns = 7\n");
+        let mut real = operator();
+        // Not `High`: that is the default, and would pass either way.
+        real.agent.effort = Some(crate::message::Effort::Low);
+        assert_ne!(real.agent.effort, Config::default().agent.effort);
+        real.providers.get_mut("local").unwrap().model = Some("fictional-7b".into());
+        let cfg = env.base_config(&real, tmp.path()).unwrap();
+        assert_eq!(
+            cfg.agent.effort,
+            Config::default().agent.effort,
+            "the operator's effort stays home"
+        );
+        assert_eq!(cfg.default_provider, "local");
+        assert_eq!(
+            cfg.providers["local"].model.as_deref(),
+            Some("fictional-7b")
+        );
+    }
+
     /// The operator's servers and hooks do not ride in — the leak this
     /// module closes — while the machine facts do, and a server reaches a
     /// trial only by name.
