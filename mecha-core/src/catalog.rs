@@ -446,17 +446,17 @@ pub const CATALOG: &[Entry] = &[
         // first turn, 4 seeds a setting, the tokens chosen that the model
         // gave under 1% were 47 in 1000 untruncated (35.8 on the base
         // weights, the rest the uncensored graft's), 0.4 at min-p 0.05, and
-        // 0.1 under the Qwen3.6 preset; the prose followed the counts. min-p
-        // cuts relative to the top token, so a confident step keeps every
-        // candidate it had.
+        // 1.3 under top-p 0.95 / top-k 20 (for scale, Qwen3.6 under its own
+        // preset was 0.1); the prose followed the counts. min-p is the one
+        // kept because it cuts relative to the top token, so a confident
+        // step keeps every candidate it had.
         //
-        // No draft: its own drafter (DSpark) is
-        // not in llama.cpp yet. Through both open versions (#32218, and the
-        // rewrite at 8b4c3aae) it decoded 5–14% faster on code and 5–15%
-        // slower on prose, accepting 0.39 of three drafted tokens and 0.50
-        // of two (GB10, 2026-11-21 and -22). The template's own default
-        // effort (0.9, "high") stands; a request sets
-        // `chat_template_kwargs.reasoning_effort`.
+        // No draft: its own drafter (DSpark) is not in llama.cpp yet.
+        // Through both open versions (#32218, and the rewrite at 8b4c3aae)
+        // it decoded 5–14% faster on code and 5–15% slower on prose,
+        // accepting 0.39 of three drafted tokens and 0.50 of two (GB10,
+        // 2026-11-21 and -22). The template's own default effort (0.9,
+        // "high") stands; a request sets `chat_template_kwargs.reasoning_effort`.
         //
         // `reasoning-preserve` is set, never left to the build, as for every
         // Qwen preset (`start-router.sh`'s `qwen_sampling`): the template
