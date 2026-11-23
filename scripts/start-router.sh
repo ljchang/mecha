@@ -345,9 +345,10 @@ fi
 
 # Inkling 2 Mini, the catalog's `inkling-2-mini` (catalog.rs says why each
 # line): unsloth's mainline-layout file — the repository's root GGUFs are in
-# unsloth's fork's layout — and the model card's sampling, with
-# reasoning-preserve set as every Qwen preset's is (its template keeps every
-# reasoning_content it is handed). 240k in one slot: its KV is 131 KiB a
+# unsloth's fork's layout — and the model card's sampling with one change,
+# min-p 0.05 (catalog.rs says why: untruncated, its long prose came apart),
+# with reasoning-preserve set as every Qwen preset's is (its template keeps
+# every reasoning_content it is handed). 240k in one slot: its KV is 131 KiB a
 # token. No draft: its DSpark drafter is not in llama.cpp yet. Needs b12611 or newer; on an older engine the child fails
 # its start when the model is picked, and only then.
 #
@@ -369,7 +370,7 @@ parallel = 1
 temp = 1.0
 top-p = 1.0
 top-k = 0
-min-p = 0.0
+min-p = 0.05
 reasoning-preserve = true
 EOF
 }

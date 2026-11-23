@@ -438,7 +438,19 @@ pub const CATALOG: &[Entry] = &[
             },
         ],
         geometry: Geometry::PerTier(INKLING_GEOMETRY),
-        // The model card's sampling. No draft: its own drafter (DSpark) is
+        // The model card's sampling — temperature 1.0, nothing truncated —
+        // with one change: min-p 0.05. The card's is its evaluation setting,
+        // and in long prose every tail token is kept and steers what
+        // follows: a persona chat on it came back with wrong times, slipped
+        // points of view and off-kilter idiom (2026-11-23). On that chat's
+        // first turn, 4 seeds a setting, the tokens chosen that the model
+        // gave under 1% were 47 in 1000 untruncated (35.8 on the base
+        // weights, the rest the uncensored graft's), 0.4 at min-p 0.05, and
+        // 0.1 under the Qwen3.6 preset; the prose followed the counts. min-p
+        // cuts relative to the top token, so a confident step keeps every
+        // candidate it had.
+        //
+        // No draft: its own drafter (DSpark) is
         // not in llama.cpp yet. Through both open versions (#32218, and the
         // rewrite at 8b4c3aae) it decoded 5–14% faster on code and 5–15%
         // slower on prose, accepting 0.39 of three drafted tokens and 0.50
@@ -459,7 +471,7 @@ pub const CATALOG: &[Entry] = &[
             "temp = 1.0",
             "top-p = 1.0",
             "top-k = 0",
-            "min-p = 0.0",
+            "min-p = 0.05",
             "reasoning-preserve = true",
         ],
         temperature: Some(1.0),

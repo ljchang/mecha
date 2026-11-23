@@ -177,7 +177,10 @@ with the `inkling2_loop` fix (llama.cpp #32704; without it the output is
 gibberish), and `engine::PIN` moved to b12627 with this entry. Its window is
 short for its size because llama.cpp gives each of its 48 layer passes a
 full-length cache: 131 KiB a token, against Gemma's 22. Its own drafter
-(DSpark) is not in llama.cpp yet.
+(DSpark) is not in llama.cpp yet. It samples as its model card says —
+temperature 1.0, nothing truncated — except for min-p 0.05: the card's
+setting is the one its evaluations ran at, and untruncated, its long prose
+drew enough tail tokens to come apart (`catalog.rs` has the measurement).
 
 Its uncensored twin is **not** in the catalog. OpenUncensored's checkpoint
 changes only the 20 attention-output tensors of layers 4–23. On the GB10,
