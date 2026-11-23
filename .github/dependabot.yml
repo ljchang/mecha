@@ -12,6 +12,14 @@ updates:
     groups:
       cargo-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # Code mode's interpreter crates move only with their worker binary:
+      # `mecha-core/Cargo.toml` pins them exactly and `interpreter/worker.rs`
+      # pins the same release's wheel by sha256, because the two speak one
+      # wire protocol. A grouped bump moved `monty-types` alone and the
+      # workspace stopped compiling (#918); a monty upgrade is a deliberate
+      # change that re-pins the worker, never a routine week.
+      - dependency-name: "monty*"
     commit-message:
       prefix: "deps"
 
