@@ -12213,7 +12213,16 @@ comparison over a chosen set**, with the design written before the run.
   on in `levers_on` refuses the command. Provider and model are checked as
   a pair, because a model id means something only to its provider: `-p`
   alone onto an arm that pins a model for another provider, and `-m` alone
-  over arms on different providers, are refused (review of #917). A flag that could rewrite an
+  over arms on different providers, are refused (review of #917). A value
+  some arms already have and others lack is not a contradiction for either,
+  but writing it erases a difference: when that leaves two arms under one
+  condition (`Manifest::identical_arms`, presets resolved), a two-arm
+  ablation has become A/A under the file's prediction and the command is
+  refused; when the arms still differ otherwise, it is stored and the erased
+  difference named (`Rewritten::narrowed`). `-p` is checked against the
+  operator's `[providers]` when the config reads — a typo once stored fine
+  and failed only at `exp run` — and `MECHA_EFFORT` is refused on `new`
+  with a pointer to `-e`, since `new` writes only its command line. A flag that could rewrite an
   existing experiment's manifest would orphan its rows (the hash carries
   the model) and leave predictions written for one model judging another,
   so there is no such flag.

@@ -152,6 +152,19 @@ fn exp_new_writes_the_model_flags_into_a_new_experiment() {
         metric = \"turns\"\n\
         rationale = \"fewer turns\"\n";
     std::fs::write(work.join("m.toml"), file).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        "default_provider = \"fixture\"\n\
+         [providers.fixture]\n\
+         kind = \"openai-compatible\"\n\
+         base_url = \"http://127.0.0.1:1\"\n\
+         model = \"fictional\"\n\
+         [providers.other]\n\
+         kind = \"openai-compatible\"\n\
+         base_url = \"http://127.0.0.1:1\"\n\
+         model = \"other-fictional\"\n",
+    )
+    .unwrap();
     let ok = |args: &[&str]| {
         let out = mecha(&home, &work, args, &[]);
         assert!(
@@ -206,6 +219,33 @@ fn exp_new_writes_the_model_flags_into_a_new_experiment() {
     // A flag that contradicts an arm is refused, not written over it.
     let err = refused(&["exp", "new", "m.toml", "--name", "c", "--max-turns", "30"]);
     assert!(err.contains("already overrides max_turns to `20`"), "{err}");
+    // One that repeats the treatment's only difference into the control
+    // would run the design as A/A: refused.
+    let err = refused(&["exp", "new", "m.toml", "--name", "c", "--max-turns", "20"]);
+    assert!(err.contains("would run under one condition"), "{err}");
+    // A provider the config does not name is refused when written, not
+    // when the first trial fails on it.
+    let err = refused(&["exp", "new", "m.toml", "--name", "c", "-p", "othr"]);
+    assert!(
+        err.contains("`-p othr` names no provider") && err.contains("fixture, local, other"),
+        "{err}"
+    );
+    // `MECHA_EFFORT` on `new` points at the flag that writes it.
+    let out = mecha(
+        &home,
+        &work,
+        &["exp", "new", "m.toml", "--name", "c"],
+        &[("MECHA_EFFORT", "low")],
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && err.contains("pass `-e <level>`"),
+        "{err}"
+    );
+    assert!(
+        !home.join("experiments").join("c").exists(),
+        "nothing stored"
+    );
 
     // `exp run` still takes none of them, and points at `exp new`.
     let err = refused(&["exp", "run", "levers-b", "-p", "other"]);

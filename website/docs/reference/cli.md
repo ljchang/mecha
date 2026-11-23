@@ -390,7 +390,9 @@ To run a design on another model, write it as a new experiment from the command
 line: `exp new` takes `-p`, `-m`, `-e`, `--max-turns`, `--max-output-tokens`,
 `--compact-at` and the `--no-<lever>` flags, writes each into every arm of the
 stored manifest, and needs `--name` for the new experiment. It refuses a flag that
-contradicts what an arm already says, and keeps the file's comments.
+contradicts what an arm already says, one that would leave two arms identical (a
+treatment's only change written into the control too), and a `-p` your config does
+not name; it keeps the file's comments.
 
 ```bash
 mecha exp new eval/memory-yard.toml --name memory-yard-inkling -p inkling-uncensored

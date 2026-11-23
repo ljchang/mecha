@@ -224,6 +224,25 @@ pub async fn execute(args: Args, edits: ArmEdits) -> Result<()> {
 fn new(path: &Path, name: Option<&str>, edits: &ArmEdits) -> Result<()> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    // A provider is a key in the operator's `[providers]`, and a typo would
+    // be stored and found only when `exp run` fails on it (review of #917).
+    // Checked against the config when there is one to read; a file written
+    // here to run elsewhere is the exception that only warns.
+    if let Some(p) = &edits.provider {
+        match mecha_core::config::Config::load_global() {
+            Ok(cfg) => anyhow::ensure!(
+                cfg.providers.contains_key(p),
+                "`-p {p}` names no provider in your config (configured: {}): a trial runs on a \
+                 key in [providers]",
+                cfg.providers.keys().cloned().collect::<Vec<_>>().join(", ")
+            ),
+            Err(e) => eprintln!(
+                "mecha exp: could not read your config to check `-p {p}` against it ({e:#}); \
+                 `exp run` will refuse it if no provider has that name"
+            ),
+        }
+    }
+    let mut narrowed = Vec::new();
     let text = match (name, edits.is_empty()) {
         (None, true) => text,
         (None, false) => anyhow::bail!(
@@ -242,8 +261,10 @@ fn new(path: &Path, name: Option<&str>, edits: &ArmEdits) -> Result<()> {
                     format!(", with {} in every arm", written.join(", "))
                 }
             );
-            rewrite_manifest(&text, name, edits, &provenance)
-                .with_context(|| path.display().to_string())?
+            let out = rewrite_manifest(&text, name, edits, &provenance)
+                .with_context(|| path.display().to_string())?;
+            narrowed = out.narrowed;
+            out.text
         }
     };
     let manifest = Manifest::parse(&text).with_context(|| path.display().to_string())?;
@@ -258,6 +279,12 @@ fn new(path: &Path, name: Option<&str>, edits: &ArmEdits) -> Result<()> {
     );
     for line in edits.describe() {
         println!("  every arm: {line}");
+    }
+    for line in &narrowed {
+        eprintln!(
+            "mecha exp: the flags erased a difference between arms — {line}; they still differ \
+             in what else the file says"
+        );
     }
     // A prediction is written for a design: every edit — the model, a knob,
     // a lever — moved the design under the file's words (review of #917:
@@ -644,7 +671,16 @@ pub(crate) fn refuse_global_options(
             named.join(", ")
         ));
     }
-    if dropped {
+    if dropped && writes_manifest {
+        // `exp new` writes its command line, never the environment, and
+        // runs no trial: the reason the other verbs give does not apply,
+        // and the effort is one flag away (review of #917).
+        why.push(format!(
+            "`{DROPPED_ENV}` is set, and `exp new` writes only its command line into the arms: \
+             pass `-e <level>` to write an effort into every arm, and run this as `env -u \
+             {DROPPED_ENV} mecha exp new …`."
+        ));
+    } else if dropped {
         why.push(format!(
             "`{DROPPED_ENV}` is set, and a trial would not run at that effort: a trial's \
              `[agent]` table is its environment's, not your config's. Set effort on an arm \
