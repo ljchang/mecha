@@ -12210,7 +12210,10 @@ comparison over a chosen set**, with the design written before the run.
   the command on the first line, and needs `--name` — the result is a
   different experiment. It never overwrites: an arm that names another
   provider or model, an override at another value, or a lever turned back
-  on in `levers_on` refuses the command. A flag that could rewrite an
+  on in `levers_on` refuses the command. Provider and model are checked as
+  a pair, because a model id means something only to its provider: `-p`
+  alone onto an arm that pins a model for another provider, and `-m` alone
+  over arms on different providers, are refused (review of #917). A flag that could rewrite an
   existing experiment's manifest would orphan its rows (the hash carries
   the model) and leave predictions written for one model judging another,
   so there is no such flag.

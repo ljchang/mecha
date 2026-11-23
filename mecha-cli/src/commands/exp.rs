@@ -259,11 +259,11 @@ fn new(path: &Path, name: Option<&str>, edits: &ArmEdits) -> Result<()> {
     for line in edits.describe() {
         println!("  every arm: {line}");
     }
-    // A prediction is written for a design, and often for its model: the
-    // flags moved the model or its knobs under the file's words.
-    let moved_the_model =
-        edits.provider.is_some() || edits.model.is_some() || !edits.overrides.is_empty();
-    if moved_the_model && manifest.arms.values().any(|a| a.prediction.is_some()) {
+    // A prediction is written for a design: every edit — the model, a knob,
+    // a lever — moved the design under the file's words (review of #917:
+    // levers were left out, and a lever is what a prediction is most often
+    // about).
+    if !edits.is_empty() && manifest.arms.values().any(|a| a.prediction.is_some()) {
         eprintln!(
             "mecha exp: the arms' predictions are the file's, written before these flags — read \
              them in {} before `exp run`; if one no longer says what you expect of this model, \
@@ -3530,11 +3530,15 @@ mod tests {
     }
 
     /// The edits `exp new` would write for `argv`.
-    fn edits(argv: &[&str]) -> ArmEdits {
+    fn try_edits(argv: &[&str]) -> Result<ArmEdits> {
         use clap::CommandFactory;
         let cmd = crate::Cli::command();
-        let matches = cmd.clone().try_get_matches_from(argv).unwrap();
-        arm_edits(&cmd, &matches).unwrap()
+        let matches = cmd.clone().try_get_matches_from(argv)?;
+        arm_edits(&cmd, &matches)
+    }
+
+    fn edits(argv: &[&str]) -> ArmEdits {
+        try_edits(argv).unwrap()
     }
 
     /// The reverse guard: every global option the CLI defines — today's, and
@@ -3553,15 +3557,18 @@ mod tests {
             let long = format!("--{}", a.get_long().expect("a global has a long name"));
             let mut flag = vec![long.clone()];
             if a.get_action().takes_values() {
-                // The first value its parser takes: a number (one `--compact-at`
-                // takes, at least 1000), then an effort,
-                // a tool profile, anything.
-                let value = ["5000", "low", "research", "x"]
+                // The first value both parsers take: clap's, and for an
+                // option `exp new` writes, `arm_edits`' (`parse_change`
+                // bounds a value clap accepts — `--compact-at 1` is clap's
+                // and not the manifest's). Chosen, not hard-coded, so a
+                // new bound cannot turn this guard into a panic (review of
+                // #917).
+                let value = ["1", "1000", "5000", "low", "research", "x"]
                     .into_iter()
                     .find(|v| {
-                        cmd.clone()
-                            .try_get_matches_from(["mecha", &long, v, "exp", "new", "m"])
-                            .is_ok()
+                        let argv = ["mecha", "exp", "new", "m", "--name", "n", &long, v];
+                        cmd.clone().try_get_matches_from(argv).is_ok()
+                            && (writes(&long[2..]).is_none() || try_edits(&argv).is_ok())
                     })
                     .unwrap_or_else(|| panic!("no test value parses for {long}"));
                 flag.push(value.into());

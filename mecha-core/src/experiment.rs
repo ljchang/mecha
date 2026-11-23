@@ -2696,11 +2696,52 @@ pub fn rewrite_manifest(
         .and_then(Item::as_table_like_mut)
         .context("the manifest names no [arms]")?;
     anyhow::ensure!(!arms.is_empty(), "the manifest names no arms");
+    // A model id means something only to the provider that serves it
+    // (`Arm::model`), so the pair is checked together (review of #917).
+    // `-m` alone over arms that name different providers would write one
+    // id for all of them — a bake-off's arms are exactly that.
+    if edits.model.is_some() && edits.provider.is_none() {
+        let providers: std::collections::BTreeSet<Option<&str>> = arms
+            .iter()
+            .map(|(_, a)| {
+                a.as_table_like()
+                    .and_then(|t| t.get("provider"))
+                    .and_then(|v| v.as_str())
+            })
+            .collect();
+        anyhow::ensure!(
+            providers.len() <= 1,
+            "the arms run on different providers ({}), and one `-m` cannot name a model for all \
+             of them: pass `-p` with it, or edit the file",
+            providers
+                .iter()
+                .map(|p| p.map(|p| format!("`{p}`")).unwrap_or("the default".into()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     for (arm_name, item) in arms.iter_mut() {
         let arm_name = arm_name.get().to_string();
         let arm = item
             .as_table_like_mut()
             .with_context(|| format!("arm `{arm_name}` is not a table"))?;
+        // `-p` alone onto an arm that pins a model for another provider
+        // (the default, when it names none) would ask the new provider for
+        // an id it may never have served, and nothing downstream refuses an
+        // arm that names its model (`refuse_an_unnamed_model`).
+        if let (Some(p), None) = (&edits.provider, &edits.model) {
+            let pinned = |key: &str| arm.get(key).and_then(|v| v.as_str()).map(String::from);
+            if let Some(m) = pinned("model") {
+                let on = pinned("provider");
+                anyhow::ensure!(
+                    on.as_deref() == Some(p.as_str()),
+                    "arm `{arm_name}` pins model `{m}`, an id of {}, and `-p {p}` would ask \
+                     `{p}` for it: pass `-m` with the id `{p}` serves, or edit the file",
+                    on.map(|q| format!("provider `{q}`"))
+                        .unwrap_or("the default provider".into())
+                );
+            }
+        }
         for (key, new) in [("provider", &edits.provider), ("model", &edits.model)] {
             let Some(new) = new else { continue };
             match arm.get(key).map(|v| v.as_str()) {
@@ -4132,7 +4173,35 @@ rationale = "no notice, fewer turns"
             model: Some("m2".into()),
             ..ArmEdits::default()
         };
-        assert!(edit(model, &with("model = \"m1\"")).is_err());
+        assert!(edit(model.clone(), &with("model = \"m1\"")).is_err());
+
+        // The pair, together (review of #917): `-p` alone onto an arm whose
+        // model is another provider's is refused; with `-m`, or onto an arm
+        // already on that provider, it is not.
+        let e = edit(provider("b"), &with("model = \"m1\""))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("arm `quiet` pins model `m1`, an id of the default provider"),
+            "{e}"
+        );
+        let both = ArmEdits {
+            provider: Some("b".into()),
+            model: Some("m1".into()),
+            ..ArmEdits::default()
+        };
+        assert!(edit(both, &with("model = \"m1\"")).is_ok());
+        assert!(edit(provider("a"), &with("provider = \"a\"\nmodel = \"m1\"")).is_ok());
+        // `-m` alone: fine over one provider, refused over a bake-off's.
+        assert!(edit(model.clone(), MANIFEST).is_ok());
+        assert!(edit(model.clone(), &with("provider = \"a\""))
+            .unwrap_err()
+            .to_string()
+            .contains("the arms run on different providers (the default, `a`)"));
+        let all_a = MANIFEST
+            .replace("preset = ", "provider = \"a\"\npreset = ")
+            .replace("[arms.quiet]\n", "[arms.quiet]\nprovider = \"a\"\n");
+        assert!(edit(model, &all_a).is_ok(), "{all_a}");
 
         let turns = |n: &str| ArmEdits {
             overrides: vec![change(&format!("max_turns={n}"))],
