@@ -60,7 +60,7 @@ tokio-tungstenite = { version = "0.30", default-features = false, features = ["c
 # Default features off: they would ask for aws-lc-rs again.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 # The roots tokio-tungstenite's own rustls path trusts, the same version.
-webpki-roots = "0.26"
+webpki-roots = "1.0"
 toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
