@@ -134,7 +134,10 @@ because each model's template defines its own. Inkling 2 takes `none`, `minimal`
 Qwen3.8 takes only `low`, `medium` and `xhigh`, and fails the request on anything
 else. A template that does not read the key ignores it. Unset, nothing is sent and
 the template keeps its default. The value is the same on every request, so the cached
-prefix still holds.
+prefix still holds. A word the template does not accept fails on the server as a 500,
+which mecha retries as a server error before the turn fails. If a provider that just
+gained this line starts failing that way, the value is the first thing to check;
+the server's journal names it.
 
 ```toml
 [providers.inkling]

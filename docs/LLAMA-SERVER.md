@@ -460,6 +460,22 @@ machine from starting is one people turn off.
   a chatml override it is accepted and ignored. Note the corollary: a client
   that sends *no* template kwargs has no dependency on the model's template and
   survives a model swap.
+- **`reasoning_effort` is each template's own vocabulary.** Read from the
+  embedded templates of every GGUF the router served on 2026-11-23:
+
+  | template | reads it | accepts | default |
+  |---|---|---|---|
+  | Inkling 2 Mini (base and graft) | yes | `none` `minimal` `low` `medium` `high` `xhigh` `max`, or a float in [0, 0.99] | 0.9 |
+  | Qwen3.8-27B (all three) | yes | `low` `medium` `xhigh`; `high` becomes `xhigh`; anything else raises | `xhigh` |
+  | Qwen3.6-35B (both), Gemma 4 | no | ignored | — |
+
+  So mecha never translates `[agent] effort` into it: `max` would raise on
+  every Qwen3.8 request. A provider names the template's word itself
+  (`[providers.<name>] reasoning_effort`). A wrong word is a template
+  exception, which the server returns as a 500, which is retried as a server
+  error before the turn fails; the server's journal names the value. On
+  Inkling, `low` halved code mode's wall time (M9: 40/40, 60 s against 110 s a
+  run) and shortened persona replies from ~730 tokens to ~160.
 - **Ask what is served, do not assert it.** A single-model llama-server
   serves whatever is loaded and ignores the `model` field of a request, so
   naming a model there is not selecting one — it only decides what gets
