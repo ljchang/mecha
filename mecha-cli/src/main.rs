@@ -1002,8 +1002,14 @@ async fn dispatch() -> Result<()> {
     }
     // `exp` runs what its manifest names; a global option it would ignore is
     // refused before the router is held or observed on its account.
-    if let Command::Exp(_) = &cli.command {
-        commands::exp::refuse_global_options(&Cli::command(), &matches, |k| std::env::var_os(k))?;
+    if let Command::Exp(a) = &cli.command {
+        let writes_manifest = matches!(a.cmd, commands::exp::Cmd::New { .. });
+        commands::exp::refuse_global_options(
+            &Cli::command(),
+            &matches,
+            |k| std::env::var_os(k),
+            writes_manifest,
+        )?;
     }
     #[cfg(feature = "memory-prototype")]
     let ordinary_memory = match &cli.command {
@@ -1105,7 +1111,10 @@ async fn dispatch() -> Result<()> {
         Command::Serve(args) => commands::serve::execute(args, cli.global.dynamic_goals).await,
         Command::Diagnose(args) => commands::diagnose::execute(&cli.global, args).await,
         Command::Harness(args) => commands::harness::execute(&cli.global, args).await,
-        Command::Exp(args) => commands::exp::execute(args).await,
+        Command::Exp(args) => {
+            let edits = commands::exp::arm_edits(&Cli::command(), &matches)?;
+            commands::exp::execute(args, edits).await
+        }
         Command::Frontdoor(args) => commands::frontdoor::run(&cli.global, args).await,
         Command::Mail(args) => commands::mail::run(&cli.global, args).await,
         Command::Tasks(args) => commands::tasks::run(&cli.global, args).await,

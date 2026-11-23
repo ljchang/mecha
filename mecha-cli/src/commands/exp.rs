@@ -22,7 +22,8 @@ use mecha_core::experiment::{
     judge, ChildInvocation, ExperimentRef, ExperimentStore, Manifest, Trial, TrialKind,
     TrialStatus, EXPERIMENT_REF_ENV,
 };
-use mecha_core::experiment::{PrincipalPoint, StageLever};
+use mecha_core::experiment::{rewrite_manifest, ArmEdits, PrincipalPoint, StageLever};
+use mecha_core::harness::{Lever, OverrideKey};
 use std::path::{Path, PathBuf};
 
 /// How long a case's `expect.verify` command may run in the trial's
@@ -133,9 +134,22 @@ pub struct Args {
 pub enum Cmd {
     /// Create an experiment from a manifest file. The design is written
     /// once, before anything runs; a second `new` over the same name refuses.
+    ///
+    /// The one `exp` verb that takes global options, and only the ones a
+    /// manifest can say: `-p`, `-m`, `-e`, `--max-turns`,
+    /// `--max-output-tokens`, `--compact-at` and the `--no-<lever>` flags are
+    /// written into every arm of the stored manifest (with `--name`), so the
+    /// same design runs on another model as a new experiment. A flag never
+    /// replaces what an arm already says.
     New {
-        /// The manifest (TOML). Its `name` names the experiment.
+        /// The manifest (TOML). Its `name` names the experiment, unless
+        /// `--name` gives another.
         manifest: PathBuf,
+        /// Store the design under this name instead of the file's. Needed
+        /// when a flag writes into the arms: the result is a different
+        /// experiment from the file's.
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Drive every trial the design calls for that has not finished. Resumes:
     /// a trial found `running` at start crashed with its runner and is
@@ -182,10 +196,18 @@ pub enum Cmd {
 
 /// No `GlobalOpts` parameter on purpose: `exp` honours no global option, and
 /// `dispatch` refuses one given (`refuse_global_options`), so there is
-/// nothing a caller could hand a trial through it.
-pub async fn execute(args: Args) -> Result<()> {
+/// nothing a caller could hand a trial through it. `edits` are the flags
+/// `exp new` writes into a manifest (`arm_edits`), and any other verb
+/// refuses them.
+pub async fn execute(args: Args, edits: ArmEdits) -> Result<()> {
+    if !matches!(args.cmd, Cmd::New { .. }) {
+        anyhow::ensure!(
+            edits.is_empty(),
+            "only `mecha exp new` writes a flag into a manifest"
+        );
+    }
     match args.cmd {
-        Cmd::New { manifest } => new(&manifest),
+        Cmd::New { manifest, name } => new(&manifest, name.as_deref(), &edits),
         Cmd::Run {
             name,
             limit,
@@ -199,9 +221,52 @@ pub async fn execute(args: Args) -> Result<()> {
     }
 }
 
-fn new(path: &Path) -> Result<()> {
+fn new(path: &Path, name: Option<&str>, edits: &ArmEdits) -> Result<()> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    // A provider is a key in the operator's `[providers]`, and a typo would
+    // be stored and found only when `exp run` fails on it (review of #917).
+    // Checked against the config when there is one to read; a file written
+    // here to run elsewhere is the exception that only warns.
+    if let Some(p) = &edits.provider {
+        match mecha_core::config::Config::load_global() {
+            Ok(cfg) => anyhow::ensure!(
+                cfg.providers.contains_key(p),
+                "`-p {p}` names no provider in your config (configured: {}): a trial runs on a \
+                 key in [providers]",
+                cfg.providers.keys().cloned().collect::<Vec<_>>().join(", ")
+            ),
+            Err(e) => eprintln!(
+                "mecha exp: could not read your config to check `-p {p}` against it ({e:#}); \
+                 `exp run` will refuse it if no provider has that name"
+            ),
+        }
+    }
+    let mut narrowed = Vec::new();
+    let text = match (name, edits.is_empty()) {
+        (None, true) => text,
+        (None, false) => anyhow::bail!(
+            "a flag written into the arms makes a different experiment from {}'s: give it a \
+             name with `--name <new-name>`",
+            path.display()
+        ),
+        (Some(name), _) => {
+            let written = edits.describe();
+            let provenance = format!(
+                "Written by `mecha exp new --name {name}` from {}{}.",
+                path.display(),
+                if written.is_empty() {
+                    String::new()
+                } else {
+                    format!(", with {} in every arm", written.join(", "))
+                }
+            );
+            let out = rewrite_manifest(&text, name, edits, &provenance)
+                .with_context(|| path.display().to_string())?;
+            narrowed = out.narrowed;
+            out.text
+        }
+    };
     let manifest = Manifest::parse(&text).with_context(|| path.display().to_string())?;
     let store = ExperimentStore::open_default(&manifest.name)?;
     store.create(&text)?;
@@ -212,6 +277,27 @@ fn new(path: &Path) -> Result<()> {
         control_label(&manifest),
         manifest.kind
     );
+    for line in edits.describe() {
+        println!("  every arm: {line}");
+    }
+    for line in &narrowed {
+        eprintln!(
+            "mecha exp: the flags erased a difference between arms — {line}; they still differ \
+             in what else the file says"
+        );
+    }
+    // A prediction is written for a design: every edit — the model, a knob,
+    // a lever — moved the design under the file's words (review of #917:
+    // levers were left out, and a lever is what a prediction is most often
+    // about).
+    if !edits.is_empty() && manifest.arms.values().any(|a| a.prediction.is_some()) {
+        eprintln!(
+            "mecha exp: the arms' predictions are the file's, written before these flags — read \
+             them in {} before `exp run`; if one no longer says what you expect of this model, \
+             fix the file and `exp new` it under another name",
+            store.manifest_path().display()
+        );
+    }
     Ok(())
 }
 
@@ -457,6 +543,78 @@ fn provider_and_model(cfg: &mecha_core::config::Config) -> Result<(String, Strin
 /// would be.
 pub(crate) const DROPPED_ENV: &str = "MECHA_EFFORT";
 
+/// What `exp new` writes for a global option, by its long name: the model,
+/// an override, or a lever off. `None` is an option a manifest cannot say,
+/// which every `exp` verb refuses. The `--no-<lever>` flags are read off the
+/// closed lever set, so a lever with a flag is writable without a line here.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Writes {
+    Provider,
+    Model,
+    Override(OverrideKey),
+    LeverOff(Lever),
+}
+
+fn writes(long: &str) -> Option<Writes> {
+    Some(match long {
+        "provider" => Writes::Provider,
+        "model" => Writes::Model,
+        "effort" => Writes::Override(OverrideKey::Effort),
+        "max-turns" => Writes::Override(OverrideKey::MaxTurns),
+        "max-output-tokens" => Writes::Override(OverrideKey::MaxOutputTokens),
+        "compact-at" => Writes::Override(OverrideKey::CompactAtTokens),
+        _ => {
+            let lever = long.strip_prefix("no-")?.replace('-', "_");
+            Writes::LeverOff(Lever::parse(&lever)?)
+        }
+    })
+}
+
+/// The global options set on the command line, with what each would write.
+fn given<'a>(
+    cmd: &'a clap::Command,
+    matches: &'a clap::ArgMatches,
+) -> impl Iterator<Item = (&'a clap::Arg, Option<Writes>)> + 'a {
+    cmd.get_arguments()
+        .filter(|a| a.is_global_set())
+        .filter(|a| {
+            matches.value_source(a.get_id().as_str())
+                == Some(clap::parser::ValueSource::CommandLine)
+        })
+        .map(|a| (a, a.get_long().and_then(writes)))
+}
+
+/// The edits `exp new` writes into every arm, from the global options on
+/// the command line. Values are taken as typed and canonicalised by
+/// `harness::parse_change`, the parser the manifest's own `overrides` go
+/// through; an option a manifest cannot say is not here, and
+/// `refuse_global_options` has refused it already.
+pub(crate) fn arm_edits(cmd: &clap::Command, matches: &clap::ArgMatches) -> Result<ArmEdits> {
+    let mut edits = ArmEdits::default();
+    for (arg, w) in given(cmd, matches) {
+        let Some(w) = w else { continue };
+        let id = arg.get_id().as_str();
+        let raw = || -> Result<String> {
+            matches
+                .get_raw(id)
+                .and_then(|mut v| v.next())
+                .and_then(|v| v.to_str())
+                .map(String::from)
+                .with_context(|| format!("`--{id}` carries no value"))
+        };
+        match w {
+            Writes::Provider => edits.provider = Some(raw()?),
+            Writes::Model => edits.model = Some(raw()?),
+            Writes::Override(key) => edits.overrides.push(
+                mecha_core::harness::parse_change(&format!("{}={}", key.as_str(), raw()?))
+                    .with_context(|| format!("`--{}`", arg.get_long().unwrap_or(id)))?,
+            ),
+            Writes::LeverOff(l) => edits.levers_off.push(l),
+        }
+    }
+    Ok(edits)
+}
+
 /// Refuse every global option `mecha exp` was given on the command line,
 /// and the environment override it would drop. `exp` honours none of them:
 /// a trial is a child `mecha run` whose argv and home it builds from the
@@ -475,19 +633,18 @@ pub(crate) const DROPPED_ENV: &str = "MECHA_EFFORT";
 /// the router is held or observed, so a refused command takes no hold on
 /// the provider it named; `execute` takes no `GlobalOpts`, so no other
 /// caller can hand a trial one.
+///
+/// `writes_manifest` is `exp new`: it takes the options a manifest can say
+/// (`arm_edits`) and refuses the rest like every other verb.
 pub(crate) fn refuse_global_options(
     cmd: &clap::Command,
     matches: &clap::ArgMatches,
     env: impl Fn(&str) -> Option<std::ffi::OsString>,
+    writes_manifest: bool,
 ) -> Result<()> {
-    let named: Vec<String> = cmd
-        .get_arguments()
-        .filter(|a| a.is_global_set())
-        .filter(|a| {
-            matches.value_source(a.get_id().as_str())
-                == Some(clap::parser::ValueSource::CommandLine)
-        })
-        .map(|a| match (a.get_long(), a.get_short()) {
+    let named: Vec<String> = given(cmd, matches)
+        .filter(|(_, w)| !(writes_manifest && w.is_some()))
+        .map(|(a, _)| match (a.get_long(), a.get_short()) {
             (Some(l), Some(s)) => format!("--{l}/-{s}"),
             (Some(l), None) => format!("--{l}"),
             (None, Some(s)) => format!("-{s}"),
@@ -508,11 +665,22 @@ pub(crate) fn refuse_global_options(
              `default_provider`. Effort is `overrides = [\"effort=<level>\"]`, a lever is \
              `levers_off`/`levers_on`, and the system prompt, turn limit and the rest of the \
              harness are the arm's or manifest's `[environment]`. The manifest is written once \
-             at `exp new`, so a different model is a new experiment.",
+             at `exp new`, so a different model is a new experiment: `mecha exp new <file> \
+             --name <new-name> -p <provider>` writes -p, -m, -e, --max-turns, \
+             --max-output-tokens, --compact-at and the --no-<lever> flags into every arm.",
             named.join(", ")
         ));
     }
-    if dropped {
+    if dropped && writes_manifest {
+        // `exp new` writes its command line, never the environment, and
+        // runs no trial: the reason the other verbs give does not apply,
+        // and the effort is one flag away (review of #917).
+        why.push(format!(
+            "`{DROPPED_ENV}` is set, and `exp new` writes only its command line into the arms: \
+             pass `-e <level>` to write an effort into every arm, and run this as `env -u \
+             {DROPPED_ENV} mecha exp new …`."
+        ));
+    } else if dropped {
         why.push(format!(
             "`{DROPPED_ENV}` is set, and a trial would not run at that effort: a trial's \
              `[agent]` table is its environment's, not your config's. Set effort on an arm \
@@ -3380,11 +3548,33 @@ mod tests {
         use clap::CommandFactory;
         let cmd = crate::Cli::command();
         let matches = cmd.clone().try_get_matches_from(argv).unwrap();
-        refuse_global_options(&cmd, &matches, |k| {
-            env.iter()
-                .find(|(name, _)| *name == k)
-                .map(|(_, v)| v.into())
-        })
+        // As `dispatch` decides it, from the parsed command.
+        let writes_manifest = matches
+            .subcommand_matches("exp")
+            .and_then(|m| m.subcommand_name())
+            == Some("new");
+        refuse_global_options(
+            &cmd,
+            &matches,
+            |k| {
+                env.iter()
+                    .find(|(name, _)| *name == k)
+                    .map(|(_, v)| v.into())
+            },
+            writes_manifest,
+        )
+    }
+
+    /// The edits `exp new` would write for `argv`.
+    fn try_edits(argv: &[&str]) -> Result<ArmEdits> {
+        use clap::CommandFactory;
+        let cmd = crate::Cli::command();
+        let matches = cmd.clone().try_get_matches_from(argv)?;
+        arm_edits(&cmd, &matches)
+    }
+
+    fn edits(argv: &[&str]) -> ArmEdits {
+        try_edits(argv).unwrap()
     }
 
     /// The reverse guard: every global option the CLI defines — today's, and
@@ -3403,14 +3593,18 @@ mod tests {
             let long = format!("--{}", a.get_long().expect("a global has a long name"));
             let mut flag = vec![long.clone()];
             if a.get_action().takes_values() {
-                // The first value its parser takes: a number, then an effort,
-                // a tool profile, anything.
-                let value = ["1", "low", "research", "x"]
+                // The first value both parsers take: clap's, and for an
+                // option `exp new` writes, `arm_edits`' (`parse_change`
+                // bounds a value clap accepts — `--compact-at 1` is clap's
+                // and not the manifest's). Chosen, not hard-coded, so a
+                // new bound cannot turn this guard into a panic (review of
+                // #917).
+                let value = ["1", "1000", "5000", "low", "research", "x"]
                     .into_iter()
                     .find(|v| {
-                        cmd.clone()
-                            .try_get_matches_from(["mecha", &long, v, "exp", "new", "m"])
-                            .is_ok()
+                        let argv = ["mecha", "exp", "new", "m", "--name", "n", &long, v];
+                        cmd.clone().try_get_matches_from(argv).is_ok()
+                            && (writes(&long[2..]).is_none() || try_edits(&argv).is_ok())
                     })
                     .unwrap_or_else(|| panic!("no test value parses for {long}"));
                 flag.push(value.into());
@@ -3434,7 +3628,99 @@ mod tests {
                     .to_string();
                 assert!(e.contains(&spelled), "{argv:?}: {e}");
             }
+            // `exp new` takes exactly the options it writes, and writes
+            // every one it takes — none accepted and dropped.
+            let mut argv: Vec<&str> = vec!["mecha", "exp", "new", "m.toml", "--name", "n"];
+            argv.extend(flag.iter().map(String::as_str));
+            match writes(&long[2..]) {
+                Some(_) => {
+                    assert!(refusal(&argv, &[]).is_ok(), "{argv:?}");
+                    assert!(
+                        !edits(&argv).is_empty(),
+                        "{argv:?} is taken and not written"
+                    );
+                }
+                None => {
+                    let e = refusal(&argv, &[])
+                        .expect_err(&format!("{argv:?} must be refused"))
+                        .to_string();
+                    assert!(e.contains(&spelled), "{argv:?}: {e}");
+                    assert!(edits(&argv).is_empty(), "{argv:?}");
+                }
+            }
         }
+    }
+
+    /// Every override a manifest can carry has a flag `exp new` writes it
+    /// from, and each flag lands as the manifest's own spelling would.
+    #[test]
+    fn exp_new_writes_each_flag_as_the_manifest_would_say_it() {
+        let e = edits(&[
+            "mecha",
+            "exp",
+            "new",
+            "m.toml",
+            "--name",
+            "n",
+            "-p",
+            "inkling",
+            "-m",
+            "fictional-7b",
+            "-e",
+            "low",
+            "--max-turns",
+            "40",
+            "--max-output-tokens",
+            "9000",
+            "--compact-at",
+            "50000",
+            "--no-mcp",
+            "--no-learned-rules",
+        ]);
+        assert_eq!(e.provider.as_deref(), Some("inkling"));
+        assert_eq!(e.model.as_deref(), Some("fictional-7b"));
+        let specs: Vec<String> = e
+            .overrides
+            .iter()
+            .map(|c| format!("{}={}", c.key.as_str(), c.value))
+            .collect();
+        for key in OverrideKey::ALL {
+            assert!(
+                specs
+                    .iter()
+                    .any(|s| s.starts_with(&format!("{}=", key.as_str()))),
+                "override `{}` has no `exp new` flag: {specs:?}",
+                key.as_str()
+            );
+        }
+        assert!(specs.contains(&"effort=low".to_string()), "{specs:?}");
+        assert_eq!(e.levers_off, [Lever::Mcp, Lever::LearnedRules]);
+        // Not a lever: refused, never written.
+        assert!(writes("no-mcp-server").is_none());
+        assert!(writes("no-thinking").is_none());
+        assert!(writes("workspace").is_none());
+    }
+
+    /// `exp new` says what the other verbs say about anything else, and
+    /// the verbs that run or read say where the model is written.
+    #[test]
+    fn exp_new_refuses_what_a_manifest_cannot_say_and_run_points_at_new() {
+        let e = refusal(
+            &[
+                "mecha", "exp", "new", "m.toml", "--name", "n", "-p", "a", "-w", "/tmp",
+            ],
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            e.contains("--workspace/-w") && !e.contains("--provider"),
+            "{e}"
+        );
+        let e = refusal(&["mecha", "exp", "run", "x", "-p", "a"], &[])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("mecha exp new <file>"), "{e}");
     }
 
     #[test]

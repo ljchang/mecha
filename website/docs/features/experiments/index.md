@@ -112,9 +112,11 @@ rationale = "the same harness on a smaller model fails more"
 
 An arm may name its `provider` (a key in your config's `[providers]` table)
 and `model`; absent, it runs against your default. This is the way to choose
-the model: `mecha exp` refuses `-p`, `-m` and every other global option on the
-command line, rather than run every trial on your default while you believe
-otherwise. Beyond that it may only
+the model: `mecha exp run` refuses `-p`, `-m` and every other global option on
+the command line, rather than run every trial on your default while you believe
+otherwise. `mecha exp new <file> --name <new> -p <provider>` writes the provider
+(and `-m`, `-e`, `--max-turns`, `--no-<lever>`) into every arm for you, as a new
+experiment. Beyond that it may only
 vary the closed set: levers by name in `levers_off`, or turned back on
 after a preset in `levers_on` (`bare` plus `learned_rules` is the
 add-one-to-bare design; a name in both lists is on — the list of levers is
