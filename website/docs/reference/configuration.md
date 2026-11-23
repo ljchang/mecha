@@ -109,6 +109,7 @@ enforced by the merge, not asked for in a comment. See
 | `output_price_per_mtok` | float | unset | Output price per million tokens. |
 | `temperature` | float | unset | Sampling temperature, sent verbatim by backends that accept one. Rejected on `anthropic`. |
 | `seed` | integer | unset | Sampling seed for repeatable draws. Rejected on `anthropic`. |
+| `reasoning_effort` | string | unset | The thinking level a llama-server's chat template reads, sent as `chat_template_kwargs.reasoning_effort` on every request. In the template's own words (see below). Only on a `local` provider with a `base_url`. |
 | `context_window` | integer | unset | Context available to one request; for llama-server, the per-slot window. |
 | `vision` | bool | inferred from provider kind | Defaults to enabled for `anthropic`, disabled for `openai`, `local`, and `openai-compatible`. Enable only when the endpoint and model accept images. |
 | `max_retries` | integer | `3` | Retries per request on transient failures (429, 5xx, transport). `0` disables. |
@@ -126,6 +127,22 @@ silent no-ops, because the Anthropic API rejects the parameters. Do not reach fo
 `temperature = 0.0` to get repeatability — greedy decoding can walk into verbatim
 repetition loops that sampling noise would have broken. Pin the server's own default
 and set `seed` instead.
+
+`reasoning_effort` uses the template's vocabulary, not mecha's `[agent] effort`,
+because each model's template defines its own. Inkling 2 takes `none`, `minimal`,
+`low`, `medium`, `high`, `xhigh` or `max` (or a number from 0 to 0.99, default 0.9).
+Qwen3.8 takes only `low`, `medium` and `xhigh`, and fails the request on anything
+else. A template that does not read the key ignores it. Unset, nothing is sent and
+the template keeps its default. The value is the same on every request, so the cached
+prefix still holds.
+
+```toml
+[providers.inkling]
+kind = "local"
+base_url = "http://127.0.0.1:8080"
+model = "inkling-2-mini"
+reasoning_effort = "low"   # shorter thinking, faster replies
+```
 
 `fallbacks` is empty by default: strict beats silently answering with a different
 model. Fallback is turn-local — the next turn starts from the primary again — and

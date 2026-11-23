@@ -38,6 +38,11 @@ impl Anthropic {
     pub fn from_config(cfg: &ProviderConfig) -> Result<Self> {
         // Refused up front rather than silently dropped: someone who pinned the
         // sampler for repeatable evals must not believe it is pinned here.
+        anyhow::ensure!(
+            cfg.reasoning_effort.is_none(),
+            "`reasoning_effort` is a llama-server chat template's; on this provider effort is \
+             `[agent] effort`"
+        );
         if cfg.temperature.is_some() || cfg.seed.is_some() {
             bail!(
                 "the Anthropic API rejects `temperature` and has no `seed`; remove them \
