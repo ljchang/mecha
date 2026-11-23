@@ -319,9 +319,7 @@ fn with_releases(data: String, releases: &str) -> String {
 fn releases_json(total: i64, assets: &[(i64, &str, i64)]) -> String {
     let nodes: Vec<String> = assets
         .iter()
-        .map(|(id, name, n)| {
-            format!(r#"{{"databaseId":{id},"name":"{name}","downloadCount":{n}}}"#)
-        })
+        .map(|(id, name, n)| format!(r#"{{"id":"RA_{id}","name":"{name}","downloadCount":{n}}}"#))
         .collect();
     format!(
         r#"{{"totalCount":{total},"nodes":[{{"databaseId":7,"tagName":"v1.0","releaseAssets":{{"totalCount":{},"nodes":[{}]}}}}]}}"#,
@@ -392,7 +390,7 @@ fn a_releases_field_that_is_not_there_is_unknown_not_none() {
     // An asset list cut short is not the whole count.
     let r = parse_releases(&json!({"releases": {"totalCount": 1, "nodes": [
         {"databaseId": 1, "tagName": "v1", "releaseAssets": {"totalCount": 60, "nodes": [
-            {"databaseId": 2, "name": "a", "downloadCount": 5}]}}]}}))
+            {"id": "RA_2", "name": "a", "downloadCount": 5}]}}]}}))
     .unwrap();
     assert!(!r.complete);
     assert_eq!(r.assets[0].downloads, Some(5));
@@ -1013,4 +1011,34 @@ fn release_samples_past_the_keep_window_are_pruned() {
         .is_empty(),
         "the read records are pruned with their samples"
     );
+}
+
+/// The release query names only fields GitHub's schema has. The fake `gh`
+/// answers anything, so it could not catch `databaseId` on `ReleaseAsset`,
+/// which failed every batch of the first real run (2026-11-22).
+#[test]
+fn the_release_query_asks_only_for_fields_github_has() {
+    let q = crate::github::usage::RELEASE_FIELDS;
+    let assets = &q[q.find("releaseAssets").unwrap()..];
+    let asset_nodes = &assets[assets.find("nodes {").unwrap() + 7..];
+    let asset_fields: Vec<&str> = asset_nodes[..asset_nodes.find('}').unwrap()]
+        .split_whitespace()
+        .collect();
+    let known = |ty: &str| {
+        crate::github::usage::RELEASE_SCHEMA
+            .iter()
+            .find(|(t, _)| *t == ty)
+            .unwrap()
+            .1
+    };
+    for f in &asset_fields {
+        assert!(
+            known("ReleaseAsset").contains(f),
+            "ReleaseAsset has no field {f}"
+        );
+    }
+    let release_nodes = &q[q.find("nodes {").unwrap() + 7..q.find("releaseAssets").unwrap()];
+    for f in release_nodes.split_whitespace() {
+        assert!(known("Release").contains(&f), "Release has no field {f}");
+    }
 }

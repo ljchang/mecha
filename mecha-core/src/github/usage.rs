@@ -63,7 +63,27 @@ const MANIFEST_BYTES_MAX: usize = 256 * 1024;
 /// The releases field of the batch's repository fragment (`batch_query`).
 pub(super) const RELEASE_FIELDS: &str = "releases(first: 20, orderBy: {field: CREATED_AT, \
      direction: DESC}) { totalCount nodes { databaseId tagName releaseAssets(first: 50) { \
-     totalCount nodes { databaseId name downloadCount } } } }";
+     totalCount nodes { id name downloadCount } } } }";
+
+/// Every field the release query asks of each type, as GitHub's GraphQL
+/// schema named them on 2026-11-22 (`__type(name: …) { fields { name } }`).
+/// The fake `gh` the tests run against answers any query, so it could not
+/// see that `ReleaseAsset` has no `databaseId` — the first real run failed
+/// every batch on it. A test holds the query to this list.
+#[cfg(test)]
+pub(super) const RELEASE_SCHEMA: &[(&str, &[&str])] = &[
+    ("Release", &["databaseId", "tagName", "releaseAssets"]),
+    ("ReleaseAsset", &["id", "name", "downloadCount"]),
+];
+
+/// A release asset's key in `releases`: GitHub's GraphQL gives an asset
+/// only a node id (a string), so the integer column holds the first eight
+/// bytes of its sha256 — stable for the asset, and the same every run.
+fn asset_key(node_id: &str) -> i64 {
+    use sha2::{Digest, Sha256};
+    let d = Sha256::digest(node_id.as_bytes());
+    i64::from_be_bytes(d[..8].try_into().expect("eight bytes"))
+}
 
 // ---- traffic ----
 
@@ -287,7 +307,10 @@ pub(super) fn parse_releases(d: &Value) -> Option<Releases> {
         }
         for a in list {
             let (Some(asset_id), Some(name)) = (
-                a.get("databaseId").and_then(Value::as_i64),
+                a.get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .map(asset_key),
                 a.get("name").and_then(Value::as_str),
             ) else {
                 complete = false;
