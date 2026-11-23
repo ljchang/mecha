@@ -83,7 +83,7 @@ uuid = { version = "1", features = ["v4"] }
 # instantiation, which is the classic YAML remote-code-execution class. A
 # panic here would take down every run at startup, since skills load before
 # the agent does.
-serde-saphyr = "1"
+serde-saphyr = "2"
 
 [profile.release]
 opt-level = 3
