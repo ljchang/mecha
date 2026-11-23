@@ -130,7 +130,8 @@ and set `seed` instead.
 
 `reasoning_effort` uses the template's vocabulary, not mecha's `[agent] effort`,
 because each model's template defines its own. Inkling 2 takes `none`, `minimal`,
-`low`, `medium`, `high`, `xhigh` or `max` (or a number from 0 to 0.99, default 0.9).
+`low`, `medium`, `high`, `xhigh` or `max` (default `high`, 0.9). The value is
+always sent as a string, so name a level rather than a number.
 Qwen3.8 takes only `low`, `medium` and `xhigh`, and fails the request on anything
 else. A template that does not read the key ignores it. Unset, nothing is sent and
 the template keeps its default. The value is the same on every request, so the cached

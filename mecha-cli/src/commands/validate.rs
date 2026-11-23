@@ -411,7 +411,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let mut both_pass = 0u32;
     let mut both_fail = 0u32;
     let surface_hash = rules_hash(&serde_json::to_string(&prepared.agent.registry().specs())?);
-    let settings = serde_json::json!({
+    let mut settings = serde_json::json!({
         "protocol": "validation-v2-recorded-followup", "model": model,
         "provider": provider_cfg.kind, "endpoint": provider_cfg.base_url,
         "temperature": provider_cfg.temperature, "seed": provider_cfg.seed,
@@ -420,6 +420,18 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         "judge_seed": judge_cfg.seed, "surface": surface_hash,
         "agent": prepared.config.agent,
     });
+    // The effort shapes the request as the sampler does, so it is a term of
+    // the receipt (review of #921) — and only when set, because the receipt
+    // keys reuse (`attempt_key`): a `null` added to every receipt would
+    // discard every verdict already paid for.
+    for (key, cfg) in [
+        ("reasoning_effort", provider_cfg),
+        ("judge_reasoning_effort", judge_cfg),
+    ] {
+        if let Some(e) = cfg.reasoning_effort.as_deref() {
+            settings[key] = serde_json::json!(e.trim());
+        }
+    }
 
     let sessions_dir = Session::default_dir()?;
     // Coverage: rows for (rule, region) pairs nobody has graded. Chosen

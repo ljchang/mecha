@@ -732,6 +732,14 @@ pub struct RunConfig {
     /// them. Unset means the server chose, and the run is not repeatable.
     pub temperature: Option<f64>,
     pub seed: Option<u64>,
+    /// The provider's `reasoning_effort` actually sent, in its template's
+    /// words. It shapes the request as hard as the sampler (on Inkling, `low`
+    /// halved code mode's wall time and shortened persona replies about
+    /// fourfold), so a replay restores it beside `temperature` and `seed`
+    /// (review of #921). Absent on the wire when unset, so a record written
+    /// by this build is byte for byte an older one's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub thinking: bool,
     /// No effect on semantics; large effect on the token counts a replay diffs.
     pub cache_prompt: bool,
@@ -960,6 +968,7 @@ impl Default for RunConfig {
             effort: None,
             temperature: None,
             seed: None,
+            reasoning_effort: None,
             thinking: false,
             cache_prompt: false,
             max_tokens: 0,
@@ -1044,6 +1053,12 @@ impl RunConfig {
             effort: cfg.effort,
             temperature: config.providers.get(provider).and_then(|p| p.temperature),
             seed: config.providers.get(provider).and_then(|p| p.seed),
+            // Trimmed as `OpenAiCompatible::from_config` sends it.
+            reasoning_effort: config
+                .providers
+                .get(provider)
+                .and_then(|p| p.reasoning_effort.as_deref())
+                .map(|e| e.trim().to_string()),
             thinking: cfg.thinking,
             cache_prompt: cfg.cache_prompt,
             max_tokens: cfg.max_tokens,
@@ -4492,6 +4507,28 @@ mod tests {
         })
         .unwrap();
         assert!(wire.contains(r#""levers_off":["boredom"]"#), "{wire}");
+    }
+
+    /// The reasoning effort a run sent is on its record, and absent when
+    /// unset, so a record from a provider without one is byte for byte what
+    /// it was (review of #921).
+    #[test]
+    fn a_runs_reasoning_effort_is_recorded_only_when_sent() {
+        let wire = serde_json::to_string(&RunConfig::default()).unwrap();
+        assert!(!wire.contains("reasoning_effort"), "{wire}");
+        let low = RunConfig {
+            reasoning_effort: Some("low".into()),
+            ..RunConfig::default()
+        };
+        let wire = serde_json::to_string(&low).unwrap();
+        assert!(wire.contains(r#""reasoning_effort":"low""#), "{wire}");
+        let back: RunConfig = serde_json::from_str(&wire).unwrap();
+        assert_eq!(back.reasoning_effort.as_deref(), Some("low"));
+        let before: RunConfig = serde_json::from_str(r#"{"provider":"local"}"#).unwrap();
+        assert_eq!(
+            before.reasoning_effort, None,
+            "a record from before the field"
+        );
     }
 
     /// `features_on` keeps `levers_off`'s wire rule: an unknown feature id

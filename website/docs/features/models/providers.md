@@ -175,8 +175,10 @@ Ollama's compatibility endpoint, and anything else speaking the dialect. Point
 `base_url` at whichever you are running; the API key is optional, because local
 servers usually do not check it.
 
-The shape is lossier than Anthropic's in places — no cache breakpoints, no
-effort; those fields are accepted and ignored. `temperature` and `seed` *are*
+The shape is lossier than Anthropic's in places — no cache breakpoints, and
+`[agent] effort` is accepted and ignored. A llama-server entry can instead name
+its template's own thinking level with `reasoning_effort` (see the
+[configuration reference](/docs/reference/configuration)). `temperature` and `seed` *are*
 sent here when configured, which is what makes a pinned local replay possible
 at all.
 

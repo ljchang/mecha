@@ -465,7 +465,7 @@ machine from starting is one people turn off.
 
   | template | reads it | accepts | default |
   |---|---|---|---|
-  | Inkling 2 Mini (base and graft) | yes | `none` `minimal` `low` `medium` `high` `xhigh` `max`, or a float in [0, 0.99] | 0.9 |
+  | Inkling 2 Mini (base and graft) | yes | `none` `minimal` `low` `medium` `high` `xhigh` `max` (or a float in [0, 0.99], which mecha cannot send: the field is a string, and a quoted number misses the named-level map) | 0.9 |
   | Qwen3.8-27B (all three) | yes | `low` `medium` `xhigh`; `high` becomes `xhigh`; anything else raises | `xhigh` |
   | Qwen3.6-35B (both), Gemma 4 | no | ignored | — |
 

@@ -941,6 +941,11 @@ pub async fn drive_arm_under(
         let mut provider_cfg = provider_cfg.clone();
         provider_cfg.seed = recorded.seed;
         provider_cfg.temperature = recorded.temperature;
+        // The recorded effort, not today's: a session at the template's
+        // default repeated under a later `reasoning_effort = "low"` would
+        // think a fifth as long and credit the difference to the change
+        // (review of #921).
+        provider_cfg.reasoning_effort = recorded.reasoning_effort.clone();
         let (verdict, stats) = match mecha_core::mismatch::drive(
             case,
             recorded,
