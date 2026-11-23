@@ -36,6 +36,8 @@ pub struct OpenAiCompatible {
     default_model: String,
     temperature: Option<f64>,
     seed: Option<u64>,
+    /// `ProviderConfig::reasoning_effort`, for a llama-server only.
+    reasoning_effort: Option<String>,
     id: String,
     vision: bool,
     structured_output: crate::config::StructuredOutput,
@@ -84,6 +86,30 @@ impl OpenAiCompatible {
     }
 
     pub fn from_config(cfg: &ProviderConfig) -> Result<Self> {
+        // A llama-server: the one definition, read by every llama.cpp-only
+        // field below (review of #921: the effort check had its own copy).
+        let llama_server = cfg.kind == "local" && cfg.base_url.is_some();
+        // Refused rather than dropped: OpenAI's own API takes its effort as a
+        // top-level field and 400s on an unknown one, and an operator who set
+        // this must not believe a model is thinking less when it is not.
+        // Trimmed once and stored trimmed: `" low "` checked as `low` but
+        // sent as written raised Qwen3.8's template (review of #921).
+        let reasoning_effort = match cfg.reasoning_effort.as_deref() {
+            None => None,
+            Some(effort) => {
+                anyhow::ensure!(
+                    llama_server,
+                    "`reasoning_effort` is read by a llama-server's chat template; this \
+                     provider is not one (`kind = \"local\"` with a `base_url`)"
+                );
+                let effort = effort.trim();
+                anyhow::ensure!(
+                    !effort.is_empty(),
+                    "`reasoning_effort` is empty: name the template's level, or remove the line"
+                );
+                Some(effort.to_string())
+            }
+        };
         Ok(Self {
             // Two clients, chosen per request by the body's `stream` flag —
             // see `provider::HttpClients` for why one cannot do both jobs.
@@ -113,11 +139,12 @@ impl OpenAiCompatible {
                 .unwrap_or_else(|| "gpt-4o-mini".to_string()),
             temperature: cfg.temperature,
             seed: cfg.seed,
+            reasoning_effort,
             id: cfg.kind.clone(),
             vision: cfg.vision_enabled(),
             structured_output: cfg.structured_output,
             retry: crate::provider::retry::RetryPolicy::from_config(cfg),
-            llama_server: cfg.kind == "local" && cfg.base_url.is_some(),
+            llama_server,
             local: cfg.kind == "local"
                 && cfg
                     .base_url
@@ -166,11 +193,20 @@ impl OpenAiCompatible {
         // is an error outcome and the sentence is spoken undirected. `None`
         // adds nothing, so every request that never asked sends exactly the
         // bytes it always did.
+        let mut kwargs = serde_json::Map::new();
         if let Some(think) = req.think {
-            obj.insert(
-                "chat_template_kwargs".into(),
-                json!({"enable_thinking": think}),
-            );
+            kwargs.insert("enable_thinking".into(), json!(think));
+        }
+        // The provider's own word for its template (`ProviderConfig::
+        // reasoning_effort`), the same on every request. `from_config`
+        // refused it anywhere but a llama-server, and the gate here is the
+        // one `reasoning_budget_tokens` below has, so the two llama.cpp-only
+        // fields read alike.
+        if let (Some(effort), true) = (&self.reasoning_effort, self.llama_server) {
+            kwargs.insert("reasoning_effort".into(), json!(effort));
+        }
+        if !kwargs.is_empty() {
+            obj.insert("chat_template_kwargs".into(), Value::Object(kwargs));
         }
         // llama-server's per-request reasoning cap, read only for a template
         // with thinking tags (`server-common.cpp`); measured honoured on
@@ -1093,6 +1129,75 @@ mod tests {
             "{err:#}"
         );
         assert!(err.to_string().contains("local-only"), "{err}");
+    }
+
+    #[test]
+    fn a_providers_reasoning_effort_reaches_its_template_and_only_a_llama_servers() {
+        let local = |effort: Option<&str>| {
+            OpenAiCompatible::from_config(&ProviderConfig {
+                kind: "local".into(),
+                base_url: Some("http://127.0.0.1:8080".into()),
+                reasoning_effort: effort.map(String::from),
+                ..Default::default()
+            })
+        };
+        // Unset: the request is today's, with no kwargs at all.
+        let plain = local(None).unwrap().body(&plain_req(), false);
+        assert!(plain.get("chat_template_kwargs").is_none());
+        // Set: on every request, verbatim, beside a declined thinking.
+        let low = local(Some("low")).unwrap();
+        assert_eq!(
+            low.body(&plain_req(), false)["chat_template_kwargs"],
+            json!({"reasoning_effort": "low"})
+        );
+        let declined = CompletionRequest {
+            think: Some(false),
+            think_budget: None,
+            trailing_notes: 0,
+            tool_choice: crate::message::ToolChoice::Auto,
+            ..plain_req()
+        };
+        assert_eq!(
+            low.body(&declined, false)["chat_template_kwargs"],
+            json!({"enable_thinking": false, "reasoning_effort": "low"})
+        );
+        // Not a llama-server: refused at construction, not sent and 400'd.
+        let err = OpenAiCompatible::from_config(&ProviderConfig {
+            kind: "openai".into(),
+            reasoning_effort: Some("low".into()),
+            ..Default::default()
+        })
+        .err()
+        .expect("refused off a llama-server")
+        .to_string();
+        assert!(err.contains("not one"), "{err}");
+        // Nor a `local` entry with no `base_url`, whose URL falls back to
+        // api.openai.com: the one that would send the key off the machine.
+        assert!(
+            OpenAiCompatible::from_config(&ProviderConfig {
+                kind: "local".into(),
+                reasoning_effort: Some("low".into()),
+                ..Default::default()
+            })
+            .is_err(),
+            "a `local` entry with no base_url is not a llama-server"
+        );
+        assert!(local(Some("  ")).is_err(), "an empty level is refused");
+        // Stored trimmed: what was checked is what is sent.
+        assert_eq!(
+            local(Some(" low ")).unwrap().body(&plain_req(), false)["chat_template_kwargs"],
+            json!({"reasoning_effort": "low"})
+        );
+        // Nor on Anthropic, whose effort is `[agent] effort`.
+        let err = crate::provider::anthropic::Anthropic::from_config(&ProviderConfig {
+            kind: "anthropic".into(),
+            reasoning_effort: Some("low".into()),
+            ..Default::default()
+        })
+        .err()
+        .expect("refused on anthropic")
+        .to_string();
+        assert!(err.contains("`[agent] effort`"), "{err}");
     }
 
     #[test]

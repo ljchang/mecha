@@ -392,6 +392,7 @@ impl Default for Config {
                 output_price_per_mtok: None,
                 temperature: None,
                 seed: None,
+                reasoning_effort: None,
                 context_window: None,
                 // `None`, not `Some(true)`: the per-kind default in
                 // `vision_enabled` is the one place that decision is made,
@@ -492,6 +493,17 @@ pub struct ProviderConfig {
     /// run one at a time, and does not once concurrent requests share a batch.
     /// Rejected on `anthropic` for the same reason as `temperature`.
     pub seed: Option<u64>,
+    /// The `reasoning_effort` this provider's chat template reads, sent
+    /// verbatim as `chat_template_kwargs.reasoning_effort` on every request —
+    /// so it is a fixed term of the prompt, and the cached prefix holds.
+    /// llama-server only: a template takes whatever vocabulary its model was
+    /// trained on (Inkling 2: `none` to `max`, or a number in [0, 0.99];
+    /// Qwen3.8: `low`, `medium`, `xhigh`, and a template exception for
+    /// anything else), so this is the template's word, never `[agent]
+    /// effort` translated — mecha's `max` would 500 every Qwen3.8 request.
+    /// Unset, nothing is sent and the template keeps its own default.
+    /// Refused on a provider that is not a llama-server.
+    pub reasoning_effort: Option<String>,
     /// How many tokens this model's context holds — for a local server, the
     /// `-c` it was started with.
     ///

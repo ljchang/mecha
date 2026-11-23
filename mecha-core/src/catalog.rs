@@ -456,7 +456,10 @@ pub const CATALOG: &[Entry] = &[
         // it decoded 5–14% faster on code and 5–15% slower on prose,
         // accepting 0.39 of three drafted tokens and 0.50 of two (GB10,
         // 2026-11-21 and -22). The template's own default effort (0.9,
-        // "high") stands; a request sets `chat_template_kwargs.reasoning_effort`.
+        // "high") stands unless the provider entry names another in its
+        // template's words (`[providers.<name>] reasoning_effort`, sent as
+        // `chat_template_kwargs.reasoning_effort`; docs/LLAMA-SERVER.md has
+        // each served template's vocabulary).
         //
         // `reasoning-preserve` is set, never left to the build, as for every
         // Qwen preset (`start-router.sh`'s `qwen_sampling`): the template
