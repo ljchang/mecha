@@ -720,7 +720,10 @@
 {/if}
 
 <style>
-  .rulespage { flex: 1; overflow-y: auto; padding: 14px var(--gutter) 40px; max-width: 920px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+  /* Full-bleed scroller; --gutter pads the content in to the measure. A
+     max-width here as well double-counts: the gutter is computed from the
+     whole width, so the column narrowed as the window widened. */
+  .rulespage { flex: 1; overflow-y: auto; padding: 14px var(--gutter) 40px; width: 100%; box-sizing: border-box; }
   /* The app's settings gear sits over the top-right corner on every view. */
   .head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; padding-right: calc(var(--gutter-gear) - var(--gutter)); }
   .head h1 { margin: 0; font-size: 20px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
